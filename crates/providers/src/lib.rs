@@ -116,20 +116,10 @@ impl OpenAiCompatProvider {
             api_key,
         }
     }
-}
 
-#[async_trait]
-impl Provider for OpenAiCompatProvider {
-    async fn stream_chat(
-        &self,
-        model: &str,
-        messages: Vec<ChatMessage>,
-    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
-        let body = serde_json::json!({
-            "model": model,
-            "messages": messages,
-            "stream": true,
-        });
+    /// Build, send, and status-check a POST to `/chat/completions`.
+    /// Callers consume the returned response (streaming vs. JSON) as needed.
+    async fn post_chat(&self, body: serde_json::Value) -> anyhow::Result<reqwest::Response> {
         let mut req = self
             .client
             .post(format!(
@@ -146,6 +136,23 @@ impl Provider for OpenAiCompatProvider {
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!("provider returned {status}: {body}");
         }
+        Ok(resp)
+    }
+}
+
+#[async_trait]
+impl Provider for OpenAiCompatProvider {
+    async fn stream_chat(
+        &self,
+        model: &str,
+        messages: Vec<ChatMessage>,
+    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
+        let body = serde_json::json!({
+            "model": model,
+            "messages": messages,
+            "stream": true,
+        });
+        let resp = self.post_chat(body).await?;
 
         // v0.2: add request timeout, filter empty/role-only deltas, detect mid-body error payloads
         let stream = resp.bytes_stream().eventsource().map(|item| {
@@ -178,22 +185,7 @@ impl Provider for OpenAiCompatProvider {
         if !tools.is_empty() {
             body["tools"] = serde_json::Value::Array(tools);
         }
-        let mut req = self
-            .client
-            .post(format!(
-                "{}/chat/completions",
-                self.base_url.trim_end_matches('/')
-            ))
-            .json(&body);
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key);
-        }
-        let resp = req.send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("provider returned {status}: {body}");
-        }
+        let resp = self.post_chat(body).await?;
         let v: serde_json::Value = resp.json().await?;
         let msg = &v["choices"][0]["message"];
         let content = msg["content"].as_str().unwrap_or("").to_string();
@@ -349,7 +341,7 @@ mod complete_tests {
             "choices": [{
                 "message": {
                     "role": "assistant",
-                    "content": "",
+                    "content": null,
                     "tool_calls": [{
                         "id": "call_1",
                         "type": "function",
@@ -394,5 +386,31 @@ mod complete_tests {
             .unwrap();
         assert_eq!(resp.content, "hello there");
         assert!(resp.tool_calls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn complete_surfaces_http_error_status_and_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .set_body_string("{\"error\":{\"message\":\"bad model\"}}"),
+            )
+            .mount(&server)
+            .await;
+
+        let p = OpenAiCompatProvider::new(server.uri(), None);
+        let result = p.complete("m", vec![ChatMessage::user("hi")], vec![]).await;
+        assert!(result.is_err());
+        let msg = format!("{}", result.err().unwrap());
+        assert!(
+            msg.contains("400"),
+            "error should include status, got: {msg}"
+        );
+        assert!(
+            msg.contains("bad model"),
+            "error should include body, got: {msg}"
+        );
     }
 }
