@@ -1,0 +1,27 @@
+{
+  "name": "entheai",
+  "version": "1.0.0",
+  "description": "> A personal, macOS-native, **hybrid coding agent for the terminal** — with a brain that fans out.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/peterlodri-sec/entheai.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/peterlodri-sec/entheai/issues"
+  },
+  "homepage": "https://github.com/peterlodri-sec/entheai#readme",
+  "devDependencies": {
+    "wrangler": "^4.112.0"
+  }
+}

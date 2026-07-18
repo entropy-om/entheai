@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "entheai",
+  "compatibility_date": "2026-07-18",
+  "assets": {
+    "directory": "./public",
+    "not_found_handling": "404-page"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "routes": [
+    { "pattern": "entheai.com", "custom_domain": true },
+    { "pattern": "www.entheai.com", "custom_domain": true }
+  ]
+}
