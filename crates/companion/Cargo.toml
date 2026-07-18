@@ -1,0 +1,23 @@
+[package]
+name = "entheai-companion"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "entheai-companion"
+path = "src/main.rs"
+
+[dependencies]
+winit = "0.30"
+softbuffer = "0.4"
+qrcode = "0.14"
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+anyhow = { workspace = true }

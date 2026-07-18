@@ -964,7 +964,9 @@ dependencies = [
  "entheai-tui",
  "mimalloc",
  "sentry",
+ "serde_json",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
