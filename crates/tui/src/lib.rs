@@ -53,13 +53,34 @@ enum Role {
 }
 
 impl Role {
-    /// The line prefix and style used when rendering this role.
-    fn style(self) -> (&'static str, Style) {
+    /// The line prefix, style, and whether the row background is filled to the
+    /// full width (so the role reads as a distinct block).
+    fn style(self) -> (&'static str, Style, bool) {
         match self {
-            Role::User => ("you> ", Style::default().fg(Color::Cyan)),
-            Role::Assistant => ("entheai> ", Style::default().fg(Color::Green)),
-            Role::Tool => ("tool> ", Style::default().add_modifier(Modifier::DIM)),
-            Role::Error => ("error> ", Style::default().fg(Color::Red)),
+            Role::User => (
+                "you> ",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                false,
+            ),
+            Role::Assistant => (
+                "entheai> ",
+                Style::default()
+                    .fg(Color::Rgb(224, 226, 240))
+                    .bg(Color::Rgb(32, 34, 46)),
+                true,
+            ),
+            Role::Tool => (
+                "tool> ",
+                Style::default().add_modifier(Modifier::DIM),
+                false,
+            ),
+            Role::Error => (
+                "error> ",
+                Style::default()
+                    .fg(Color::Rgb(255, 130, 130))
+                    .bg(Color::Rgb(48, 26, 30)),
+                true,
+            ),
         }
     }
 }
@@ -403,7 +424,7 @@ fn build_history_lines(messages: &[Msg], width: u16) -> Vec<Line<'static>> {
     let w = width.max(1) as usize;
     let mut lines: Vec<Line<'static>> = Vec::new();
     for m in messages {
-        let (prefix, style) = m.role.style();
+        let (prefix, style, fill) = m.role.style();
         // Prefix only the first visual line; honor explicit newlines in the text.
         let mut first = true;
         for logical in m.text.split('\n') {
@@ -414,6 +435,13 @@ fn build_history_lines(messages: &[Msg], width: u16) -> Vec<Line<'static>> {
             };
             first = false;
             for row in wrap_str(&content, w) {
+                let row = if fill {
+                    // Pad to full width so the row's background reads as a block.
+                    let pad = w.saturating_sub(row.chars().count());
+                    format!("{row}{}", " ".repeat(pad))
+                } else {
+                    row
+                };
                 lines.push(Line::styled(row, style));
             }
         }
