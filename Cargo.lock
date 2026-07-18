@@ -1126,6 +1126,7 @@ dependencies = [
  "entheai-permission",
  "entheai-providers",
  "entheai-router",
+ "entheai-skills",
  "entheai-tools",
  "entheai-tui",
  "mimalloc",
@@ -1264,6 +1265,18 @@ dependencies = [
  "entheai-config",
  "entheai-core",
  "entheai-providers",
+]
+
+[[package]]
+name = "entheai-skills"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "entheai-tools",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

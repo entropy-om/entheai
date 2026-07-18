@@ -23,6 +23,8 @@ pub struct Config {
     pub fanout: FanoutConfig,
     #[serde(default)]
     pub mcp: std::collections::HashMap<String, McpServerConfig>,
+    #[serde(default)]
+    pub skills: SkillsConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -101,6 +103,25 @@ impl Default for CompanionConfig {
             always_on_top: true,
         }
     }
+}
+
+/// Skill discovery directories (relative to the working root).
+#[derive(Debug, Clone, Deserialize)]
+pub struct SkillsConfig {
+    #[serde(default = "default_skill_dirs")]
+    pub dirs: Vec<String>,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            dirs: default_skill_dirs(),
+        }
+    }
+}
+
+fn default_skill_dirs() -> Vec<String> {
+    vec!["skills".to_string()]
 }
 
 impl Config {
@@ -233,5 +254,30 @@ mod tests {
         .unwrap();
 
         assert!(cfg.mcp.is_empty());
+    }
+
+    #[test]
+    fn parses_skills_dirs_when_present() {
+        let cfg = Config::from_toml_str(
+            r#"
+            [skills]
+            dirs = ["a", "b"]
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.skills.dirs, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn skills_dirs_defaults_to_skills_when_absent() {
+        let cfg = Config::from_toml_str(
+            r#"
+            default_model = "osaurus/qwen3-coder"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.skills.dirs, vec!["skills".to_string()]);
     }
 }

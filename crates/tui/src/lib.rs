@@ -155,6 +155,9 @@ struct App {
     /// (decompose → parallel coders → integrate) instead of the single-agent
     /// `run_task` loop. Set once at construction; shown in the status bar.
     fanout: bool,
+    /// Optional system prompt (e.g. skills advertisement) prepended to the
+    /// conversation history sent on each single-agent run.
+    system_prompt: Option<String>,
 }
 
 /// What a key press asked the loop to do.
@@ -171,6 +174,7 @@ enum Action {
 /// Run the interactive TUI. Sets up the terminal, runs the event loop, and
 /// always restores the terminal on exit (raw mode + alternate screen), even on
 /// error, via [`TerminalGuard`].
+#[allow(clippy::too_many_arguments)]
 pub async fn run<P: Provider + 'static>(
     agent: Agent<P>,
     registry: ToolRegistry,
@@ -179,6 +183,7 @@ pub async fn run<P: Provider + 'static>(
     config: entheai_config::Config,
     root: std::path::PathBuf,
     fanout: bool,
+    system_prompt: Option<String>,
 ) -> anyhow::Result<()> {
     let mut terminal = init_terminal()?;
     let guard = TerminalGuard;
@@ -191,6 +196,7 @@ pub async fn run<P: Provider + 'static>(
         config,
         root,
         fanout,
+        system_prompt,
     )
     .await;
     drop(guard); // restore the terminal before surfacing any error
@@ -227,6 +233,7 @@ async fn event_loop<P: Provider + 'static>(
     config: entheai_config::Config,
     root: std::path::PathBuf,
     fanout: bool,
+    system_prompt: Option<String>,
 ) -> anyhow::Result<()> {
     // Arc so each spawned run task can share the agent/registry/policy/config.
     let agent = Arc::new(agent);
@@ -257,6 +264,7 @@ async fn event_loop<P: Provider + 'static>(
         current_action: "thinking".to_string(),
         now_playing: None,
         fanout,
+        system_prompt,
     };
 
     // Background music player (yt-dlp + rodio); one per TUI session.
@@ -321,7 +329,7 @@ async fn event_loop<P: Provider + 'static>(
                                     let _ = result_tx.send(res.map_err(|e| e.to_string())).await;
                                 });
                             } else {
-                                let history = build_history(&app.messages);
+                                let history = build_history(app.system_prompt.as_deref(), &app.messages);
 
                                 let agent = Arc::clone(&agent);
                                 let registry = Arc::clone(&registry);
@@ -605,16 +613,19 @@ fn handle_radio_event(app: &mut App, ev: RadioEvent) {
 }
 
 /// Map the display history to provider messages for the next run. Only User and
-/// Assistant turns are real conversation; Tool/Error lines are display-only.
-fn build_history(messages: &[Msg]) -> Vec<ChatMessage> {
-    messages
-        .iter()
-        .filter_map(|m| match m.role {
-            Role::User => Some(ChatMessage::user(m.text.clone())),
-            Role::Assistant => Some(ChatMessage::assistant(m.text.clone())),
-            Role::Tool | Role::Error => None,
-        })
-        .collect()
+/// Assistant turns are real conversation; Tool/Error lines are display-only. When
+/// `system_prompt` is set, it is pushed first as a system message.
+fn build_history(system_prompt: Option<&str>, messages: &[Msg]) -> Vec<ChatMessage> {
+    let mut out = Vec::new();
+    if let Some(sp) = system_prompt {
+        out.push(ChatMessage::system(sp));
+    }
+    out.extend(messages.iter().filter_map(|m| match m.role {
+        Role::User => Some(ChatMessage::user(m.text.clone())),
+        Role::Assistant => Some(ChatMessage::assistant(m.text.clone())),
+        Role::Tool | Role::Error => None,
+    }));
+    out
 }
 
 /// Hard-wrap `s` to `width` columns (character-based, no word boundaries) so the
@@ -835,7 +846,7 @@ mod tests {
                 text: "boom".into(),
             },
         ];
-        let hist = build_history(&messages);
+        let hist = build_history(None, &messages);
         assert_eq!(hist.len(), 2);
         assert_eq!(hist[0].role, "user");
         assert_eq!(hist[1].role, "assistant");
@@ -902,6 +913,7 @@ mod tests {
             current_action: String::new(),
             now_playing: None,
             fanout: false,
+            system_prompt: None,
         };
         handle_radio_event(
             &mut app,

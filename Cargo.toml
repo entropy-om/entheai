@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/config", "crates/providers", "crates/core", "crates/tools", "crates/permission", "crates/tui", "crates/memory", "crates/radio", "crates/companion", "crates/router", "crates/orchestrator", "crates/mcp", "bin/entheai"]
+members = ["crates/config", "crates/providers", "crates/core", "crates/tools", "crates/permission", "crates/tui", "crates/memory", "crates/radio", "crates/companion", "crates/router", "crates/orchestrator", "crates/mcp", "crates/skills", "bin/entheai"]
 
 [workspace.package]
 edition = "2021"

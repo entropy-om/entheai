@@ -52,18 +52,43 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("reading config {}", cli.config))?;
     let cfg = Config::from_toml_str(&cfg_text)?;
 
-    let model_id = cli
-        .model
-        .or(cfg.default_model.clone())
-        .context("no model: pass --model or set default_model in config")?;
-    let agent = entheai_router::build_agent(&model_id, &cfg)?;
-
     let root = std::env::current_dir()?.canonicalize()?;
     let mut registry = entheai_tools::ToolRegistry::new();
     registry.register(Box::new(entheai_tools::fs::ReadFile::new(root.clone())));
     registry.register(Box::new(entheai_tools::fs::WriteFile::new(root.clone())));
     registry.register(Box::new(entheai_tools::shell::RunShell::new(root.clone())));
     registry.register(Box::new(entheai_tools::search::Search::new(root.clone())));
+
+    // Skills: discover, advertise via a system prompt, expose the `skill` tool.
+    let skill_dirs: Vec<std::path::PathBuf> =
+        cfg.skills.dirs.iter().map(|d| root.join(d)).collect();
+    let skills = std::sync::Arc::new(entheai_skills::SkillRegistry::discover(&skill_dirs));
+    let system_prompt: Option<String> = if skills.is_empty() {
+        None
+    } else {
+        Some(skills.advertisement())
+    };
+    if !skills.is_empty() {
+        registry.register(Box::new(entheai_skills::SkillTool::new(
+            std::sync::Arc::clone(&skills),
+        )));
+        eprintln!(
+            "skills: loaded {} ({})",
+            skills.list().len(),
+            skills
+                .list()
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    let model_id = cli
+        .model
+        .or(cfg.default_model.clone())
+        .context("no model: pass --model or set default_model in config")?;
+    let agent = entheai_router::build_agent(&model_id, &cfg)?;
 
     // MCP servers: spawn each configured server, register its tools. A server
     // that fails or hangs is skipped with a warning (never blocks startup).
@@ -158,7 +183,11 @@ async fn main() -> anyhow::Result<()> {
                 println!("{answer}");
             } else {
                 let mut prompter = entheai_permission::StdinPrompter;
-                let messages = vec![ChatMessage::user(prompt)];
+                let mut messages = Vec::new();
+                if let Some(sp) = &system_prompt {
+                    messages.push(ChatMessage::system(sp.clone()));
+                }
+                messages.push(ChatMessage::user(prompt));
                 let answer = agent
                     .run_task(messages, &registry, &policy, &mut prompter, None)
                     .await?;
@@ -174,6 +203,7 @@ async fn main() -> anyhow::Result<()> {
                 cfg,
                 root.clone(),
                 cli.fanout,
+                system_prompt,
             )
             .await?;
         }
