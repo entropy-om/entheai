@@ -6,6 +6,12 @@ use entheai_config::Config;
 use entheai_core::{Agent, TokenSink};
 use entheai_providers::{ChatMessage, OpenAiCompatProvider};
 
+// macOS: mimalloc handles the concurrent tokio / multi-agent allocation load
+// better than the system allocator. Keep this block across future main.rs rewrites.
+#[cfg(target_os = "macos")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// entheai — hybrid coding agent (v0.1 skeleton)
 #[derive(Parser)]
 struct Cli {

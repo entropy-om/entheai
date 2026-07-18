@@ -11,3 +11,7 @@ entheai-core = { path = "../../crates/core" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
 anyhow.workspace = true
 clap.workspace = true
+
+# macOS: mimalloc as the global allocator (wired in main.rs) — better under concurrent load.
+[target.'cfg(target_os = "macos")'.dependencies]
+mimalloc = { workspace = true }

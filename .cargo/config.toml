@@ -1,0 +1,9 @@
+# macOS / Apple Silicon build tuning (spec §9).
+# target-cpu=native emits SIMD/NEON for the exact building machine's CPU — ideal for a
+# personal build-and-run-locally tool (binaries are not portable to older CPUs, which is fine).
+# dead_strip lets the macOS linker drop unreachable code.
+[target.'cfg(target_os = "macos")']
+rustflags = [
+    "-C", "target-cpu=native",
+    "-C", "link-arg=-Wl,-dead_strip",
+]
