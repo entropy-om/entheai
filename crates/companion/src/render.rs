@@ -36,6 +36,8 @@ pub struct AnimationState {
     target_qr_dim: f32,
     qr_dim: f32,
     flash_until: Option<f64>,
+    /// When set, the companion is fading out. Value decreases from 1.0 → 0.0.
+    pub fade_alpha: f32,
 }
 
 impl Default for AnimationState {
@@ -51,6 +53,7 @@ impl Default for AnimationState {
             target_qr_dim: 0.0,
             qr_dim: 0.0,
             flash_until: None,
+            fade_alpha: 1.0,
         }
     }
 }
@@ -154,6 +157,7 @@ pub fn render_frame(
     let pulse = if flash_active { 1.0 } else { pulse };
 
     let (gr, gg, gb) = anim.glow;
+    let fa = anim.fade_alpha;
 
     for y in 0..height {
         for x in 0..width {
@@ -165,7 +169,8 @@ pub fn render_frame(
             let r = lerp_u8(BG.0, gr as u8, alpha);
             let g = lerp_u8(BG.1, gg as u8, alpha);
             let b = lerp_u8(BG.2, gb as u8, alpha);
-            buffer[(y * width + x) as usize] = pack_bgra(b, g, r, 255);
+            let a = (255.0 * fa) as u8;
+            buffer[(y * width + x) as usize] = pack_bgra(b, g, r, a);
         }
     }
 
@@ -203,7 +208,7 @@ pub fn render_frame(
                 for dx in 0..module_px {
                     let idx = row_start + dx as usize;
                     if idx < buffer.len() {
-                        buffer[idx] = pack_bgra(b, g, r, 255);
+                        buffer[idx] = pack_bgra(b, g, r, (255.0 * fa) as u8);
                     }
                 }
             }
@@ -211,7 +216,7 @@ pub fn render_frame(
     }
 
     if anim.target_spinner {
-        draw_spinner(buffer, width, height, cx, cy, time);
+        draw_spinner(buffer, width, height, cx, cy, time, fa);
     }
 
     if anim.target_state == State::PermissionPending {
@@ -223,17 +228,18 @@ pub fn render_frame(
             cx,
             cy,
             MAGENTA,
-            pulse,
+            pulse * fa,
         );
     }
 }
 
-fn draw_spinner(buffer: &mut [u32], w: u32, h: u32, cx: f32, cy: f32, time: f64) {
+fn draw_spinner(buffer: &mut [u32], w: u32, h: u32, cx: f32, cy: f32, time: f64, fade_alpha: f32) {
     let radius = w.min(h) as f32 * 0.55;
     let angle = time as f32 * std::f32::consts::TAU / 2.0;
     let sx = cx + radius * angle.cos();
     let sy = cy + radius * angle.sin();
     let dot_r = 2i32;
+    let a = (255.0 * fade_alpha) as u8;
     for dy in -dot_r..=dot_r {
         for dx in -dot_r..=dot_r {
             if dx * dx + dy * dy > dot_r * dot_r {
@@ -244,7 +250,7 @@ fn draw_spinner(buffer: &mut [u32], w: u32, h: u32, cx: f32, cy: f32, time: f64)
             if px >= 0 && px < w as i32 && py >= 0 && py < h as i32 {
                 let idx = (py as u32 * w + px as u32) as usize;
                 if idx < buffer.len() {
-                    buffer[idx] = pack_bgra(TEAL.2, TEAL.1, TEAL.0, 255);
+                    buffer[idx] = pack_bgra(TEAL.2, TEAL.1, TEAL.0, a);
                 }
             }
         }

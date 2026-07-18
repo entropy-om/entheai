@@ -119,10 +119,12 @@ fn main() -> anyhow::Result<()> {
     let mut anim = AnimationState::default();
     let mut socket_reader = socket_reader;
     let mut last_frame = Instant::now();
+    let mut fading_since: Option<f64> = None;
 
     #[allow(deprecated)]
     event_loop.run(move |event, target| {
         target.set_control_flow(ControlFlow::Poll);
+        let now = start.elapsed().as_secs_f64();
 
         match event {
             Event::WindowEvent {
@@ -135,10 +137,18 @@ fn main() -> anyhow::Result<()> {
                     return;
                 }
 
-                let now = start.elapsed().as_secs_f64();
                 let dt = last_frame.elapsed().as_secs_f64();
                 last_frame = Instant::now();
                 anim.tick(dt);
+
+                if let Some(fade_start) = fading_since {
+                    let elapsed = now - fade_start;
+                    anim.fade_alpha = (1.0 - (elapsed / 0.5) as f32).max(0.0);
+                    if anim.fade_alpha <= 0.0 {
+                        target.exit();
+                        return;
+                    }
+                }
 
                 let ctx = softbuffer::Context::new(&window).expect("softbuffer context");
                 let mut surf = Surface::new(&ctx, &window).expect("softbuffer surface");
@@ -161,7 +171,6 @@ fn main() -> anyhow::Result<()> {
                     },
                 ..
             } => {
-                let now = start.elapsed().as_secs_f64();
                 anim.flash(now);
                 if let Ok(mut clipboard) = arboard::Clipboard::new() {
                     let _ = clipboard.set_text(&session_url);
@@ -183,6 +192,7 @@ fn main() -> anyhow::Result<()> {
                         match reader.read_line(&mut line) {
                             Ok(0) => {
                                 socket_reader = None;
+                                fading_since = Some(now);
                                 break;
                             }
                             Ok(_) => {
@@ -199,6 +209,7 @@ fn main() -> anyhow::Result<()> {
                             }
                             Err(_) => {
                                 socket_reader = None;
+                                fading_since = Some(now);
                                 break;
                             }
                         }
