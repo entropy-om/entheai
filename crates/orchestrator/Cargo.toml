@@ -1,0 +1,19 @@
+[package]
+name = "entheai-orchestrator"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+entheai-config = { path = "../config" }
+entheai-core = { path = "../core" }
+entheai-providers = { path = "../providers" }
+entheai-router = { path = "../router" }
+entheai-tools = { path = "../tools" }
+entheai-permission = { path = "../permission" }
+tokio = { workspace = true }
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true

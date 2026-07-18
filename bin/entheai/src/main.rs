@@ -24,6 +24,9 @@ struct Cli {
     /// Auto-approve all tool calls (skip the permission prompt).
     #[arg(long)]
     yolo: bool,
+    /// Decompose the task and fan out parallel read-only sub-agents, then synthesize.
+    #[arg(long)]
+    fanout: bool,
     /// Disable the companion window for this session.
     #[arg(long)]
     no_companion: bool,
@@ -99,12 +102,17 @@ async fn main() -> anyhow::Result<()> {
     match cli.prompt {
         // One-shot: run the prompt, print the answer, exit.
         Some(prompt) => {
-            let mut prompter = entheai_permission::StdinPrompter;
-            let messages = vec![ChatMessage::user(prompt)];
-            let answer = agent
-                .run_task(messages, &registry, &policy, &mut prompter, None)
-                .await?;
-            println!("{answer}");
+            if cli.fanout {
+                let answer = entheai_orchestrator::run_fanout(&cfg, &root, &prompt).await?;
+                println!("{answer}");
+            } else {
+                let mut prompter = entheai_permission::StdinPrompter;
+                let messages = vec![ChatMessage::user(prompt)];
+                let answer = agent
+                    .run_task(messages, &registry, &policy, &mut prompter, None)
+                    .await?;
+                println!("{answer}");
+            }
         }
         // No prompt: launch the interactive TUI.
         None => {
