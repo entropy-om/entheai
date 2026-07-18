@@ -86,4 +86,4 @@ Coming next (per the design spec): `router`, `agents` (fan-out), `memory`, `lear
 
 ## License
 
-TBD. Note: some bundled/optional components carry their own licenses (e.g. Honcho is AGPL-3.0; Crush is used as design inspiration only, not code). A personal project — not yet packaged for redistribution.
+[Apache-2.0](LICENSE). Note: some bundled or optional components carry their own licenses (e.g. Honcho is AGPL-3.0; Crush is used as design inspiration only, not code) — see the design spec for details.
