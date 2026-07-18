@@ -84,6 +84,12 @@ Coming next (per the design spec): `router`, `agents` (fan-out), `memory`, `lear
 
 [Osaurus](https://github.com/osaurus-ai/osaurus) · [CodeWhale](https://github.com/Hmbown/CodeWhale) · [Crush](https://github.com/charmbracelet/crush) · [Ruflo](https://github.com/ruvnet/ruflo) · [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) · [OpenCode Zen](https://opencode.ai) · [Honcho](https://github.com/plastic-labs/honcho) · [Tailscale](https://tailscale.com). Performance practices follow David Lattimore's [*Wild performance tricks*](https://davidlattimore.github.io/posts/2025/09/02/rustforge-wild-performance-tricks.html).
 
+## Thanks to OpenCode 🙏
+
+entheai leans hard on [OpenCode Zen](https://opencode.ai) for cloud inference — DeepSeek V4 Pro/Flash, Qwen, GLM, Kimi, and more through a single OpenAI-compatible key. Genuinely the smoothest model gateway I've used, and the team keeps shipping.
+
+**Try it — you get $5 in credit, they get $5 too → [opencode.ai/go](https://opencode.ai/go?ref=BG9E87CD74)**. Honestly the best referral I've ever seen. Thank you to the whole OpenCode team for all their work. 💛
+
 ## License
 
 [Apache-2.0](LICENSE). Note: some bundled or optional components carry their own licenses (e.g. Honcho is AGPL-3.0; Crush is used as design inspiration only, not code) — see the design spec for details.
