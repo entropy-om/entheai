@@ -56,10 +56,7 @@ async fn main() -> anyhow::Result<()> {
     let agent = Agent::new(provider, model.to_string());
 
     let mut sink = StdoutSink;
-    let messages = vec![ChatMessage {
-        role: "user".into(),
-        content: cli.prompt,
-    }];
+    let messages = vec![ChatMessage::user(cli.prompt)];
     agent.run_turn(messages, &mut sink).await?;
     println!();
     Ok(())

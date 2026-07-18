@@ -1,11 +1,70 @@
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FunctionCall {
+    pub name: String,
+    /// Raw JSON string of arguments, per the OpenAI wire format.
+    pub arguments: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String, // always "function" for v0.1
+    pub function: FunctionCall,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct ChatMessage {
     pub role: String, // "system" | "user" | "assistant" | "tool"
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+impl ChatMessage {
+    pub fn system(content: impl Into<String>) -> Self {
+        Self {
+            role: "system".into(),
+            content: content.into(),
+            ..Default::default()
+        }
+    }
+    pub fn user(content: impl Into<String>) -> Self {
+        Self {
+            role: "user".into(),
+            content: content.into(),
+            ..Default::default()
+        }
+    }
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            role: "assistant".into(),
+            content: content.into(),
+            ..Default::default()
+        }
+    }
+    pub fn assistant_tool_calls(tool_calls: Vec<ToolCall>) -> Self {
+        Self {
+            role: "assistant".into(),
+            tool_calls: Some(tool_calls),
+            ..Default::default()
+        }
+    }
+    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: "tool".into(),
+            content: content.into(),
+            tool_call_id: Some(tool_call_id.into()),
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,10 +156,7 @@ mod type_tests {
 
     #[test]
     fn chat_message_serializes_role_and_content() {
-        let m = ChatMessage {
-            role: "user".into(),
-            content: "hi".into(),
-        };
+        let m = ChatMessage::user("hi");
         let j = serde_json::to_value(&m).unwrap();
         assert_eq!(j["role"], "user");
         assert_eq!(j["content"], "hi");
@@ -110,6 +166,45 @@ mod type_tests {
     fn stream_event_variants_exist() {
         let _ = StreamEvent::Token("x".into());
         let _ = StreamEvent::Done;
+    }
+}
+
+#[cfg(test)]
+mod message_tests {
+    use super::*;
+
+    #[test]
+    fn user_message_serializes_minimally() {
+        let j = serde_json::to_value(ChatMessage::user("hi")).unwrap();
+        assert_eq!(j["role"], "user");
+        assert_eq!(j["content"], "hi");
+        assert!(j.get("tool_calls").is_none());
+        assert!(j.get("tool_call_id").is_none());
+    }
+
+    #[test]
+    fn assistant_tool_call_message_serializes_tool_calls() {
+        let call = ToolCall {
+            id: "call_1".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "read_file".into(),
+                arguments: "{\"path\":\"x\"}".into(),
+            },
+        };
+        let j = serde_json::to_value(ChatMessage::assistant_tool_calls(vec![call])).unwrap();
+        assert_eq!(j["role"], "assistant");
+        assert_eq!(j["tool_calls"][0]["id"], "call_1");
+        assert_eq!(j["tool_calls"][0]["type"], "function");
+        assert_eq!(j["tool_calls"][0]["function"]["name"], "read_file");
+    }
+
+    #[test]
+    fn tool_result_message_serializes_tool_call_id() {
+        let j = serde_json::to_value(ChatMessage::tool_result("call_1", "file contents")).unwrap();
+        assert_eq!(j["role"], "tool");
+        assert_eq!(j["content"], "file contents");
+        assert_eq!(j["tool_call_id"], "call_1");
     }
 }
 
@@ -138,13 +233,7 @@ mod openai_tests {
 
         let p = OpenAiCompatProvider::new(server.uri(), None);
         let mut stream = p
-            .stream_chat(
-                "m",
-                vec![ChatMessage {
-                    role: "user".into(),
-                    content: "hi".into(),
-                }],
-            )
+            .stream_chat("m", vec![ChatMessage::user("hi")])
             .await
             .unwrap();
 
@@ -173,15 +262,7 @@ mod openai_tests {
             .await;
 
         let p = OpenAiCompatProvider::new(server.uri(), None);
-        let result = p
-            .stream_chat(
-                "m",
-                vec![ChatMessage {
-                    role: "user".into(),
-                    content: "hi".into(),
-                }],
-            )
-            .await;
+        let result = p.stream_chat("m", vec![ChatMessage::user("hi")]).await;
 
         assert!(result.is_err());
         let msg = format!("{}", result.err().unwrap());

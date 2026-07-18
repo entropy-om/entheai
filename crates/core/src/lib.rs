@@ -81,10 +81,7 @@ mod tests {
             "m".into(),
         );
         let mut sink = CollectSink(String::new());
-        let msgs = vec![ChatMessage {
-            role: "user".into(),
-            content: "hi".into(),
-        }];
+        let msgs = vec![ChatMessage::user("hi")];
         let full = agent.run_turn(msgs, &mut sink).await.unwrap();
         assert_eq!(full, "Hello");
         assert_eq!(sink.0, "Hello");
