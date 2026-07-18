@@ -19,6 +19,7 @@ It is **deeply extensible** via a clean four-way model — native tools · **ski
 - **codebase-memory-mcp** (C, MIT) — bundled MCP sidecar: code knowledge graph + 3D graph web UI.
 - **Osaurus** (Swift, macOS/MLX) — local inference server (HTTP sidecar).
 - **dogfeed / ultrawhale-dogfood** (user's own; TS/Bun canonical, MIT / dataset Apache-2.0) — self-improvement flywheel feeding a Hugging Face dataset.
+- **Honcho** (Plastic Labs, AGPL-3.0) — user-modeling/personalization service (Dialectic API); built-in as a managed local sidecar.
 
 ## 2. Goals & non-goals
 
@@ -29,6 +30,7 @@ It is **deeply extensible** via a clean four-way model — native tools · **ski
 - Two-tier, five-namespace persistent memory that compounds on your codebases; 100% local, no API keys.
 - Self-learning loop that tunes routing/planning from real outcomes.
 - **Self-improvement flywheel** (`dogfeed`): feed real agent trajectories into the HF dataset, low overhead.
+- **User modeling / personalization** (`honcho`): a built-in layer that models who the user is (preferences, working style) and personalizes the orchestrator.
 - Built-in codebase understanding via a bundled MCP.
 - Visual identity: toggleable shader backgrounds + a toggleable live codebase graph.
 - **First-class skills** (discover, invoke, create) — Claude-Code-format-compatible; superpowers/caveman/BMAD bundled.
@@ -103,6 +105,7 @@ Portable crates compile for the worker; macOS-only crates marked ⌘.
 | `learning` | Trajectory capture/retrieve/score → tunes routing (ReasoningBank essence). |
 | `dogfeed` | Self-improvement exporter: agent events → schema → PII-scrub → batch → HF dataset push. |
 | `compaction` | Automatic context compaction: `kompress-v8` ONNX token-pruning in-process (`ort`+`tokenizers`), must-keep override. |
+| `honcho` | User-modeling/personalization: REST client + Apple-container sidecar supervisor for Honcho (Dialectic API); deriver → our tier. |
 | `mcp` | MCP client + supervisor (codebase-memory-mcp bundled). |
 | `skills` | Skill discovery/registry/invocation/creation; Claude-Code Agent-Skills format; bundles superpowers/caveman/BMAD. |
 | `plugins` | Managed external CLIs: probe/version-detect, confirm-gated brew install/upgrade, expose as tools. |
@@ -197,7 +200,15 @@ When context approaches the window limit, entheai **automatically compacts** old
 ### 5.20 Sonar — crash/health sidecar
 Always-on **local-only** crash/health monitor + minimal UI (name *Sonar*, pencilled; alts Watchtower/Kennel). The `health` crate installs a **panic hook** + supervises sub-agents (local tokio tasks + remote tailnet workers), streaming liveness/crash/stack-trace/exit-code events over a local socket to **`entheai-sonar`**, which renders a minimal dashboard (app + every agent's status, recent crashes, logs). Serves both **using** entheai and **developing** it. No phone-home; low overhead.
 
-### 5.21 config example
+### 5.21 honcho — user modeling & personalization
+`honcho` (Plastic Labs) is a built-in **personalization layer** modeling *who the user is*, distinct from code/agent memory. A background "deriver" continually builds a reasoning **representation** of the user (preferences, working style, how they like explanations) from the conversation, queried via its **Dialectic API** (`POST /peers/{id}/chat`) — e.g. "how should I explain this to this user?" — whose answer is injected into the orchestrator's system prompt to personalize behavior over time.
+- **Data model:** Workspace → Peers (the user, optionally sub-agents) → Sessions → Messages; derived Representations/Conclusions/Summaries. entheai ingests turns into a per-project (or global) session and reads the representation before planning.
+- **Deployment:** NOT a single binary — Python/FastAPI + **Postgres/pgvector** + deriver worker. "Built-in" = entheai auto-provisions and supervises it as a **local sidecar via Apple Containerization** (`container` CLI/framework, macOS 26+) next to the main binary — **no Docker**, native Linux-container VMs on Apple Silicon (the same runtime Osaurus uses). Fallbacks: **hosted `api.honcho.dev`** (one HTTP dep) on macOS < 26 or by choice, and graceful **off** if neither is available. The `honcho` crate is a REST client + Apple-container sidecar supervisor.
+- **Deriver LLM:** pointed at our own tier via `OVERRIDES__BASE_URL` (OpenAI-compatible) — local Osaurus or DeepSeek — so user-modeling stays on our providers. Every ingested message triggers (batched) LLM calls; cost/latency managed by batching + a cheap deriver model.
+- **Relationship:** owns rich **user-modeling**, narrowing the `learnings` namespace to *task solutions* (Honcho = who the user is; learnings = how tasks were solved; codebase = the code; trajectories = reasoning paths).
+- **License:** AGPL-3.0 — fine for personal use; a distribution/hosting caveat only if entheai is ever shipped to others (the hosted API sidesteps it).
+
+### 5.22 config example
 ```toml
 [router]
 orchestrator = "zen/deepseek-v4-pro"
@@ -239,6 +250,11 @@ must_keep = ["paths","commands","secrets","tool_output"]
 
 [sonar]
 enabled = true
+
+[honcho]
+enabled = true
+mode = "local"                # local (Apple-container sidecar, macOS 26+) | hosted | off
+deriver_model = "osaurus/qwen3"   # deriver LLM routed through our providers
 
 [[nodes]]                    # federation over tailnet (v0.3)
 name = "studio"
@@ -289,7 +305,7 @@ Every layer in its thinnest real form.
 | **v0.1** | Thin spine (§7): loop + fan-out + memory(5) + codebase MCP + minimal viz + **skills + bundled packs** + plugin framework + **minimal Sonar**. |
 | **v0.2** | Auto routing + learned matching; OpenRouter + DeepSeek-direct; Seatbelt `execpolicy`; durable ledger; roles docs/test/review/merge; richer DAG; **full shader library**; **skill creation**; **full plugin catalog**; **automatic compaction (kompress-v8)**. |
 | **v0.3** | Full self-learning scoring/decay; hooks; **dogfeed exporter → HF**; **Tailscale federation** (remote inference → execution); **rich Sonar UI**; budget-aware routing. |
-| **v0.4+** | Pluggable topologies; ADR surfacing; native embedded 3D graph; custom skills authoring UX; more providers; offline mode. |
+| **v0.4+** | Pluggable topologies; ADR surfacing; native embedded 3D graph; custom skills authoring UX; more providers; offline mode; **Honcho personalization** (user-modeling via Dialectic API, Apple-container sidecar). |
 | **v1.0** | Config freeze, perf passes, personal docs. |
 
 ## 9. Development practices & performance
@@ -309,6 +325,7 @@ Every layer in its thinnest real form.
 - **Homebrew, confirmation-gated plugin provisioning** ("comes with us", never silent).
 - **dogfeed = native Rust exporter**, real trajectories only (not the synthetic loop).
 - **Automatic compaction via our own `kompress-v8`** — an ONNX token-pruning classifier run in-process (`ort`; not Osaurus, since it's not generative), with a must-keep override for paths/commands/secrets. Closes the flywheel: dogfeed data trains kompress; kompress compacts entheai's context.
+- **Honcho for user-modeling** — supervised **local sidecar via Apple Containerization** (macOS 26+, no Docker), deriver on our tier (private); hosted/off fallback; REST client. AGPL-3.0 acceptable for personal use.
 - **Sonar = local-only crash/health sidecar** (no phone-home).
 - **Federation over Tailscale**; **terminal + Kitty graphics** for visuals.
 - **Performance-first** development (§9).
@@ -319,6 +336,7 @@ Every layer in its thinnest real form.
 - **Fan-out merge conflicts** → worktree isolation + `merge` agent + mandatory build/test gate; decomposition quality is the lever.
 - **Auto-installing CLIs (plugins)** → strictly confirmation-gated, show exact command, sandbox execution, never silent.
 - **dogfeed privacy** → local buffer default; remote push opt-in; PII scrub + safety floor mandatory; the HF dataset is gated. Dataset viewer is currently broken (parquet export) — treat as experimental.
+- **Honcho footprint & license** → heavier than other built-ins (FastAPI + Postgres/pgvector + deriver); runs as an Apple-container sidecar needing **macOS 26+** (else hosted or off). AGPL-3.0 matters only if entheai is distributed; per-message deriver LLM cost mitigated by batching + a cheap model.
 - **Model catalog drift** → always fetch `/v1/models`; alert on missing configured models.
 - **codebase-memory-mcp, Osaurus, dogfeed are pre-1.0** → pin versions, isolate behind seams.
 - **Skill-format drift** vs. Claude Code → pin to a documented convention version.
@@ -336,6 +354,7 @@ Every layer in its thinnest real form.
 | OpenCode Zen | hosted | primary gateway | DeepSeek Pro/Flash, Qwen, GLM, Kimi, free models |
 | dogfeed / ultrawhale-dogfood | TS / MIT · dataset Apache-2.0 | flywheel sink | HF dataset schema + exporter design |
 | kompress-v8 | HF model / Apache-2.0 | auto-compaction | our own ONNX token-pruning model, run in-process (`ort`+`tokenizers`) |
+| Honcho | Python / AGPL-3.0 | personalization sidecar | user-modeling representation + Dialectic API (Apple-container local) |
 | Tailscale / ZeroTier | — | federation transport | tailnet identity/auth/crypto/NAT/discovery |
 | Kitty graphics protocol + wgpu | — | rendering | shader-background compositing behind text |
 | superpowers / caveman / BMAD | — | bundled skills | brainstorming/TDD/debugging · compressed output · agentic agile |
