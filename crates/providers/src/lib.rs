@@ -36,7 +36,11 @@ pub struct OpenAiCompatProvider {
 
 impl OpenAiCompatProvider {
     pub fn new(base_url: impl Into<String>, api_key: Option<String>) -> Self {
-        Self { client: reqwest::Client::new(), base_url: base_url.into(), api_key }
+        Self {
+            client: reqwest::Client::new(),
+            base_url: base_url.into(),
+            api_key,
+        }
     }
 }
 
@@ -54,15 +58,24 @@ impl Provider for OpenAiCompatProvider {
         });
         let mut req = self
             .client
-            .post(format!("{}/chat/completions", self.base_url.trim_end_matches('/')))
+            .post(format!(
+                "{}/chat/completions",
+                self.base_url.trim_end_matches('/')
+            ))
             .json(&body);
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
-        let resp = req.send().await?.error_for_status()?;
+        let resp = req.send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("provider returned {status}: {body}");
+        }
 
+        // v0.2: add request timeout, filter empty/role-only deltas, detect mid-body error payloads
         let stream = resp.bytes_stream().eventsource().map(|item| {
-            let event = item.map_err(|e| anyhow::anyhow!(e))?; // eventsource_stream::Event
+            let event = item.map_err(|e| anyhow::anyhow!(e))?;
             if event.data.trim() == "[DONE]" {
                 return Ok(StreamEvent::Done);
             }
@@ -84,7 +97,10 @@ mod type_tests {
 
     #[test]
     fn chat_message_serializes_role_and_content() {
-        let m = ChatMessage { role: "user".into(), content: "hi".into() };
+        let m = ChatMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        };
         let j = serde_json::to_value(&m).unwrap();
         assert_eq!(j["role"], "user");
         assert_eq!(j["content"], "hi");
@@ -120,9 +136,15 @@ mod openai_tests {
             .mount(&server)
             .await;
 
-        let p = OpenAiCompatProvider::new(format!("{}", server.uri()), None);
+        let p = OpenAiCompatProvider::new(server.uri(), None);
         let mut stream = p
-            .stream_chat("m", vec![ChatMessage { role: "user".into(), content: "hi".into() }])
+            .stream_chat(
+                "m",
+                vec![ChatMessage {
+                    role: "user".into(),
+                    content: "hi".into(),
+                }],
+            )
             .await
             .unwrap();
 
@@ -136,5 +158,40 @@ mod openai_tests {
         }
         assert_eq!(out, "Hello");
         assert!(saw_done);
+    }
+
+    #[tokio::test]
+    async fn http_error_status_surfaces_status_and_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .set_body_string("{\"error\":{\"message\":\"bad model\"}}"),
+            )
+            .mount(&server)
+            .await;
+
+        let p = OpenAiCompatProvider::new(server.uri(), None);
+        let result = p
+            .stream_chat(
+                "m",
+                vec![ChatMessage {
+                    role: "user".into(),
+                    content: "hi".into(),
+                }],
+            )
+            .await;
+
+        assert!(result.is_err());
+        let msg = format!("{}", result.err().unwrap());
+        assert!(
+            msg.contains("400"),
+            "error should include status, got: {msg}"
+        );
+        assert!(
+            msg.contains("bad model"),
+            "error should include body, got: {msg}"
+        );
     }
 }
