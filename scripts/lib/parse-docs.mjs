@@ -34,13 +34,17 @@ export function loadPages(contentDir) {
         `${file}: unknown group "${data.group}" (expected one of ${GROUP_ORDER.join(", ")})`
       );
     }
+    const order = Number(data.order);
+    if (!Number.isFinite(order)) {
+      throw new Error(`${file}: "order" must be a number, got "${data.order}"`);
+    }
 
     return {
       id: String(data.id),
       title: String(data.title),
       navTitle: data.navTitle ? String(data.navTitle) : String(data.title),
       group: String(data.group),
-      order: Number(data.order),
+      order,
       badgeText: data.badgeText ? String(data.badgeText) : null,
       badgeColor: data.badgeColor ? String(data.badgeColor) : "teal",
       body: content.trim(),

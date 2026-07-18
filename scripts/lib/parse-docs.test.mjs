@@ -67,6 +67,13 @@ test("throws on unknown group", () => {
   assert.throws(() => loadPages(dir), /unknown group "Nonsense"/);
 });
 
+test("throws on non-numeric order", () => {
+  const dir = makeFixtureDir({
+    "a.md": `---\nid: a\ntitle: A\ngroup: Overview\norder: abc\n---\nBody\n`,
+  });
+  assert.throws(() => loadPages(dir), /"order" must be a number/);
+});
+
 test("throws on duplicate id", () => {
   const dir = makeFixtureDir({
     "a.md": `---\nid: dup\ntitle: A\ngroup: Overview\norder: 1\n---\nBody\n`,
