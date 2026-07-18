@@ -73,6 +73,12 @@ pub enum StreamEvent {
     Done,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct AssistantResponse {
+    pub content: String,
+    pub tool_calls: Vec<ToolCall>,
+}
+
 /// A model backend. v0.1 has one impl (OpenAI-compatible); the trait keeps
 /// core generic so mocks (tests) and future backends slot in.
 #[async_trait]
@@ -82,6 +88,15 @@ pub trait Provider: Send + Sync {
         model: &str,
         messages: Vec<ChatMessage>,
     ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>>;
+
+    /// Non-streaming completion. `tools` is a list of OpenAI function-tool JSON
+    /// schemas; pass an empty Vec for no tools. Returns the assistant message.
+    async fn complete(
+        &self,
+        model: &str,
+        messages: Vec<ChatMessage>,
+        tools: Vec<serde_json::Value>,
+    ) -> anyhow::Result<AssistantResponse>;
 }
 
 use eventsource_stream::Eventsource;
@@ -147,6 +162,49 @@ impl Provider for OpenAiCompatProvider {
         });
 
         Ok(Box::pin(stream))
+    }
+
+    async fn complete(
+        &self,
+        model: &str,
+        messages: Vec<ChatMessage>,
+        tools: Vec<serde_json::Value>,
+    ) -> anyhow::Result<AssistantResponse> {
+        let mut body = serde_json::json!({
+            "model": model,
+            "messages": messages,
+            "stream": false,
+        });
+        if !tools.is_empty() {
+            body["tools"] = serde_json::Value::Array(tools);
+        }
+        let mut req = self
+            .client
+            .post(format!(
+                "{}/chat/completions",
+                self.base_url.trim_end_matches('/')
+            ))
+            .json(&body);
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("provider returned {status}: {body}");
+        }
+        let v: serde_json::Value = resp.json().await?;
+        let msg = &v["choices"][0]["message"];
+        let content = msg["content"].as_str().unwrap_or("").to_string();
+        let tool_calls: Vec<ToolCall> = match msg.get("tool_calls") {
+            Some(tc) if tc.is_array() => serde_json::from_value(tc.clone())?,
+            _ => Vec::new(),
+        };
+        Ok(AssistantResponse {
+            content,
+            tool_calls,
+        })
     }
 }
 
@@ -275,5 +333,66 @@ mod openai_tests {
             msg.contains("bad model"),
             "error should include body, got: {msg}"
         );
+    }
+}
+
+#[cfg(test)]
+mod complete_tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn complete_parses_content_and_tool_calls() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": { "name": "read_file", "arguments": "{\"path\":\"Cargo.toml\"}" }
+                    }]
+                }
+            }]
+        });
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let p = OpenAiCompatProvider::new(server.uri(), None);
+        let resp = p
+            .complete("m", vec![ChatMessage::user("hi")], vec![])
+            .await
+            .unwrap();
+        assert_eq!(resp.content, "");
+        assert_eq!(resp.tool_calls.len(), 1);
+        assert_eq!(resp.tool_calls[0].function.name, "read_file");
+        assert_eq!(resp.tool_calls[0].id, "call_1");
+    }
+
+    #[tokio::test]
+    async fn complete_handles_plain_text_answer() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!({
+            "choices": [{ "message": { "role": "assistant", "content": "hello there" } }]
+        });
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let p = OpenAiCompatProvider::new(server.uri(), None);
+        let resp = p
+            .complete("m", vec![ChatMessage::user("hi")], vec![])
+            .await
+            .unwrap();
+        assert_eq!(resp.content, "hello there");
+        assert!(resp.tool_calls.is_empty());
     }
 }

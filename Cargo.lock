@@ -264,6 +264,7 @@ dependencies = [
  "async-trait",
  "entheai-providers",
  "futures",
+ "serde_json",
  "tokio",
 ]
 

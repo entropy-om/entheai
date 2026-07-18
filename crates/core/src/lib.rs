@@ -63,6 +63,15 @@ mod tests {
             evs.push(Ok(StreamEvent::Done));
             Ok(Box::pin(stream::iter(evs)))
         }
+
+        async fn complete(
+            &self,
+            _model: &str,
+            _messages: Vec<ChatMessage>,
+            _tools: Vec<serde_json::Value>,
+        ) -> anyhow::Result<entheai_providers::AssistantResponse> {
+            Ok(entheai_providers::AssistantResponse::default())
+        }
     }
 
     struct CollectSink(String);
