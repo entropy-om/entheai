@@ -121,9 +121,21 @@ impl MemoryRuntime {
 
         // Namespace → (limit, label)
         let searches = [
-            (Namespace::Codebase, self.config.retrieve_codebase, "codebase"),
-            (Namespace::Learnings, self.config.retrieve_learnings, "learnings"),
-            (Namespace::Trajectories, self.config.retrieve_trajectories, "trajectories"),
+            (
+                Namespace::Codebase,
+                self.config.retrieve_codebase,
+                "codebase",
+            ),
+            (
+                Namespace::Learnings,
+                self.config.retrieve_learnings,
+                "learnings",
+            ),
+            (
+                Namespace::Trajectories,
+                self.config.retrieve_trajectories,
+                "trajectories",
+            ),
         ];
 
         for (ns, limit, label) in searches {
@@ -297,12 +309,7 @@ impl MemoryRuntime {
 
             if let Err(e) = self
                 .memory
-                .store(
-                    Namespace::Learnings,
-                    &key,
-                    &content,
-                    Some(learning),
-                )
+                .store(Namespace::Learnings, &key, &content, Some(learning))
                 .await
             {
                 if self.config.strict {

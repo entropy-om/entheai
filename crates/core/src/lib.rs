@@ -126,6 +126,7 @@ impl<P: Provider> Agent<P> {
     /// spills large tool outputs, and records post-task trajectory + learnings.
     ///
     /// When `memory` is `None`, behaves identically to [`run_task`].
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_task_with_memory(
         &self,
         mut messages: Vec<ChatMessage>,

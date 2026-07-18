@@ -27,9 +27,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub use embed::Embedder;
-pub use runtime::{
-    MemoryRuntime, MemoryRuntimeConfig, MemoryScope, ToolEvidence,
-};
+pub use runtime::{MemoryRuntime, MemoryRuntimeConfig, MemoryScope, ToolEvidence};
 pub use store::SqliteStore;
 
 /// The five memory namespaces defined by the design spec.
