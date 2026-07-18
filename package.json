@@ -7,7 +7,8 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "node scripts/build-site.mjs",
+    "test": "node --test scripts"
   },
   "repository": {
     "type": "git",
@@ -22,6 +23,8 @@
   },
   "homepage": "https://github.com/peterlodri-sec/entheai#readme",
   "devDependencies": {
+    "gray-matter": "^4.0.3",
+    "marked": "^15.0.12",
     "wrangler": "^4.112.0"
   }
 }
