@@ -7,6 +7,8 @@ pub enum CoreError {
     Provider(#[from] entheai_providers::ProviderError),
     #[error("run_task exceeded {0} tool-dispatch turns without a final answer")]
     MaxTurnsExceeded(usize),
+    #[error("memory error: {0}")]
+    Memory(String),
 }
 
 /// Progress notifications emitted by `run_task` while it works, so a UI (e.g.
@@ -120,6 +122,130 @@ impl<P: Provider> Agent<P> {
         Err(CoreError::MaxTurnsExceeded(MAX_TURNS))
     }
 
+    /// Agentic loop with memory awareness. Injects pre-task retrieval context,
+    /// spills large tool outputs, and records post-task trajectory + learnings.
+    ///
+    /// When `memory` is `None`, behaves identically to [`run_task`].
+    pub async fn run_task_with_memory(
+        &self,
+        mut messages: Vec<ChatMessage>,
+        registry: &entheai_tools::ToolRegistry,
+        policy: &entheai_permission::Policy,
+        prompter: &mut impl entheai_permission::Prompter,
+        events: Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
+        memory: Option<&entheai_memory::MemoryRuntime>,
+        scope: entheai_memory::MemoryScope,
+    ) -> Result<String, CoreError> {
+        // Pre-task: inject memory context if enabled.
+        if let Some(mem) = memory {
+            if let Some(user_msg) = messages
+                .iter()
+                .rev()
+                .find(|m| m.role == "user")
+                .map(|m| m.content.clone())
+            {
+                match mem.retrieve_before(&user_msg).await {
+                    Ok(Some(ctx)) => {
+                        messages.insert(
+                            messages.len().saturating_sub(1), // before last user msg
+                            ChatMessage::system(ctx),
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        if mem.config().strict {
+                            return Err(CoreError::Memory(e.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+
+        const MAX_TURNS: usize = 25;
+        let schemas = registry.schemas();
+        let mut tool_evidence: Vec<entheai_memory::ToolEvidence> = Vec::new();
+
+        for _turn in 0..MAX_TURNS {
+            if let Some(tx) = &events {
+                let _ = tx.send(AgentEvent::Thinking);
+            }
+            let (ttx, mut trx) = futures::channel::mpsc::unbounded::<String>();
+            let completion = self.provider.stream_complete(
+                &self.model,
+                messages.clone(),
+                schemas.clone(),
+                Some(ttx),
+            );
+            tokio::pin!(completion);
+            let resp = loop {
+                tokio::select! {
+                    biased;
+                    Some(tok) = trx.next() => {
+                        if let Some(tx) = &events { let _ = tx.send(AgentEvent::Token(tok)); }
+                    }
+                    r = &mut completion => {
+                        while let Ok(tok) = trx.try_recv() {
+                            if let Some(tx) = &events { let _ = tx.send(AgentEvent::Token(tok)); }
+                        }
+                        break r?;
+                    }
+                }
+            };
+            if resp.tool_calls.is_empty() {
+                // Post-task: record final answer.
+                if let Some(mem) = memory {
+                    let preview = truncate_preview(&resp.content, 500);
+                    if let Err(e) = mem
+                        .record_final_answer(&scope, &self.model, &preview, &tool_evidence)
+                        .await
+                    {
+                        if mem.config().strict {
+                            return Err(CoreError::Memory(e.to_string()));
+                        }
+                    }
+                }
+                return Ok(resp.content);
+            }
+            messages.push(ChatMessage::assistant_tool_calls(
+                resp.content.clone(),
+                resp.tool_calls.clone(),
+            ));
+            for call in resp.tool_calls {
+                let result = self
+                    .dispatch_call(&call, registry, policy, prompter, &events)
+                    .await;
+
+                // Tool spillover.
+                if let Some(mem) = memory {
+                    let ev = entheai_memory::ToolEvidence {
+                        call_id: call.id.clone(),
+                        name: call.function.name.clone(),
+                        args: call.function.arguments.clone(),
+                        result: result.clone(),
+                        allowed: true,
+                    };
+                    match mem.record_tool_result(&scope, &ev).await {
+                        Ok(Some(pointer)) => {
+                            messages.push(ChatMessage::tool_result(call.id, pointer));
+                            tool_evidence.push(ev);
+                            continue; // skip pushing the full result
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            if mem.config().strict {
+                                return Err(CoreError::Memory(e.to_string()));
+                            }
+                        }
+                    }
+                    tool_evidence.push(ev);
+                }
+
+                messages.push(ChatMessage::tool_result(call.id, result));
+            }
+        }
+        Err(CoreError::MaxTurnsExceeded(MAX_TURNS))
+    }
+
     async fn dispatch_call(
         &self,
         call: &entheai_providers::ToolCall,
@@ -168,6 +294,17 @@ impl<P: Provider> Agent<P> {
             });
         }
         result
+    }
+}
+
+/// Truncate a string to `max` chars, appending `…` if cut.
+fn truncate_preview(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
     }
 }
 

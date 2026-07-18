@@ -95,6 +95,11 @@ impl MemoryRuntime {
         Self { memory, config }
     }
 
+    /// Borrow the runtime configuration (for strict-mode checks in callers).
+    pub fn config(&self) -> &MemoryRuntimeConfig {
+        &self.config
+    }
+
     /// Build a system message to inject before the model call.
     ///
     /// Searches `codebase`, `learnings`, and `trajectories` using the latest
