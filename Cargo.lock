@@ -960,6 +960,7 @@ dependencies = [
  "entheai-core",
  "entheai-permission",
  "entheai-providers",
+ "entheai-router",
  "entheai-tools",
  "entheai-tui",
  "mimalloc",
@@ -1047,6 +1048,16 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "wiremock",
+]
+
+[[package]]
+name = "entheai-router"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "entheai-config",
+ "entheai-core",
+ "entheai-providers",
 ]
 
 [[package]]

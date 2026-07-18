@@ -1,8 +1,7 @@
 use anyhow::Context;
 use clap::Parser;
 use entheai_config::Config;
-use entheai_core::Agent;
-use entheai_providers::{ChatMessage, OpenAiCompatProvider};
+use entheai_providers::ChatMessage;
 
 // macOS: mimalloc handles the concurrent tokio / multi-agent allocation load
 // better than the system allocator. Keep this block across future main.rs rewrites.
@@ -61,21 +60,7 @@ async fn main() -> anyhow::Result<()> {
         .model
         .or(cfg.default_model.clone())
         .context("no model: pass --model or set default_model in config")?;
-    let (provider_name, model) = model_id
-        .split_once('/')
-        .context("model must be '<provider>/<model>'")?;
-
-    let pcfg = cfg
-        .providers
-        .get(provider_name)
-        .with_context(|| format!("unknown provider '{provider_name}'"))?;
-    let api_key = pcfg
-        .api_key_env
-        .as_ref()
-        .and_then(|e| std::env::var(e).ok());
-
-    let provider = OpenAiCompatProvider::new(pcfg.base_url.clone(), api_key);
-    let agent = Agent::new(provider, model.to_string());
+    let agent = entheai_router::build_agent(&model_id, &cfg)?;
 
     // Built-in tools, rooted at the canonicalized working directory.
     let root = std::env::current_dir()?.canonicalize()?;
