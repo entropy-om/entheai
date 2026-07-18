@@ -1,0 +1,4 @@
+default_model = "osaurus/qwen3-coder"
+
+[providers.osaurus]
+base_url = "http://127.0.0.1:1337/v1"
