@@ -1,0 +1,58 @@
+# Production / release CI — ONLY builds the optimized binary and cuts a GitHub Release.
+# There is deliberately no test/lint CI here (dev checks run locally via scripts/check.sh).
+#
+# Triggers: pushing a version tag (v1.2.3), or manual "Run workflow".
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # needed to create the release
+
+jobs:
+  build-release:
+    # Apple Silicon runner — entheai is macOS/Apple-Silicon only.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        # rust-toolchain.toml pins the channel (1.96.0), components, and the
+        # aarch64-apple-darwin target; `rustup show` installs exactly that.
+        run: |
+          rustup show
+          rustup component add llvm-tools-preview
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-pgo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install cargo-pgo
+        run: cargo install cargo-pgo
+
+      - name: PGO production build
+        run: ./scripts/build-release.sh
+
+      - name: Package binary
+        run: |
+          BIN="target/aarch64-apple-darwin/release/entheai"
+          test -f "$BIN" || { echo "binary not found at $BIN"; exit 1; }
+          tar -czf entheai-macos-arm64.tar.gz -C "$(dirname "$BIN")" entheai
+          shasum -a 256 entheai-macos-arm64.tar.gz | tee entheai-macos-arm64.tar.gz.sha256
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            entheai-macos-arm64.tar.gz
+            entheai-macos-arm64.tar.gz.sha256
+          generate_release_notes: true
