@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/config", "crates/providers", "crates/core", "bin/entheai"]
+members = ["crates/config", "crates/providers", "crates/core", "crates/tools", "bin/entheai"]
 
 [workspace.package]
 edition = "2021"
@@ -19,6 +19,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 eventsource-stream = "0.2"
 clap = { version = "4", features = ["derive"] }
 wiremock = "0.6"
+walkdir = "2"
 
 # Perf-first (spec §9): optimize release builds hard. NOTE: do NOT set panic="abort"
 # — sub-agents (later plans) run as tokio tasks and we must catch their panics.
