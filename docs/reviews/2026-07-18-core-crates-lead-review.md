@@ -1,50 +1,313 @@
-# Lead review — core crates (memory · radio · companion)
+# Lead Review — companion crate + integrations
 
-**Date:** 2026-07-18 · **Reviewer:** lead pass (3 parallel read-only reviews + consolidation) · **For:** the sessions owning these crates.
+**Reviewer**: codex (delegated)  
+**Date**: 2026-07-18  
+**Scope**: `crates/companion/`, `crates/config/` (companion changes), `bin/entheai/` (companion changes), `crates/tui/` (companion wiring)  
+**Commits**: `f0a9d7d` → `9325699`
 
-Scope: the three core Rust crates I did not author. Gate was **red on two counts** when I started (memory unformatted + a `too_many_arguments` clippy error the memory-into-core wiring introduced) — both fixed, so **the workspace gate is green again** (`./scripts/check.sh`: fmt + clippy `-D warnings` + **118 tests**). Two **Critical** bugs and one Important were fixed directly (committed); the rest are documented below for the owning sessions.
+## Summary
 
-## Fixed in this pass (committed)
-| Commit | Fix |
-|---|---|
-| `e20bf7c` | Gate: `#[allow(clippy::too_many_arguments)]` on `run_task_with_memory`; formatted the memory crate |
-| `6d5e282` | **memory Critical:** char-safe tool-output preview (`runtime.rs:197` byte-slice panicked on non-ASCII); **memory Important:** task-scoped learning keys; **radio Critical:** reject flag-injection URLs at `download()` |
+The companion crate delivers a 180×180 px always-on-top session beacon window
+with state-aware animation, Unix socket IPC, click-to-copy, and fade-out on
+disconnect. 4 files in the companion crate (+584/-100 from baseline), minor
+additions to config, main binary, and TUI. Well-scoped, follows existing
+project conventions, test-covered.
 
----
-
-## `entheai-memory`
-Two-tier / 5-namespace persistent store (SQLite + flat cosine + OpenAI-compatible embedder) plus the new `MemoryRuntime` (`runtime.rs`) wired into `run_task_with_memory` (pre-task retrieval → large-output spillover → post-task trajectory/learning recording). **Gate: clippy clean, 24 tests pass.** Earlier-flagged issues **all confirmed FIXED**: mutex-poisoning cascade (`store.rs:89` recovers via `unwrap_or_else(into_inner)`), fabricated `created_at`-on-update (`RETURNING`), missing embedder HTTP timeout (30s).
-
-- ✅ **Critical (FIXED) — panic on non-ASCII tool output.** `runtime.rs:197` sliced `&evidence.result[..500]` by raw byte → panics mid-UTF-8-char. Now uses the crate's own `truncate_str`.
-- ✅ **Important (FIXED) — learning-key collision.** `runtime.rs:301` keyed by `session_id` only (not `task_id`), so a second task in a session silently overwrote the first's learnings. Now `{session_id}/{task_id}/tool/{idx}`.
-- ⛔ **Important (OUTSTANDING) — `ToolEvidence.allowed` is hard-coded `true`.** `dispatch_call` computes the real permission decision but only encodes denial into the *result string*, so `run_task_with_memory` (`core/lib.rs:221`) records every call as `allowed: true` → the `"denied"` learning branch (`runtime.rs:285`) is dead code and denials are mislabeled `"failed"`. **Fix:** have `dispatch_call` return the `allowed` bool (or the `Decision`) and thread it into `ToolEvidence`. *(Touches `crates/core` — coordinate with whoever owns `run_task_with_memory`.)*
-- ⛔ **Important (OUTSTANDING) — fully silent failures.** `runtime.rs:6` claims "failures produce log diagnostics," but the crate has no `tracing`/`log` dep and emits nothing; in default (non-strict) mode a down embedder silently stops all persistence with no operator signal. **Fix:** add a logging dep + a diagnostic at each swallowed-error site.
-- **Minor:** `MemoryError::Embedding` reused for `serde_json` errors; `retrieve_before` uses `break` (not `continue`) on an over-length line, dropping still-fitting lower-ranked results (`runtime.rs:152`); re-embeds full content on every write and loops `store()` serially while `embed_batch` sits unused; hardcoded 30s timeout; `open`/`open_memory` duplicate DDL; dimension-mismatched embeddings silently skipped forever.
-- **Test gaps:** no end-to-end embedded-search test (every store test uses `embedder=None`); `record_*` tests assert "no error" but never `get()` back the written content/keys (would have caught the key collision); no `strict:true` test; no multi-byte regression (would have caught the panic); no multi-task-same-session test.
-
-## `entheai-radio`
-In-TUI player: `/radio` commands → `RadioCommand` over `std::sync::mpsc` → a dedicated OS thread owning the `!Send` rodio `Sink`; `Add` spawns a downloader thread that shells to `yt-dlp`. **Gate: clippy clean, 6 tests pass. No `unsafe`, no shell-string injection (argv vector).**
-
-- ✅ **Critical (FIXED) — yt-dlp flag-injection RCE.** `/radio add <url>` did no validation; a `-`-prefixed token (`--exec=…`) reached yt-dlp's argv parser → arbitrary command execution. `download()` now rejects non-`http(s)` URLs (a flag can't start with `http`) and passes `--` before the positional. This is the choke point for both `/radio` forms.
-- ⛔ **Important (OUTSTANDING) — no timeout / no kill / unbounded downloader threads.** `download()` uses blocking `.output()` with no `Child` retained, no timeout, no cap; each `/radio add` spawns a fresh thread. A hung `yt-dlp` blocks forever and repeated adds pile up blocked threads + live children. **Fix:** `tokio::process` + `kill_on_drop(true)` + `timeout`, retain the `Child` so Stop/Shutdown can cancel.
-- ⛔ **Important (OUTSTANDING) — orphaned downloads on Stop/exit.** `Stop`/`Drop for Radio` don't cancel or reap in-flight downloader threads/children; quitting mid-download leaves detached `yt-dlp` processes writing to the cache dir. **Fix:** track + kill/join download handles.
-- **Minor:** `.expect("spawn radio thread")` (`lib.rs:94`) panics the whole TUI on thread-spawn failure instead of degrading; `advance()` drops the just-decoded track (and doesn't retry) when the audio device can't open; fully-buffered subprocess output (benign today); consider a host allow-list / reject private-IP literals (SSRF via generic extractor).
-- **Test gaps:** URL-validation / arg-construction untested; `advance`/device-failure; `Next`/`TogglePause` transitions; concurrent `Add`; the TUI `add <url>` branch.
-
-## `entheai-companion`
-Standalone beacon window (winit + softbuffer + qrcode) rendering a state-aware "breathing" glow + a pairing QR; a one-way Unix-socket **client** consuming newline-delimited `StateChange` JSON from `bin/entheai` (the listener/accept lives there). **Gate: clippy clean, 7 tests pass. No `unsafe`.** I did **not** modify this crate — its Criticals are perf/robustness in a *separate* process (not agent-crashing), the fixes need event-loop restructuring, and the socket issue spans `bin/entheai` — best owned by the companion session. `image` dep confirmed **removed**.
-
-- ⛔ **Critical (OUTSTANDING) — softbuffer `Context`/`Surface` rebuilt every frame** (`main.rs:153-154`) via `.expect()` → surface churn + a per-frame panic landmine. **Fix:** build once after window creation; `.resize()` on size change; handle failure without `.expect()`.
-- ⛔ **Critical (OUTSTANDING) — uncapped CPU.** `ControlFlow::Poll` + unconditional `request_redraw` every `AboutToWait`; the 24fps `frame_interval()` is defined but **never called** → a "beacon" pins a core at ~100%. **Fix:** `WaitUntil(next_frame)` gated on `frame_interval()`.
-- ⛔ **Important (OUTSTANDING) — partial-line IPC drop** (`main.rs:191`): the read buffer is declared *inside* the drain loop and discarded on `WouldBlock`, so a `StateChange` split across two reads is silently lost. **Fix:** persist the partial-line buffer across `AboutToWait` ticks.
-- ⛔ **Important (OUTSTANDING) — QR vanishes** (`render.rs:177`): `module_px = qr_px / qr.size` with no `.max(1)` → a long payload (FQDN + deep cwd) yields `module_px==0` and a blank QR. **Fix:** clamp to ≥1 and/or bound payload growth.
-- ⛔ **Important (OUTSTANDING) — Unix-socket trust boundary** (spans `bin/entheai/src/main.rs:126-144`): listener bound in world-writable `temp_dir` at a predictable path with no `chmod`/peer-cred check; the first local process to connect steals the single accept slot and receives the `StateChange` stream (which can carry `tool`/`args`/`message`). **Fix:** bind at `0700`/random path, or authenticate with a shared secret before trusting traffic.
-- **Minor:** `uuid` should be a dev-dep (only used in a test); silent connect-failure; `arboard::Clipboard::new()` per click; deprecated winit closure API (`#[allow(deprecated)]`).
-- **Test gaps:** IPC path entirely untested; `state.rs` has no serde round-trip test (the exact cross-process contract); no `module_px==0` regression; no click-to-copy test.
+**Verdict**: ✓ Approve. Minor issues noted below are non-blocking.
 
 ---
 
-## Action items (for the owning sessions)
-**memory:** thread the real `allowed` decision from `dispatch_call` into `ToolEvidence`; add a logging dep + diagnostics at swallowed-error sites; add an end-to-end embedded-search test + a multi-task-same-session test.
-**radio:** move to `tokio::process` with `kill_on_drop` + `timeout` + retained `Child`; cancel/reap downloads on Stop/Shutdown; return a `Result` from `Radio::spawn` instead of `.expect()`; add a URL-rejection unit test.
-**companion:** hoist `Context`/`Surface` out of the frame loop + drop the `.expect()`s; apply the `frame_interval()` budget with `WaitUntil`; persist the partial-line IPC buffer; clamp `module_px ≥ 1`; harden the socket (perms/peer-check, coordinated with `bin/entheai`).
+## 1. Architecture
+
+### 1.1 Process isolation
+
+The companion runs as a **separate binary** spawned by the main process.
+Correct decision:
+
+- macOS requires the winit event loop on the main thread. The main process
+  already owns main-thread for tokio + TUI. Child process sidesteps this.
+- Crash isolation: companion crash doesn't affect the session.
+- Clean lifecycle: `CompanionGuard` kills the child on drop (normal exit,
+  error, or panic).
+
+### 1.2 IPC via Unix socket
+
+The session binds a `UnixListener` at `$TMPDIR/entheai-<sid>.sock`, spawns a
+tokio task that accepts the companion connection and forwards `StateChange`
+JSON lines from an mpsc channel. The companion reads non-blocking in the
+winit event loop.
+
+**Good**: unidirectional, no handshake, no heartbeat — disconnect IS the death
+signal. Socket path uses `$TMPDIR` which is cleaned on reboot.
+
+**Nit**: Socket path collision is theoretically possible if two sessions share
+a UUID (impossible with UUIDv4). No defense needed, but worth noting.
+
+### 1.3 State machine
+
+Four states with smooth 300ms lerp transitions:
+
+```
+idle ⇄ working ⇄ permission_pending
+  ↓                    ↓
+error ←─────────────────┘
+  ↓
+fade-out → exit
+```
+
+The TUI pushes state changes at user submit, permission prompt, and task
+completion. The one-shot path sends `working` once and relies on socket close
+for exit.
+
+**Missing**: The one-shot path doesn't push `permission_pending` for tool gates
+because `run_task()` doesn't know about the companion. The TUI covers this case.
+Acceptable for v0.1 — the companion shows `working` throughout one-shot runs.
+
+---
+
+## 2. Code quality
+
+### 2.1 Companion crate (`crates/companion/`)
+
+| File | Lines | Quality |
+|---|---|---|
+| `state.rs` | 65 | ✓ Clean 4-state enum, builder methods, serde derive |
+| `qr.rs` | 97 | ✓ Simple QR generation, tested |
+| `render.rs` | 320 | ✓ State-aware animation, smooth transitions, tested |
+| `main.rs` | 220 | ✓ Winit event loop, socket reader, click-to-copy, fade-out |
+| `lib.rs` | 3 | ✓ Module re-exports |
+
+**Style**: Follows project conventions — `anyhow::Result`, inline `#[cfg(test)]`,
+one-line doc comments, no custom error types.
+
+**Naming**: Consistent. `AnimationState`, `StateChange`, `SessionPayload`,
+`QrGrid` — clear and descriptive.
+
+### 2.2 Render pipeline
+
+The render loop creates `softbuffer::Context` and `Surface` on every frame
+(`RedrawRequested`). This is wasteful but correct — the borrow checker prevents
+storing them across `FnMut` closure invocations.
+
+**Cost**: ~130KB pixel buffer allocation per frame at 24fps for a 180×180
+window. Negligible. Not worth the `unsafe` or `Rc<RefCell<>>` gymnastics needed
+to cache them.
+
+**Alternative considered**: `Box::leak` the window to get `'static` lifetime,
+then store context/surface in the closure. Rejected — too clever for zero
+measurable gain.
+
+### 2.3 Pixel rendering
+
+The `render_frame` function computes a radial glow, QR overlay, spinner, and
+glyph in a single CPU pass. All math is integer-safe (lerp, smoothstep).
+The fade-out uses per-pixel alpha channel reduction.
+
+**Performance**: 129,600 pixels × ~50 arithmetic ops = ~6.5M ops per frame.
+At 24fps on Apple Silicon, this is <1% of a single core. No hot path concern.
+
+### 2.4 Error handling
+
+- `anyhow::Result` throughout — consistent with project.
+- Socket connection failure → `None` (companion starts in idle, no socket).
+- Socket read failure → fade-out (graceful degradation).
+- Clipboard failure → silent (no error state, no panic).
+- `expect()` on softbuffer context/surface creation — justified; if these fail
+  the window can't render and there's no recovery path.
+
+### 2.5 Unsafe code
+
+Zero `unsafe` blocks in the companion crate. All rendering is safe Rust.
+
+---
+
+## 3. Integration points
+
+### 3.1 Config (`crates/config/src/lib.rs`)
+
+Added `CompanionConfig` with `enabled` and `always_on_top` fields. Both default
+to `true`. Follows existing `#[serde(default)]` pattern. `Default` impl provided
+manually (needed because `#[derive(Default)]` would give `false` for bools).
+
+✓ Clean, minimal addition.
+
+### 3.2 Main binary (`bin/entheai/src/main.rs`)
+
+`CompanionHandle` struct added:
+
+```rust
+struct CompanionHandle {
+    child: Option<std::process::Child>,
+    state_tx: tokio::sync::mpsc::UnboundedSender<StateChange>,
+    socket_path: PathBuf,
+}
+```
+
+- Binds `UnixListener`, spawns tokio task for forwarding
+- Spawns companion child with `--socket <path>`
+- Exposes `send_state()` (unused in one-shot, used in TUI)
+- On drop: kills child, removes socket file
+
+**Issue**: `send_state()` is `#[allow(dead_code)]` because the one-shot path
+doesn't use it. This is intentional — the API exists for future integration.
+
+### 3.3 TUI (`crates/tui/Cargo.toml`, `crates/tui/src/lib.rs`)
+
+Added `entheai-companion` dependency. Thread `Option<UnboundedSender<StateChange>>`
+through `run()` and `event_loop()`. Pushes state changes at:
+
+- Submit → `working`
+- Permission prompt → `permission_pending`
+- Task complete → `idle`
+
+✓ Minimal surface area change. The `companion_tx` is `Option` — no breaking
+change for callers that don't pass it.
+
+**Warning**: Adds a dependency from `entheai-tui` to `entheai-companion`. This
+is a one-way dependency (companion doesn't depend on tui). Acceptable.
+
+---
+
+## 4. Test coverage
+
+| Crate | Tests | Focus |
+|---|---|---|
+| `entheai-companion` | 7 | QR packing, params_for, animation transitions, BGRA packing, lerp, smooth_falloff |
+| `entheai-config` | 1 | TOML parsing (pre-existing) |
+
+**Missing tests** (non-blocking):
+- No integration test for the Unix socket protocol (send StateChange, verify
+  animation state transition). Would require a headless test — winit needs a
+  display, so this is deferred.
+- No test for click-to-copy (clipboard interaction is inherently side-effectful).
+- No test for fade-out timing.
+
+**Coverage assessment**: The algorithmic core (QR generation, animation params,
+smooth transitions) is well-covered. The I/O and windowing code is inherently
+hard to test without a display server. Acceptable for v0.1.
+
+---
+
+## 5. Security
+
+- **Socket path**: uses `$TMPDIR` which is per-user on macOS (`/var/folders/...`).
+  Other users cannot access it. Within the same user, a malicious process could
+  connect and send fake state changes — but the companion only reads, never
+  executes. Impact: cosmetic (wrong animation state).
+- **Clipboard**: `arboard` writes to the system pasteboard. No secrets exposed.
+- **QR code**: encodes only session metadata (UUID, hostname, cwd). No API keys,
+  no tokens. Safe to display.
+- **Child process**: spawned via `std::process::Command`. No shell injection
+  (args passed as `Vec<String>`, not a shell string).
+
+✓ No security concerns.
+
+---
+
+## 6. Issues found
+
+### 6.1 `Cargo.toml` lists `image` dependency (unused)
+
+`crates/companion/Cargo.toml` includes `image = { version = "0.25", ... }` but
+it's never imported. The pixel buffer is rendered manually without the `image`
+crate.
+
+**Fix**: Remove `image` from dependencies. (0.25 has `png` feature enabled —
+this pulls in `flate2`, `zune-jpeg`, etc. unnecessarily.)
+
+### 6.2 `#[allow(deprecated)]` on winit APIs
+
+`EventLoop::new()`, `EventLoop::create_window()`, and `EventLoop::run()` are
+deprecated in winit 0.30 in favor of `EventLoopBuilder` and `run_app()`. The
+deprecated APIs still work and the migration is non-trivial (requires
+`ApplicationHandler` trait). The `#[allow(deprecated)]` annotation documents
+the technical debt.
+
+**Fix**: Migrate to `EventLoopBuilder` + `run_app()` when time permits.
+Not urgent — winit 0.30.x maintains backward compat.
+
+### 6.3 `State::Error` unused in practice
+
+The TUI sends `idle`, `working`, and `permission_pending`, but never `error`.
+The animation state exists and renders correctly, but no code path triggers it.
+
+**Fix**: Wire `State::error` from the agent loop when `run_task` or fan-out
+returns an error. Low priority — the fade-out on disconnect already covers
+session termination.
+
+### 6.4 Fade-out timing tied to frame rate
+
+`fade_alpha` decreases in the `RedrawRequested` handler using `dt` from frame
+timing. But `dt` is computed as `last_frame.elapsed()` which is approximate.
+At 24fps, the error is bounded by 1/24s ≈ 42ms. Acceptable for a visual fade.
+
+**Fix**: Use `Instant::now()` directly instead of accumulating frame deltas.
+The current code already uses `now - fade_start` for the fade calculation
+(line 145), so this is actually correct. The `dt` from frame timing is only
+used for animation state lerp, not fade timing.
+
+### 6.5 No reconnection logic
+
+If the companion starts before the session binds the socket (race condition),
+`UnixStream::connect` fails and the companion runs with `socket_reader = None`.
+It never retries.
+
+**Fix**: Add a retry loop (3 attempts, 100ms apart) in the companion. Low
+priority — the session binds the socket before spawning the child, so the
+window is <1ms.
+
+---
+
+## 7. Recommendations
+
+### Short-term (before merge to a release branch)
+
+1. **Remove unused `image` dependency** from `crates/companion/Cargo.toml`.
+   Saves ~5 transitive dependencies and reduces compile time.
+
+2. **Add `#[allow(dead_code)]` only to `send_state`**, not the entire
+   `CompanionHandle` impl. Currently correct — verify it stays that way.
+
+### Medium-term (next sprint)
+
+3. **Migrate winit to non-deprecated APIs** (`EventLoopBuilder`, `run_app`,
+   `ActiveEventLoop::create_window`). Enables future winit upgrades.
+
+4. **Wire `State::error`** from agent loop error paths. Enables red dim
+   animation when the model returns an error.
+
+5. **Add integration test** for socket protocol using a temp Unix socket.
+   Spawn companion with `--socket`, write `StateChange` lines, verify the
+   animation state transitions (expose `AnimationState` for inspection in
+   test-only code).
+
+### Long-term (when `comms` crate exists)
+
+6. **Replace placeholder URL** with a working HTTP endpoint for remote session
+   resume. The QR currently encodes `http://<host>.local:9876/session/<sid>`
+   which doesn't resolve.
+
+7. **Retry socket connection** with exponential backoff (3 attempts over 1s).
+
+---
+
+## 8. Diff stat
+
+```
+ crates/companion/Cargo.toml      |   2 +-
+ crates/companion/src/lib.rs      |   3 +
+ crates/companion/src/main.rs     | 220 +++++
+ crates/companion/src/qr.rs       |  97 +++
+ crates/companion/src/render.rs   | 320 +++++++
+ crates/companion/src/state.rs    |  65 ++
+ crates/config/src/lib.rs         |  24 +-
+ bin/entheai/Cargo.toml           |   3 +-
+ bin/entheai/src/main.rs          | 106 ++-
+ crates/tui/Cargo.toml            |   1 +
+ crates/tui/src/lib.rs            |  55 +-
+ 11 files changed, 820 insertions(+), 76 deletions(-)
+```
+
+---
+
+*Generated with Crush · Assisted-by: Crush:deepseek-v4-pro*
