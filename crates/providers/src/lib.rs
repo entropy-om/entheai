@@ -1,3 +1,4 @@
+use anyhow::Context;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
@@ -120,17 +121,14 @@ impl OpenAiCompatProvider {
     /// Build, send, and status-check a POST to `/chat/completions`.
     /// Callers consume the returned response (streaming vs. JSON) as needed.
     async fn post_chat(&self, body: serde_json::Value) -> anyhow::Result<reqwest::Response> {
-        let mut req = self
-            .client
-            .post(format!(
-                "{}/chat/completions",
-                self.base_url.trim_end_matches('/')
-            ))
-            .json(&body);
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let mut req = self.client.post(&url).json(&body);
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
-        let resp = req.send().await?;
+        let resp = req.send().await.with_context(|| {
+            format!("could not reach model provider at {url} — is the server running (e.g. `osaurus serve` for a local provider), or did you mean a cloud provider like OpenCode Zen?")
+        })?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();

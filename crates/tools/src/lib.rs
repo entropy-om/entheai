@@ -92,6 +92,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_file_refuses_symlink_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "sekret").unwrap();
+        // A symlink INSIDE root pointing OUTSIDE root.
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.txt"),
+            dir.path().join("link.txt"),
+        )
+        .unwrap();
+        let root = dir.path().canonicalize().unwrap(); // CLI passes a canonicalized root
+        let tool = crate::fs::ReadFile::new(root);
+        let err = tool.call(serde_json::json!({ "path": "link.txt" })).await;
+        assert!(
+            err.is_err(),
+            "reading through an escaping symlink must be rejected"
+        );
+    }
+
+    #[tokio::test]
     async fn run_shell_captures_stdout() {
         let dir = tempfile::tempdir().unwrap();
         let tool = crate::shell::RunShell::new(dir.path());

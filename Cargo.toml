@@ -30,5 +30,5 @@ opt-level = 3            # aggressive speed
 lto = "fat"              # cross-crate link-time optimization
 codegen-units = 1        # maximize LLVM optimization scope
 panic = "unwind"         # explicit: sub-agent tokio-task panics must stay catchable (never "abort")
-strip = "symbols"        # smaller binary + faster macOS link (revisit when Sonar needs backtraces)
+strip = "none"           # keep symbols + debuginfo for readable Sentry/Sonar backtraces
 overflow-checks = false  # release default; explicit for raw speed

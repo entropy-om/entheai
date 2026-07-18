@@ -24,6 +24,27 @@ fn resolve_in_root(root: &Path, rel: &str) -> anyhow::Result<PathBuf> {
     if !normalized.starts_with(root) {
         anyhow::bail!("path escapes workspace root: {rel}");
     }
+
+    // Symlink defense: the lexical `..` check above can't see through symlinks. Canonicalize
+    // the deepest EXISTING ancestor of the target and confirm it's still inside `root`. A
+    // symlink can only redirect an existing component, so checking the existing prefix is
+    // sufficient; not-yet-created files (write_file) fall back to their nearest existing
+    // parent (worst case, `root` itself). `root` itself is canonicalized here too — callers
+    // may pass it as-is (e.g. macOS temp dirs live under `/var`, itself a symlink to
+    // `/private/var`), so comparing against a raw `root` would produce false positives.
+    let mut ancestor: &Path = normalized.as_path();
+    while !ancestor.exists() {
+        match ancestor.parent() {
+            Some(p) => ancestor = p,
+            None => break,
+        }
+    }
+    if let Ok(canonical) = ancestor.canonicalize() {
+        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        if !canonical.starts_with(&canonical_root) {
+            anyhow::bail!("path escapes workspace root via symlink: {rel}");
+        }
+    }
     Ok(normalized)
 }
 

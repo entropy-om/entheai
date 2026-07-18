@@ -37,7 +37,8 @@ async fn main() -> anyhow::Result<()> {
         dsn,
         sentry::ClientOptions {
             release: sentry::release_name!(),
-            send_default_pii: true,
+            // no PII capture (CLI has none meaningful; keeps crash reports minimal)
+            send_default_pii: false,
             ..Default::default()
         },
     ));
