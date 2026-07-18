@@ -10,7 +10,7 @@ serde_json.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 walkdir.workspace = true
-tokio = { workspace = true, features = ["fs", "process", "rt"] }
+tokio = { workspace = true, features = ["fs", "process", "rt", "time"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

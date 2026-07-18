@@ -81,6 +81,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn write_file_refuses_path_escaping_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = crate::fs::WriteFile::new(dir.path());
+        let err = tool
+            .call(serde_json::json!({ "path": "../escaped.txt", "content": "x" }))
+            .await;
+        assert!(err.is_err());
+        assert!(!dir.path().parent().unwrap().join("escaped.txt").exists());
+    }
+
+    #[tokio::test]
     async fn run_shell_captures_stdout() {
         let dir = tempfile::tempdir().unwrap();
         let tool = crate::shell::RunShell::new(dir.path());

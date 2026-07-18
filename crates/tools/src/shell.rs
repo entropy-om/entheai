@@ -1,5 +1,7 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
+use std::process::Stdio;
+use std::time::Duration;
 
 use crate::Tool;
 
@@ -34,12 +36,18 @@ impl Tool for RunShell {
         let command = args["command"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing string arg 'command'"))?;
-        let output = tokio::process::Command::new("/bin/sh")
+        let fut = tokio::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(command)
             .current_dir(&self.cwd)
-            .output()
-            .await?;
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output();
+        let output = match tokio::time::timeout(Duration::from_secs(120), fut).await {
+            Ok(res) => res?,
+            Err(_) => anyhow::bail!("command timed out after 120s: {command}"),
+        };
         let mut out = String::new();
         out.push_str(&String::from_utf8_lossy(&output.stdout));
         if !output.stderr.is_empty() {
@@ -47,6 +55,15 @@ impl Tool for RunShell {
             out.push_str(&String::from_utf8_lossy(&output.stderr));
         }
         out.push_str(&format!("\n[exit: {}]", output.status.code().unwrap_or(-1)));
+        const MAX: usize = 100_000;
+        if out.len() > MAX {
+            let mut end = MAX;
+            while !out.is_char_boundary(end) {
+                end -= 1;
+            }
+            out.truncate(end);
+            out.push_str("\n...[output truncated at 100000 bytes]");
+        }
         Ok(out)
     }
 }
