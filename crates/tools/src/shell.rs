@@ -43,6 +43,7 @@ impl Tool for RunShell {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .kill_on_drop(true) // on timeout the future is dropped — reap the child, don't orphan it
             .output();
         let output = match tokio::time::timeout(Duration::from_secs(120), fut).await {
             Ok(res) => res?,
