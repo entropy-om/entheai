@@ -8,6 +8,8 @@
 
 use std::path::PathBuf;
 
+use log::warn;
+
 use crate::{MemoryError, Namespace, SharedMemory};
 
 // ---------------------------------------------------------------------------
@@ -157,6 +159,7 @@ impl MemoryRuntime {
                     }
                 }
                 Err(e) => {
+                    warn!("memory retrieve_before error (non-strict, continuing): {e}");
                     if self.config.strict {
                         return Err(e);
                     }
@@ -214,6 +217,7 @@ impl MemoryRuntime {
             )
             .await
         {
+            warn!("memory record_tool_result store error (non-strict, continuing): {e}");
             if self.config.strict {
                 return Err(e);
             }
@@ -264,6 +268,7 @@ impl MemoryRuntime {
             .store(Namespace::Trajectories, &traj_key, &traj.to_string(), None)
             .await
         {
+            warn!("memory record_final_answer store error (non-strict, continuing): {e}");
             if self.config.strict {
                 return Err(e);
             }
@@ -314,6 +319,7 @@ impl MemoryRuntime {
                 .store(Namespace::Learnings, &key, &content, Some(learning))
                 .await
             {
+                warn!("memory extract_learnings store error (non-strict, continuing): {e}");
                 if self.config.strict {
                     return Err(e);
                 }

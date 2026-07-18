@@ -113,10 +113,10 @@ impl<P: Provider> Agent<P> {
                 resp.tool_calls.clone(),
             ));
             for call in resp.tool_calls {
-                let result = self
+                let dr = self
                     .dispatch_call(&call, registry, policy, prompter, &events)
                     .await;
-                messages.push(ChatMessage::tool_result(call.id, result));
+                messages.push(ChatMessage::tool_result(call.id, dr.result));
             }
         }
         Err(CoreError::MaxTurnsExceeded(MAX_TURNS))
@@ -212,7 +212,7 @@ impl<P: Provider> Agent<P> {
                 resp.tool_calls.clone(),
             ));
             for call in resp.tool_calls {
-                let result = self
+                let dr = self
                     .dispatch_call(&call, registry, policy, prompter, &events)
                     .await;
 
@@ -222,8 +222,8 @@ impl<P: Provider> Agent<P> {
                         call_id: call.id.clone(),
                         name: call.function.name.clone(),
                         args: call.function.arguments.clone(),
-                        result: result.clone(),
-                        allowed: true,
+                        result: dr.result.clone(),
+                        allowed: dr.allowed,
                     };
                     match mem.record_tool_result(&scope, &ev).await {
                         Ok(Some(pointer)) => {
@@ -241,7 +241,7 @@ impl<P: Provider> Agent<P> {
                     tool_evidence.push(ev);
                 }
 
-                messages.push(ChatMessage::tool_result(call.id, result));
+                messages.push(ChatMessage::tool_result(call.id, dr.result));
             }
         }
         Err(CoreError::MaxTurnsExceeded(MAX_TURNS))
@@ -254,7 +254,7 @@ impl<P: Provider> Agent<P> {
         policy: &entheai_permission::Policy,
         prompter: &mut impl entheai_permission::Prompter,
         events: &Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
-    ) -> String {
+    ) -> DispatchResult {
         use entheai_permission::Decision;
         let name = &call.function.name;
 
@@ -294,8 +294,15 @@ impl<P: Provider> Agent<P> {
                 result: result.clone(),
             });
         }
-        result
+        DispatchResult { result, allowed }
     }
+}
+
+/// Outcome of a single tool dispatch, used by both `run_task` and
+/// `run_task_with_memory`.
+struct DispatchResult {
+    result: String,
+    allowed: bool,
 }
 
 /// Truncate a string to `max` chars, appending `…` if cut.
