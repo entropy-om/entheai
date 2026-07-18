@@ -25,6 +25,8 @@ pub struct Config {
     pub mcp: std::collections::HashMap<String, McpServerConfig>,
     #[serde(default)]
     pub skills: SkillsConfig,
+    #[serde(default)]
+    pub memory: MemoryConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -279,5 +281,79 @@ mod tests {
         .unwrap();
 
         assert_eq!(cfg.skills.dirs, vec!["skills".to_string()]);
+    }
+
+    #[test]
+    fn memory_config_defaults() {
+        let cfg = Config::from_toml_str("").unwrap();
+        assert!(!cfg.memory.enabled);
+        assert_eq!(cfg.memory.path, ".entheai/memory.db");
+    }
+}
+
+/// Memory configuration per the SOTA memory design spec.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemoryConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub strict: bool,
+    #[serde(default = "default_memory_path")]
+    pub path: String,
+    #[serde(default)]
+    pub embed_provider: Option<String>,
+    #[serde(default = "default_embed_model")]
+    pub embed_model: String,
+    #[serde(default = "default_retrieve_codebase")]
+    pub retrieve_codebase: usize,
+    #[serde(default = "default_retrieve_learnings")]
+    pub retrieve_learnings: usize,
+    #[serde(default = "default_retrieve_trajectories")]
+    pub retrieve_trajectories: usize,
+    #[serde(default = "default_max_context_chars")]
+    pub max_context_chars: usize,
+    #[serde(default = "default_tool_spill_chars")]
+    pub tool_spill_chars: usize,
+    #[serde(default)]
+    pub evidence_tools: Vec<String>,
+}
+
+fn default_memory_path() -> String {
+    ".entheai/memory.db".into()
+}
+fn default_embed_model() -> String {
+    "nomic-embed-text".into()
+}
+fn default_retrieve_codebase() -> usize {
+    4
+}
+fn default_retrieve_learnings() -> usize {
+    6
+}
+fn default_retrieve_trajectories() -> usize {
+    3
+}
+fn default_max_context_chars() -> usize {
+    12_000
+}
+fn default_tool_spill_chars() -> usize {
+    8_000
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            strict: false,
+            path: default_memory_path(),
+            embed_provider: None,
+            embed_model: default_embed_model(),
+            retrieve_codebase: default_retrieve_codebase(),
+            retrieve_learnings: default_retrieve_learnings(),
+            retrieve_trajectories: default_retrieve_trajectories(),
+            max_context_chars: default_max_context_chars(),
+            tool_spill_chars: default_tool_spill_chars(),
+            evidence_tools: vec!["run_shell".into(), "search".into()],
+        }
     }
 }
