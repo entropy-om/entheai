@@ -22,6 +22,7 @@ wiremock = "0.6"
 walkdir = "2"
 mimalloc = { version = "0.1", default-features = false }
 sentry = "0.48.5"
+dotenvy = "0.15"
 
 # Perf-first (spec §9): optimize release builds hard. NOTE: do NOT set panic="abort"
 # — sub-agents (later plans) run as tokio tasks and we must catch their panics.

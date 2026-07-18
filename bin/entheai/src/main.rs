@@ -28,6 +28,10 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load .env (DEEPSEEK_API_KEY / HUGGINGFACE_API_KEY / OPENROUTER_API_KEY / ...) into the
+    // process env before anything reads keys. A missing .env is fine (ignored).
+    dotenvy::dotenv().ok();
+
     // Crash/error reporting to Sentry (cloud). DSNs are client-embeddable by design;
     // override or disable via the SENTRY_DSN env var. The guard flushes events on drop.
     let dsn = std::env::var("SENTRY_DSN").unwrap_or_else(|_| {

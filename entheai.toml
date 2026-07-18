@@ -1,14 +1,30 @@
-# Cloud (OpenCode Zen) is the default — set OPENCODE_API_KEY (https://opencode.ai/auth).
-# The key value must be present in your local shell's env; a GitHub secret can't be read
-# back for local use. See below for a secure macOS Keychain setup.
-default_model = "zen/deepseek-v4-pro"
+# Keys are loaded from .env at startup (DEEPSEEK_API_KEY / HUGGINGFACE_API_KEY /
+# OPENROUTER_API_KEY / OPENCODE_API_KEY). See .env.example. Switch providers with
+# `--model "<provider>/<model>"` or by changing default_model below.
+default_model = "deepseek/deepseek-chat"
 
+# DeepSeek direct API. Models: deepseek-chat (V3), deepseek-reasoner (R1).
+[providers.deepseek]
+base_url = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+
+# OpenRouter aggregator — e.g. --model "openrouter/deepseek/deepseek-chat"
+[providers.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+# Hugging Face Inference router (OpenAI-compatible); model ids are HF repo paths.
+# e.g. --model "hf/deepseek-ai/DeepSeek-V3-0324"
+[providers.hf]
+base_url = "https://router.huggingface.co/v1"
+api_key_env = "HUGGINGFACE_API_KEY"
+
+# OpenCode Zen (needs OPENCODE_API_KEY + credits) — e.g. --model "zen/deepseek-v4-pro"
 [providers.zen]
 base_url = "https://opencode.ai/zen/v1"
 api_key_env = "OPENCODE_API_KEY"
 
-# Local (private) via Osaurus — switch default_model to an "osaurus/<id>" from
-# `curl http://127.0.0.1:1337/v1/models`, or pass `--model osaurus/<id>`.
+# Local (private) via Osaurus — e.g. --model "osaurus/gemma-4-e2b-it-4bit"
 # See docs/osaurus-setup.md and docs/osaurus-opencode-provider.md.
 [providers.osaurus]
 base_url = "http://127.0.0.1:1337/v1"
