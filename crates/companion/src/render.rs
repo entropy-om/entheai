@@ -1,6 +1,10 @@
 use crate::qr::QrGrid;
 use crate::state::State;
 
+/// Packed return of [`params_for`]: glow color, period, amplitude range,
+/// spinner flag, flash alpha.
+struct GlowParams((f32, f32, f32), f64, (f32, f32), bool, f32);
+
 const FPS: f64 = 24.0;
 const TRANSITION_S: f64 = 0.3;
 const FLASH_S: f64 = 0.2;
@@ -57,7 +61,7 @@ impl AnimationState {
             return;
         }
         self.target_state = state;
-        let (glow, period, ampl, spinner, qr_dim) = params_for(state);
+        let GlowParams(glow, period, ampl, spinner, qr_dim) = params_for(state);
         self.target_glow = glow;
         self.target_period = period;
         self.target_amplitude = ampl;
@@ -80,30 +84,30 @@ impl AnimationState {
     }
 }
 
-fn params_for(state: State) -> ((f32, f32, f32), f64, (f32, f32), bool, f32) {
+fn params_for(state: State) -> GlowParams {
     match state {
-        State::Idle => (
+        State::Idle => GlowParams(
             (TEAL.0 as f32, TEAL.1 as f32, TEAL.2 as f32),
             3.0,
             (0.2, 0.6),
             false,
             0.0,
         ),
-        State::Working => (
+        State::Working => GlowParams(
             (TEAL.0 as f32, TEAL.1 as f32, TEAL.2 as f32),
             1.5,
             (0.3, 0.8),
             true,
             0.0,
         ),
-        State::PermissionPending => (
+        State::PermissionPending => GlowParams(
             (MAGENTA.0 as f32, MAGENTA.1 as f32, MAGENTA.2 as f32),
             1.0,
             (0.4, 1.0),
             false,
             0.6,
         ),
-        State::Error => (
+        State::Error => GlowParams(
             (RED.0 as f32, RED.1 as f32, RED.2 as f32),
             4.0,
             (0.1, 0.3),
@@ -247,6 +251,7 @@ fn draw_spinner(buffer: &mut [u32], w: u32, h: u32, cx: f32, cy: f32, time: f64)
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_glyph(
     buffer: &mut [u32],
     w: u32,
@@ -348,7 +353,7 @@ mod tests {
             State::PermissionPending,
             State::Error,
         ] {
-            let (_, _, _, _, _) = params_for(*state);
+            let GlowParams(..) = params_for(*state);
         }
     }
 
