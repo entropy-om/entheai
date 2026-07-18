@@ -150,6 +150,22 @@
     });
   });
 
+  document.querySelectorAll("[data-copy-page]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-copy-page");
+      const src = document.getElementById("md-" + id);
+      if (!src) return;
+      navigator.clipboard.writeText(src.textContent).catch(() => {});
+      const label = btn.textContent;
+      btn.textContent = "copied ✓";
+      btn.classList.add("is-copied");
+      setTimeout(() => {
+        btn.textContent = label;
+        btn.classList.remove("is-copied");
+      }, 1400);
+    });
+  });
+
   const initial = (location.hash || "#what-is").slice(1);
   go(FLAT.some((f) => f.id === initial) ? initial : "what-is");
 })();

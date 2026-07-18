@@ -4,8 +4,7 @@ use anyhow::Context;
 use clap::Parser;
 use entheai_companion::state::StateChange;
 use entheai_config::Config;
-use entheai_core::Agent;
-use entheai_providers::{ChatMessage, OpenAiCompatProvider};
+use entheai_providers::ChatMessage;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixListener;
 
@@ -23,6 +22,10 @@ struct Cli {
     model: Option<String>,
     #[arg(long)]
     yolo: bool,
+    /// Decompose the task and fan out parallel read-only sub-agents, then synthesize.
+    #[arg(long)]
+    fanout: bool,
+    /// Disable the companion window for this session.
     #[arg(long)]
     no_companion: bool,
 }
@@ -53,21 +56,7 @@ async fn main() -> anyhow::Result<()> {
         .model
         .or(cfg.default_model.clone())
         .context("no model: pass --model or set default_model in config")?;
-    let (provider_name, model) = model_id
-        .split_once('/')
-        .context("model must be '<provider>/<model>'")?;
-
-    let pcfg = cfg
-        .providers
-        .get(provider_name)
-        .with_context(|| format!("unknown provider '{provider_name}'"))?;
-    let api_key = pcfg
-        .api_key_env
-        .as_ref()
-        .and_then(|e| std::env::var(e).ok());
-
-    let provider = OpenAiCompatProvider::new(pcfg.base_url.clone(), api_key);
-    let agent = Agent::new(provider, model.to_string());
+    let agent = entheai_router::build_agent(&model_id, &cfg)?;
 
     let root = std::env::current_dir()?.canonicalize()?;
     let mut registry = entheai_tools::ToolRegistry::new();
@@ -138,12 +127,17 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.prompt {
         Some(prompt) => {
-            let mut prompter = entheai_permission::StdinPrompter;
-            let messages = vec![ChatMessage::user(prompt)];
-            let answer = agent
-                .run_task(messages, &registry, &policy, &mut prompter, None)
-                .await?;
-            println!("{answer}");
+            if cli.fanout {
+                let answer = entheai_orchestrator::run_fanout(&cfg, &root, &prompt).await?;
+                println!("{answer}");
+            } else {
+                let mut prompter = entheai_permission::StdinPrompter;
+                let messages = vec![ChatMessage::user(prompt)];
+                let answer = agent
+                    .run_task(messages, &registry, &policy, &mut prompter, None)
+                    .await?;
+                println!("{answer}");
+            }
         }
         None => {
             entheai_tui::run(agent, registry, policy, model_id.clone()).await?;

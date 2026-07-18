@@ -28,3 +28,32 @@ api_key_env = "OPENCODE_API_KEY"
 # See docs/osaurus-setup.md and docs/osaurus-opencode-provider.md.
 [providers.osaurus]
 base_url = "http://127.0.0.1:1337/v1"
+
+# ── Fan-out routing (used by `entheai --fanout "<task>"`) ─────────────────────
+# The orchestrator decomposes the task into role-tagged sub-tasks, runs them in
+# parallel, and synthesizes the result. Each role routes to the first model
+# listed for it (falling back to `orchestrator`, then `default_model`, when a
+# role is unset). Tier freely across the providers above — cheap/local models
+# for exploration, stronger models for review.
+[router]
+orchestrator = "deepseek/deepseek-chat" # DeepSeek V4 Pro via credits: "zen/deepseek-v4-pro"
+max_parallel = 4                         # cap on concurrently-running sub-agents
+
+# Optional: verify each coder's worktree before integrating its changes.
+# [fanout]
+# verify = "cargo test"
+
+[agents.explore]
+model = ["deepseek/deepseek-chat"] # local instead: ["osaurus/<your-local-model>"]
+
+[agents.coder]
+model = ["deepseek/deepseek-chat"]
+
+[agents.reviewer]
+model = ["deepseek/deepseek-reasoner"] # R1 — stronger reasoning for review
+
+[agents.test]
+model = ["deepseek/deepseek-chat"]
+
+[agents.docs]
+model = ["deepseek/deepseek-chat"]
