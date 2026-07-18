@@ -1,0 +1,11 @@
+[package]
+name = "entheai-router"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+entheai-config = { path = "../config" }
+entheai-providers = { path = "../providers" }
+entheai-core = { path = "../core" }
+anyhow.workspace = true

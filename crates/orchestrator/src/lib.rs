@@ -1,0 +1,710 @@
+//! Fan-out orchestration: an orchestrator model decomposes a task into
+//! independent sub-tasks, sub-agents (model-matched per role) run them in
+//! parallel, and the orchestrator synthesizes a final answer.
+//!
+//! v1 (`run_fanout_readonly`): sub-agents share the process cwd and get a
+//! READ-ONLY tool set (`read_file` + `search`) — safe for parallel
+//! exploration/analysis. Used as-is when `root` isn't a git repo.
+//!
+//! v2 (`run_fanout`, the public entrypoint): each decomposed sub-task gets its
+//! own coder sub-agent with a FULL (read/write/shell) tool set, running in an
+//! ISOLATED `git worktree` (see [`worktree`]) so parallel writers never step on
+//! each other. Each coder's worktree is committed, optionally verified (
+//! `[fanout].verify`), and — if it committed and verified clean — integrated
+//! onto a fresh integration branch. Returns a structured report instead of an
+//! extra synthesis LLM call.
+
+use std::path::{Path, PathBuf};
+
+use entheai_config::Config;
+use entheai_providers::ChatMessage;
+use futures::stream::{self, StreamExt};
+use serde::Deserialize;
+
+pub mod worktree;
+
+/// One decomposed unit of work: a role (routes to a model) + its focused task.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct SubTask {
+    pub role: String,
+    pub task: String,
+}
+
+/// A finished sub-agent's output (or its error text — a failed sub-agent never
+/// aborts the batch; its failure is reported to the synthesizer as its output).
+#[derive(Debug, Clone)]
+pub struct SubResult {
+    pub role: String,
+    pub task: String,
+    pub output: String,
+}
+
+/// Prompter used by fan-out sub-agents. Sub-agents run under a yolo policy, so
+/// this is never actually consulted; it exists to satisfy `run_task`'s signature.
+struct AutoAllow;
+#[async_trait::async_trait]
+impl entheai_permission::Prompter for AutoAllow {
+    async fn confirm(&mut self, _tool: &str, _args: &str) -> bool {
+        true
+    }
+}
+
+fn yolo() -> entheai_permission::Policy {
+    entheai_permission::Policy {
+        yolo: true,
+        allowlist: vec![],
+    }
+}
+
+/// Read-only tool set for sub-agents (no writes/shell → safe to run in parallel
+/// against a shared cwd).
+fn read_only_registry(root: &Path) -> entheai_tools::ToolRegistry {
+    let mut r = entheai_tools::ToolRegistry::new();
+    r.register(Box::new(entheai_tools::fs::ReadFile::new(
+        root.to_path_buf(),
+    )));
+    r.register(Box::new(entheai_tools::search::Search::new(
+        root.to_path_buf(),
+    )));
+    r
+}
+
+/// System prompt that asks the orchestrator to decompose a task into a JSON array.
+const DECOMPOSE_SYSTEM: &str = "You are the orchestrator of a fan-out coding agent. \
+Break the user's task into a small set of INDEPENDENT sub-tasks that can run in parallel. \
+Each sub-task has a `role` (one of: explore, coder, reviewer, test, docs) and a concise `task` string. \
+Sub-agents can only READ and SEARCH the codebase, so scope sub-tasks to analysis/exploration, not edits. \
+Respond with ONLY a JSON array, e.g. [{\"role\":\"explore\",\"task\":\"map the auth module\"}]. No prose.";
+
+fn decompose_messages(task: &str) -> Vec<ChatMessage> {
+    vec![
+        ChatMessage::system(DECOMPOSE_SYSTEM),
+        ChatMessage::user(task),
+    ]
+}
+
+fn subagent_messages(role: &str, task: &str) -> Vec<ChatMessage> {
+    let sys = format!(
+        "You are a `{role}` sub-agent in a fan-out coding agent. Use read_file/search to \
+         investigate, then report your findings concisely. You cannot modify files."
+    );
+    vec![ChatMessage::system(sys), ChatMessage::user(task)]
+}
+
+/// Build the synthesis user message from the original task + all sub-results.
+pub fn synthesis_user_message(task: &str, results: &[SubResult]) -> String {
+    let mut s = format!("Original task:\n{task}\n\nSub-agent results:\n");
+    for (i, r) in results.iter().enumerate() {
+        s.push_str(&format!(
+            "\n## Sub-agent {} [{}] — {}\n{}\n",
+            i + 1,
+            r.role,
+            r.task,
+            r.output
+        ));
+    }
+    s.push_str("\nSynthesize a single, complete final answer for the user from these results.");
+    s
+}
+
+fn synthesis_messages(task: &str, results: &[SubResult]) -> Vec<ChatMessage> {
+    vec![
+        ChatMessage::system(
+            "You are the orchestrator. Synthesize the sub-agent results into one clear final answer.",
+        ),
+        ChatMessage::user(synthesis_user_message(task, results)),
+    ]
+}
+
+/// Extract a JSON array substring from possibly-prose/fenced model output.
+fn extract_json_array(s: &str) -> Option<&str> {
+    let start = s.find('[')?;
+    let end = s.rfind(']')?;
+    if end > start {
+        Some(&s[start..=end])
+    } else {
+        None
+    }
+}
+
+/// Parse the orchestrator's decomposition, skipping empties and capping at `max`.
+pub fn parse_decomposition(content: &str, max: usize) -> Vec<SubTask> {
+    let trimmed = content.trim();
+    let slice = extract_json_array(trimmed).unwrap_or(trimmed);
+    let parsed: Vec<SubTask> = serde_json::from_str(slice).unwrap_or_default();
+    parsed
+        .into_iter()
+        .filter(|s| !s.role.trim().is_empty() && !s.task.trim().is_empty())
+        .take(max)
+        .collect()
+}
+
+/// Run the orchestrator model once (empty registry = a single completion).
+async fn orchestrate_once(
+    config: &Config,
+    model_id: &str,
+    messages: Vec<ChatMessage>,
+) -> anyhow::Result<String> {
+    let agent = entheai_router::build_agent(model_id, config)?;
+    let registry = entheai_tools::ToolRegistry::new();
+    let policy = yolo();
+    let mut prompter = AutoAllow;
+    let out = agent
+        .run_task(messages, &registry, &policy, &mut prompter, None)
+        .await?;
+    Ok(out)
+}
+
+/// Run one sub-agent to completion. Never returns Err — a failure is captured as
+/// the sub-result's `output` so one bad sub-agent doesn't sink the whole batch.
+async fn run_subagent(config: &Config, root: &Path, st: SubTask) -> SubResult {
+    let output = async {
+        let model_id = entheai_router::model_for_role(config, &st.role)?;
+        let agent = entheai_router::build_agent(&model_id, config)?;
+        let registry = read_only_registry(root);
+        let policy = yolo();
+        let mut prompter = AutoAllow;
+        let out = agent
+            .run_task(
+                subagent_messages(&st.role, &st.task),
+                &registry,
+                &policy,
+                &mut prompter,
+                None,
+            )
+            .await?;
+        Ok::<String, anyhow::Error>(out)
+    }
+    .await
+    .unwrap_or_else(|e| format!("error: sub-agent failed: {e}"));
+    SubResult {
+        role: st.role,
+        task: st.task,
+        output,
+    }
+}
+
+/// Read-only fan-out (v1): decompose → parallel read-only sub-agents (≤ router.max_parallel)
+/// → synthesize. Falls back to a single orchestrator run if decomposition yields no sub-tasks.
+/// Used directly when `root` isn't a git repo (v2's isolated worktrees need git).
+async fn run_fanout_readonly(config: &Config, root: &Path, task: &str) -> anyhow::Result<String> {
+    let orch_model = entheai_router::orchestrator_model(config)?;
+
+    // 1. Decompose.
+    let raw = orchestrate_once(config, &orch_model, decompose_messages(task)).await?;
+    let max_par = config.router.max_parallel.max(1);
+    let subtasks = parse_decomposition(&raw, max_par);
+
+    // Fallback: couldn't decompose → just run the task once on the orchestrator.
+    if subtasks.is_empty() {
+        return orchestrate_once(config, &orch_model, vec![ChatMessage::user(task)]).await;
+    }
+
+    // 2. Fan out, bounded by max_parallel.
+    let results: Vec<SubResult> = stream::iter(subtasks)
+        .map(|st| run_subagent(config, root, st))
+        .buffer_unordered(max_par)
+        .collect()
+        .await;
+
+    // 3. Synthesize.
+    orchestrate_once(config, &orch_model, synthesis_messages(task, &results)).await
+}
+
+/// Full (read/write/shell/search) tool set for a coder sub-agent, rooted at its
+/// own isolated worktree — safe to run in parallel because each coder's `root`
+/// is a distinct `git worktree` checkout, not the shared process cwd.
+fn write_registry(root: &Path) -> entheai_tools::ToolRegistry {
+    let mut r = entheai_tools::ToolRegistry::new();
+    r.register(Box::new(entheai_tools::fs::ReadFile::new(
+        root.to_path_buf(),
+    )));
+    r.register(Box::new(entheai_tools::fs::WriteFile::new(
+        root.to_path_buf(),
+    )));
+    r.register(Box::new(entheai_tools::shell::RunShell::new(
+        root.to_path_buf(),
+    )));
+    r.register(Box::new(entheai_tools::search::Search::new(
+        root.to_path_buf(),
+    )));
+    r
+}
+
+fn coder_messages(role: &str, task: &str) -> Vec<ChatMessage> {
+    let sys = format!(
+        "You are a `{role}` sub-agent working in an ISOLATED git worktree. Make the necessary \
+         code changes with write_file/run_shell to accomplish your task. Keep changes minimal \
+         and focused."
+    );
+    vec![ChatMessage::system(sys), ChatMessage::user(task)]
+}
+
+/// One coder sub-agent's finished run: its isolated worktree + what it produced.
+/// Not yet committed/verified/integrated — see [`CoderOutcome`] for that.
+struct CoderRun {
+    index: usize,
+    role: String,
+    task: String,
+    branch: String,
+    path: PathBuf,
+    output: String,
+}
+
+/// Run one coder sub-agent to completion inside its own worktree. Never returns
+/// Err — a failure is captured as the run's `output`, mirroring [`run_subagent`],
+/// so one bad coder doesn't sink the whole fan-out.
+async fn run_coder(config: &Config, wt: worktree::Worktree, st: SubTask) -> CoderRun {
+    let output = async {
+        let model_id = entheai_router::model_for_role(config, &st.role)?;
+        let agent = entheai_router::build_agent(&model_id, config)?;
+        let registry = write_registry(&wt.path);
+        let policy = yolo();
+        let mut prompter = AutoAllow;
+        let out = agent
+            .run_task(
+                coder_messages(&st.role, &st.task),
+                &registry,
+                &policy,
+                &mut prompter,
+                None,
+            )
+            .await?;
+        Ok::<String, anyhow::Error>(out)
+    }
+    .await
+    .unwrap_or_else(|e| format!("error: coder failed: {e}"));
+    CoderRun {
+        index: wt.index,
+        role: st.role,
+        task: st.task,
+        branch: wt.branch,
+        path: wt.path,
+        output,
+    }
+}
+
+/// Outcome of running an optional `[fanout].verify` command in a coder's worktree.
+#[derive(Debug, Clone)]
+pub enum VerifyStatus {
+    /// The coder made no commit — nothing to verify.
+    NoChanges,
+    /// No `[fanout].verify` command configured.
+    Skipped,
+    /// The verify command exited successfully.
+    Passed,
+    /// The verify command failed; carries the tail of its combined stderr+stdout.
+    Failed(String),
+}
+
+/// Last `n` chars of `s` (char-boundary safe — a byte-index slice could split a
+/// multi-byte UTF-8 char, e.g. mid-emoji in a test's output).
+fn tail_chars(s: &str, n: usize) -> String {
+    let total = s.chars().count();
+    if total <= n {
+        s.to_string()
+    } else {
+        s.chars().skip(total - n).collect()
+    }
+}
+
+/// Run `cmd` (if any) in `path` to decide whether a coder's changes are safe to
+/// integrate. `None` skips verification entirely (changes are integrated as-is).
+async fn verify_worktree(path: &Path, cmd: Option<&str>) -> VerifyStatus {
+    let Some(cmd) = cmd else {
+        return VerifyStatus::Skipped;
+    };
+    match tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .current_dir(path)
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() => VerifyStatus::Passed,
+        Ok(output) => {
+            let mut combined = String::from_utf8_lossy(&output.stderr).into_owned();
+            combined.push_str(&String::from_utf8_lossy(&output.stdout));
+            VerifyStatus::Failed(tail_chars(&combined, 500))
+        }
+        Err(e) => VerifyStatus::Failed(format!("failed to spawn verify command `{cmd}`: {e}")),
+    }
+}
+
+/// A coder's fully-resolved outcome: what it produced, whether it committed,
+/// how it verified, and where it ended up (integrated / conflicted / left alone).
+pub struct CoderOutcome {
+    pub index: usize,
+    pub role: String,
+    pub task: String,
+    pub branch: String,
+    /// The sub-agent's text output.
+    pub output: String,
+    pub committed: bool,
+    pub verify: VerifyStatus,
+    /// Final: merged into the integration branch.
+    pub integrated: bool,
+    /// Hit a merge conflict at integrate time (overrides `integrated`).
+    pub conflicted: bool,
+}
+
+/// Fan-out entrypoint (v2): decompose → one isolated `git worktree` + coder
+/// sub-agent per sub-task, run in parallel (≤ `router.max_parallel`) → commit +
+/// optionally verify each worktree → integrate the eligible branches onto a
+/// fresh integration branch → return a structured report (no extra LLM call).
+///
+/// Falls back to the read-only v1 fan-out ([`run_fanout_readonly`]) when `root`
+/// isn't a git repo (isolated worktrees require one).
+pub async fn run_fanout(config: &Config, root: &Path, task: &str) -> anyhow::Result<String> {
+    if !worktree::is_git_repo(root).await {
+        let out = run_fanout_readonly(config, root, task).await?;
+        return Ok(format!("(not a git repo — read-only fan-out)\n\n{out}"));
+    }
+
+    let orch_model = entheai_router::orchestrator_model(config)?;
+    let max_par = config.router.max_parallel.max(1);
+
+    // 1. Decompose.
+    let raw = orchestrate_once(config, &orch_model, decompose_messages(task)).await?;
+    let subtasks = parse_decomposition(&raw, max_par);
+
+    // Fallback: couldn't decompose → just run the task once on the orchestrator.
+    if subtasks.is_empty() {
+        return orchestrate_once(config, &orch_model, vec![ChatMessage::user(task)]).await;
+    }
+
+    let session = uuid::Uuid::new_v4().simple().to_string();
+    let base = worktree::resolve_base(root, "HEAD").await?;
+    let pool = worktree::WorktreePool::new(root, &session, &base).await?;
+
+    // 2. Create one worktree per sub-task, sequentially (git worktree creation
+    // isn't safe to parallelize against the same root repo).
+    let mut wts: Vec<(worktree::Worktree, SubTask)> = Vec::with_capacity(subtasks.len());
+    for (i, st) in subtasks.into_iter().enumerate() {
+        let wt = pool.create(i).await?;
+        wts.push((wt, st));
+    }
+
+    // 3. Run coders in parallel, bounded by max_parallel.
+    let mut runs: Vec<CoderRun> = stream::iter(wts.iter().cloned())
+        .map(|(wt, st)| run_coder(config, wt, st))
+        .buffer_unordered(max_par)
+        .collect()
+        .await;
+    runs.sort_by_key(|r| r.index); // buffer_unordered finishes out of order
+
+    // 4. Commit + verify each worktree, sequentially (each is a separate git
+    // invocation against a distinct worktree, but keeping this sequential keeps
+    // output/ordering simple and avoids piling up concurrent `sh -c` verify runs).
+    let mut outcomes: Vec<CoderOutcome> = Vec::with_capacity(runs.len());
+    let mut eligible_branches: Vec<String> = Vec::new();
+    for run in runs {
+        let committed = worktree::commit_all(
+            &run.path,
+            &format!("entheai fan-out [{}]: {}", run.role, run.task),
+        )
+        .await
+        .unwrap_or(false);
+        let verify = if committed {
+            verify_worktree(&run.path, config.fanout.verify.as_deref()).await
+        } else {
+            VerifyStatus::NoChanges
+        };
+        let integrated =
+            committed && matches!(verify, VerifyStatus::Skipped | VerifyStatus::Passed);
+        if integrated {
+            eligible_branches.push(run.branch.clone());
+        }
+        outcomes.push(CoderOutcome {
+            index: run.index,
+            role: run.role,
+            task: run.task,
+            branch: run.branch,
+            output: run.output,
+            committed,
+            verify,
+            integrated,
+            conflicted: false,
+        });
+    }
+
+    // 5. Integrate the eligible branches onto a fresh integration branch. A
+    // branch can still conflict here even though it verified clean in
+    // isolation (two coders touching the same lines) — reflect that in the
+    // per-branch status, overriding `integrated` for anything that conflicted.
+    let integration = if eligible_branches.is_empty() {
+        None
+    } else {
+        let integration = worktree::integrate(
+            root,
+            &base,
+            &format!("entheai/{session}/integration"),
+            &eligible_branches,
+        )
+        .await?;
+        for outcome in outcomes.iter_mut() {
+            if integration.conflicted.contains(&outcome.branch) {
+                outcome.integrated = false;
+                outcome.conflicted = true;
+            }
+        }
+        Some(integration)
+    };
+
+    // 6. Cleanup worktrees (best-effort; keep the integration branch for review).
+    for (wt, _) in &wts {
+        let _ = pool.remove(wt).await;
+    }
+
+    Ok(format_v2_report(
+        task,
+        &base,
+        &session,
+        &outcomes,
+        integration.as_ref(),
+    ))
+}
+
+/// Render a fan-out v2 run as a structured markdown-ish report. Pure/deterministic
+/// (no git/LLM calls) — this IS the final answer, no extra synthesis call needed.
+pub fn format_v2_report(
+    task: &str,
+    base: &str,
+    session: &str,
+    outcomes: &[CoderOutcome],
+    integration: Option<&worktree::Integration>,
+) -> String {
+    let short_base = &base[..base.len().min(10)];
+    let mut s =
+        format!("# Fan-out v2 report\n\nTask: {task}\nBase: {short_base}\nSession: {session}\n");
+
+    let mut sorted: Vec<&CoderOutcome> = outcomes.iter().collect();
+    sorted.sort_by_key(|o| o.index);
+
+    for o in sorted {
+        s.push_str(&format!("\n### [{}] {}\n", o.role, o.task));
+        let status = if o.conflicted {
+            format!("merge conflict — left on branch {}", o.branch)
+        } else if !o.committed {
+            "no changes".to_string()
+        } else if o.integrated {
+            "integrated ✓".to_string()
+        } else if let VerifyStatus::Failed(msg) = &o.verify {
+            format!("changes not integrated (verify failed: {msg})")
+        } else {
+            format!("changes on branch {} (unverified)", o.branch)
+        };
+        s.push_str(&format!("status: {status}\n\n"));
+        s.push_str(o.output.trim());
+        s.push('\n');
+    }
+
+    s.push_str("\n## Integration\n");
+    match integration {
+        Some(i) => {
+            let files_changed = i.diff.matches("\ndiff --git ").count()
+                + usize::from(i.diff.starts_with("diff --git "));
+            s.push_str(&format!("Integration branch: {}\n", i.branch));
+            s.push_str(&format!("Merged: {:?}\n", i.merged));
+            s.push_str(&format!("Conflicted: {:?}\n", i.conflicted));
+            s.push_str(&format!(
+                "Diff: {files_changed} file(s) changed ({} bytes)\n",
+                i.diff.len()
+            ));
+            s.push_str(&format!(
+                "Review with: git diff {base}..{branch}  ·  checkout: git switch {branch}\n",
+                branch = i.branch
+            ));
+        }
+        None => {
+            s.push_str("No changes were integrated.\n");
+        }
+    }
+
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sub_task(role: &str, task: &str) -> SubTask {
+        SubTask {
+            role: role.to_string(),
+            task: task.to_string(),
+        }
+    }
+
+    #[test]
+    fn parse_decomposition_parses_clean_json_array() {
+        let content = r#"[{"role":"explore","task":"map the auth module"},{"role":"coder","task":"add a test"}]"#;
+        let out = parse_decomposition(content, 8);
+        assert_eq!(
+            out,
+            vec![
+                sub_task("explore", "map the auth module"),
+                sub_task("coder", "add a test")
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_decomposition_extracts_array_from_prose_and_fences() {
+        let content = "Sure, here you go:\n```json\n[{\"role\":\"explore\",\"task\":\"map the auth module\"},{\"role\":\"coder\",\"task\":\"add a test\"}]\n```\nHope that helps!";
+        let out = parse_decomposition(content, 8);
+        assert_eq!(
+            out,
+            vec![
+                sub_task("explore", "map the auth module"),
+                sub_task("coder", "add a test")
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_decomposition_caps_at_max() {
+        let content = r#"[
+            {"role":"explore","task":"t1"},
+            {"role":"coder","task":"t2"},
+            {"role":"reviewer","task":"t3"},
+            {"role":"test","task":"t4"},
+            {"role":"docs","task":"t5"}
+        ]"#;
+        let out = parse_decomposition(content, 2);
+        assert_eq!(out.len(), 2);
+        assert_eq!(
+            out,
+            vec![sub_task("explore", "t1"), sub_task("coder", "t2")]
+        );
+    }
+
+    #[test]
+    fn parse_decomposition_returns_empty_for_non_json() {
+        let out = parse_decomposition("I cannot decompose this task.", 8);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn parse_decomposition_filters_empty_role_or_task() {
+        let content = r#"[
+            {"role":"","task":"t1"},
+            {"role":"coder","task":""},
+            {"role":"reviewer","task":"t3"}
+        ]"#;
+        let out = parse_decomposition(content, 8);
+        assert_eq!(out, vec![sub_task("reviewer", "t3")]);
+    }
+
+    #[test]
+    fn synthesis_user_message_contains_task_roles_and_outputs() {
+        let results = vec![
+            SubResult {
+                role: "explore".to_string(),
+                task: "map the auth module".to_string(),
+                output: "found 3 auth files".to_string(),
+            },
+            SubResult {
+                role: "coder".to_string(),
+                task: "add a test".to_string(),
+                output: "added test_auth.rs".to_string(),
+            },
+        ];
+        let msg = synthesis_user_message("Improve auth coverage", &results);
+        assert!(msg.contains("Improve auth coverage"));
+        assert!(msg.contains("explore"));
+        assert!(msg.contains("coder"));
+        assert!(msg.contains("found 3 auth files"));
+        assert!(msg.contains("added test_auth.rs"));
+    }
+
+    fn coder_outcome(
+        index: usize,
+        role: &str,
+        task: &str,
+        branch: &str,
+        committed: bool,
+        verify: VerifyStatus,
+        integrated: bool,
+    ) -> CoderOutcome {
+        CoderOutcome {
+            index,
+            role: role.to_string(),
+            task: task.to_string(),
+            branch: branch.to_string(),
+            output: format!("{role} did some work"),
+            committed,
+            verify,
+            integrated,
+            conflicted: false,
+        }
+    }
+
+    #[test]
+    fn format_v2_report_with_integration_shows_status_and_switch_hint() {
+        let outcomes = vec![
+            coder_outcome(
+                0,
+                "coder",
+                "add a feature",
+                "entheai/sess/coder-0",
+                true,
+                VerifyStatus::Passed,
+                true,
+            ),
+            coder_outcome(
+                1,
+                "test",
+                "write a test",
+                "entheai/sess/coder-1",
+                true,
+                VerifyStatus::Failed("assertion failed at line 42".to_string()),
+                false,
+            ),
+        ];
+        let integration = worktree::Integration {
+            branch: "entheai/sess/integration".to_string(),
+            merged: vec!["entheai/sess/coder-0".to_string()],
+            conflicted: vec![],
+            diff: "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n".to_string(),
+        };
+
+        let report = format_v2_report(
+            "Ship the widget",
+            "0123456789abcdef",
+            "sess",
+            &outcomes,
+            Some(&integration),
+        );
+
+        assert!(report.contains("Ship the widget"));
+        assert!(report.contains("coder"));
+        assert!(report.contains("test"));
+        assert!(report.contains("entheai/sess/integration"));
+        assert!(report.contains("integrated"));
+        assert!(report.contains("verify failed: assertion failed at line 42"));
+        assert!(report.contains("git switch entheai/sess/integration"));
+    }
+
+    #[test]
+    fn format_v2_report_without_integration_says_nothing_was_integrated() {
+        let outcomes = vec![coder_outcome(
+            0,
+            "coder",
+            "add a feature",
+            "entheai/sess/coder-0",
+            false,
+            VerifyStatus::NoChanges,
+            false,
+        )];
+
+        let report = format_v2_report(
+            "Ship the widget",
+            "0123456789abcdef",
+            "sess",
+            &outcomes,
+            None,
+        );
+
+        assert!(report.contains("No changes were integrated."));
+    }
+}

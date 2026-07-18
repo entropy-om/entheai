@@ -15,6 +15,12 @@ pub struct Config {
     pub default_model: Option<String>,
     #[serde(default)]
     pub companion: CompanionConfig,
+    #[serde(default)]
+    pub router: RouterConfig,
+    #[serde(default)]
+    pub agents: HashMap<String, AgentConfig>,
+    #[serde(default)]
+    pub fanout: FanoutConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -22,6 +28,46 @@ pub struct ProviderConfig {
     pub base_url: String,
     #[serde(default)]
     pub api_key_env: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RouterConfig {
+    /// Model id ("<provider>/<model>") for the orchestrator role. Falls back
+    /// to `default_model` when unset.
+    #[serde(default)]
+    pub orchestrator: Option<String>,
+    /// Max number of sub-agents that may run concurrently during fan-out.
+    #[serde(default = "default_max_parallel")]
+    pub max_parallel: usize,
+}
+
+impl Default for RouterConfig {
+    fn default() -> Self {
+        Self {
+            orchestrator: None,
+            max_parallel: default_max_parallel(),
+        }
+    }
+}
+
+fn default_max_parallel() -> usize {
+    8
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct AgentConfig {
+    /// Preference-ordered model ids ("<provider>/<model>") for this role.
+    #[serde(default)]
+    pub model: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct FanoutConfig {
+    /// Shell command run inside each coder's worktree to decide whether its
+    /// changes are integrated (e.g. "cargo test"). Unset = integrate all
+    /// changed branches without verifying.
+    #[serde(default)]
+    pub verify: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -83,5 +129,69 @@ mod tests {
             cfg.providers["zen"].api_key_env.as_deref(),
             Some("OPENCODE_API_KEY")
         );
+    }
+
+    #[test]
+    fn parses_router_and_agents_when_present() {
+        let cfg = Config::from_toml_str(
+            r#"
+            [router]
+            orchestrator = "zen/deepseek-v4-pro"
+            max_parallel = 4
+
+            [agents.coder]
+            model = ["deepseek/deepseek-chat"]
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            cfg.router.orchestrator.as_deref(),
+            Some("zen/deepseek-v4-pro")
+        );
+        assert_eq!(cfg.router.max_parallel, 4);
+        assert_eq!(
+            cfg.agents["coder"].model,
+            vec!["deepseek/deepseek-chat".to_string()]
+        );
+    }
+
+    #[test]
+    fn router_and_agents_default_when_absent() {
+        let cfg = Config::from_toml_str(
+            r#"
+            default_model = "osaurus/qwen3-coder"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.router.orchestrator, None);
+        assert_eq!(cfg.router.max_parallel, 8);
+        assert!(cfg.agents.is_empty());
+    }
+
+    #[test]
+    fn parses_fanout_verify_when_present() {
+        let cfg = Config::from_toml_str(
+            r#"
+            [fanout]
+            verify = "cargo test"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.fanout.verify.as_deref(), Some("cargo test"));
+    }
+
+    #[test]
+    fn fanout_verify_defaults_to_none() {
+        let cfg = Config::from_toml_str(
+            r#"
+            default_model = "osaurus/qwen3-coder"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.fanout.verify, None);
     }
 }
