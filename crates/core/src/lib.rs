@@ -79,9 +79,12 @@ impl<P: Provider> Agent<P> {
                 let _ = tx.send(AgentEvent::Thinking);
             }
             let (ttx, mut trx) = futures::channel::mpsc::unbounded::<String>();
-            let completion =
-                self.provider
-                    .stream_complete(&self.model, messages.clone(), schemas.clone(), Some(ttx));
+            let completion = self.provider.stream_complete(
+                &self.model,
+                messages.clone(),
+                schemas.clone(),
+                Some(ttx),
+            );
             tokio::pin!(completion);
             let resp = loop {
                 tokio::select! {
@@ -91,7 +94,7 @@ impl<P: Provider> Agent<P> {
                     }
                     r = &mut completion => {
                         // drain any tokens buffered right before the future resolved
-                        while let Ok(Some(tok)) = trx.try_recv() {
+                        while let Ok(tok) = trx.try_recv() {
                             if let Some(tx) = &events { let _ = tx.send(AgentEvent::Token(tok)); }
                         }
                         break r?;

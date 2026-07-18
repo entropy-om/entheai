@@ -29,12 +29,12 @@ use ratatui::{
 };
 use tokio::sync::{mpsc, oneshot};
 
+use entheai_companion::state::StateChange;
 use entheai_core::{Agent, AgentEvent};
 use entheai_permission::{Policy, Prompter};
 use entheai_providers::{ChatMessage, Provider};
 use entheai_radio::{Command as RadioCommand, Event as RadioEvent, Radio};
 use entheai_tools::ToolRegistry;
-use entheai_companion::state::StateChange;
 
 /// Spinner animation frames for the live progress line (Charm/Bubbletea-style
 /// braille spinner), advanced on each animation tick while a run is in flight.
