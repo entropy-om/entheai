@@ -14,6 +14,8 @@ use entheai_providers::ChatMessage;
 use futures::stream::{self, StreamExt};
 use serde::Deserialize;
 
+pub mod worktree;
+
 /// One decomposed unit of work: a role (routes to a model) + its focused task.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct SubTask {
