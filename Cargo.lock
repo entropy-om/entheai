@@ -263,7 +263,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "entheai-permission",
  "entheai-providers",
+ "entheai-tools",
  "futures",
  "serde_json",
  "tokio",
