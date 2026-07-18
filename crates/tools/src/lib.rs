@@ -17,6 +17,8 @@ pub enum ToolError {
     Io(#[from] std::io::Error),
     #[error("tool task failed: {0}")]
     Join(#[from] tokio::task::JoinError),
+    #[error("mcp tool error: {0}")]
+    Mcp(String),
 }
 
 /// A callable tool. `schema()` is the OpenAI function-tool JSON schema;

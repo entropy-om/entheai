@@ -1175,6 +1175,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "entheai-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "entheai-tools",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "entheai-memory"
 version = "0.1.0"
 dependencies = [
