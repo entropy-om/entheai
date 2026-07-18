@@ -194,8 +194,10 @@ impl MemoryRuntime {
         }
 
         let key = tool_key(scope, &evidence.call_id);
-        let preview_len = 500usize.min(evidence.result.len());
-        let preview = &evidence.result[..preview_len];
+        // Char-aware truncation: `evidence.result` is arbitrary tool output, so a
+        // raw byte slice (`&result[..500]`) panics when byte 500 lands mid multi-
+        // byte UTF-8 char (any non-ASCII output). Reuse the safe truncator.
+        let preview = truncate_str(&evidence.result, 500);
 
         if let Err(e) = self
             .memory
@@ -298,7 +300,7 @@ impl MemoryRuntime {
                 "tags": ["tool", outcome, &ev.name],
             });
 
-            let key = format!("{}/tool/{idx}", scope.session_id);
+            let key = format!("{}/{}/tool/{idx}", scope.session_id, scope.task_id);
             let content = format!(
                 "tool `{}` {} with args `{}` → {}",
                 ev.name,

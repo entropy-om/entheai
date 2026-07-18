@@ -270,6 +270,13 @@ fn player_thread(
 /// Run `yt-dlp`, extracting audio as m4a into `cache_dir`. Returns the track
 /// title + final file path. Blocking; runs on a downloader thread.
 fn download(url: &str, cache_dir: &Path) -> Result<Track, String> {
+    // Security: `url` is handed to yt-dlp's argv parser. Reject anything that
+    // isn't a plain http(s) URL — a `-`-prefixed value is parsed as a FLAG
+    // (e.g. `--exec=…` runs an arbitrary command). This is the single choke
+    // point for every caller (`/radio <url>` and `/radio add <url>`).
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(format!("refusing non-http(s) URL: {url}"));
+    }
     std::fs::create_dir_all(cache_dir).map_err(|e| format!("cache dir: {e}"))?;
     let out = Process::new("yt-dlp")
         .args([
@@ -290,6 +297,7 @@ fn download(url: &str, cache_dir: &Path) -> Result<Track, String> {
             "--no-simulate",
             "--quiet",
         ])
+        .arg("--")
         .arg(url)
         .output()
         .map_err(|e| format!("yt-dlp not runnable ({e}); install with `brew install yt-dlp`"))?;
