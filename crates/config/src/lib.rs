@@ -43,7 +43,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(cfg.default_model.as_deref(), Some("osaurus/qwen3-coder"));
-        assert_eq!(cfg.providers["osaurus"].base_url, "http://127.0.0.1:1337/v1");
+        assert_eq!(
+            cfg.providers["osaurus"].base_url,
+            "http://127.0.0.1:1337/v1"
+        );
         assert_eq!(cfg.providers["osaurus"].api_key_env, None);
         assert_eq!(
             cfg.providers["zen"].api_key_env.as_deref(),
