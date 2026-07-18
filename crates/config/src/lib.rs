@@ -13,6 +13,8 @@ pub struct Config {
     pub providers: HashMap<String, ProviderConfig>,
     #[serde(default)]
     pub default_model: Option<String>,
+    #[serde(default)]
+    pub companion: CompanionConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -20,6 +22,29 @@ pub struct ProviderConfig {
     pub base_url: String,
     #[serde(default)]
     pub api_key_env: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CompanionConfig {
+    /// Whether to spawn the companion window. Default: true.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Whether the companion floats above other windows. Default: true.
+    #[serde(default = "default_true")]
+    pub always_on_top: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for CompanionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            always_on_top: true,
+        }
+    }
 }
 
 impl Config {

@@ -14,6 +14,8 @@ entheai-tui = { path = "../../crates/tui" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
 anyhow.workspace = true
 clap.workspace = true
+serde_json.workspace = true
+uuid = { version = "1", features = ["v4"] }
 sentry = { workspace = true }
 dotenvy = { workspace = true }
 

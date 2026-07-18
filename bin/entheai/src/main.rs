@@ -12,6 +12,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// entheai — hybrid coding agent (v0.1)
 #[derive(Parser)]
+#[command(version)]
 struct Cli {
     /// The prompt to send. Omit to launch the interactive TUI.
     prompt: Option<String>,
@@ -24,6 +25,9 @@ struct Cli {
     /// Auto-approve all tool calls (skip the permission prompt).
     #[arg(long)]
     yolo: bool,
+    /// Disable the companion window for this session.
+    #[arg(long)]
+    no_companion: bool,
 }
 
 #[tokio::main]
@@ -86,6 +90,27 @@ async fn main() -> anyhow::Result<()> {
         allowlist: vec![],
     };
 
+    // Companion: spawn the session beacon window if enabled.
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let _companion = if cfg.companion.enabled && !cli.no_companion {
+        let mut args = vec![
+            "--session-id".to_string(),
+            session_id.clone(),
+            "--host".to_string(),
+            hostname(),
+            "--port".to_string(),
+            "9876".to_string(),
+            "--cwd".to_string(),
+            root.display().to_string(),
+        ];
+        if !cfg.companion.always_on_top {
+            args.push("--no-always-on-top".to_string());
+        }
+        spawn_companion(&args)
+    } else {
+        None
+    };
+
     match cli.prompt {
         // One-shot: run the prompt, print the answer, exit.
         Some(prompt) => {
@@ -102,4 +127,72 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Resolve the best hostname for the companion QR: Tailscale MagicDNS if
+/// available, otherwise the local hostname.
+fn hostname() -> String {
+    // Try Tailscale first.
+    if let Ok(out) = std::process::Command::new("tailscale")
+        .args(["status", "--json"])
+        .output()
+    {
+        if out.status.success() {
+            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                if let Some(name) = val["Self"]["DNSName"].as_str() {
+                    return name.trim_end_matches('.').to_string();
+                }
+            }
+        }
+    }
+    // Fall back to local hostname.
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| format!("{}.local", s.trim()))
+        .unwrap_or_else(|| "localhost".to_string())
+}
+
+/// Try to spawn the companion binary. Returns a handle that kills the child
+/// on drop, or `None` if the binary couldn't be found.
+fn spawn_companion(args: &[String]) -> Option<CompanionGuard> {
+    let (bin, bin_args) = find_companion_binary();
+    let child = std::process::Command::new(&bin)
+        .args(&bin_args)
+        .args(args)
+        .spawn()
+        .ok()?;
+    Some(CompanionGuard { child })
+}
+
+/// Search for the companion binary next to the current executable, then fall
+/// back to spawning via `cargo run` during development.
+fn find_companion_binary() -> (String, Vec<String>) {
+    let bin_name = "entheai-companion";
+
+    // Check next to the current executable (release builds).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join(bin_name);
+            if candidate.exists() {
+                return (candidate.display().to_string(), vec![]);
+            }
+        }
+    }
+
+    // Fall back: try PATH (installed or `cargo install`).
+    (bin_name.to_string(), vec![])
+}
+
+/// Kills the companion child process on drop.
+struct CompanionGuard {
+    child: std::process::Child,
+}
+
+impl Drop for CompanionGuard {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }

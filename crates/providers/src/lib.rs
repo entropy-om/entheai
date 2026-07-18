@@ -66,9 +66,10 @@ impl ChatMessage {
             ..Default::default()
         }
     }
-    pub fn assistant_tool_calls(tool_calls: Vec<ToolCall>) -> Self {
+    pub fn assistant_tool_calls(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
         Self {
             role: "assistant".into(),
+            content: content.into(),
             tool_calls: Some(tool_calls),
             ..Default::default()
         }
@@ -268,7 +269,7 @@ mod message_tests {
                 arguments: "{\"path\":\"x\"}".into(),
             },
         };
-        let j = serde_json::to_value(ChatMessage::assistant_tool_calls(vec![call])).unwrap();
+        let j = serde_json::to_value(ChatMessage::assistant_tool_calls("", vec![call])).unwrap();
         assert_eq!(j["role"], "assistant");
         assert!(j.get("content").is_none(), "empty content must be omitted");
         assert_eq!(j["tool_calls"][0]["id"], "call_1");
