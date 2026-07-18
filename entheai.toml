@@ -1,4 +1,13 @@
-default_model = "osaurus/qwen3-coder"
+# Local (private) via Osaurus. The model id after "osaurus/" must match an id from
+# `curl http://127.0.0.1:1337/v1/models` — see docs/osaurus-setup.md.
+# gemma-4-e2b-it-4bit is small and supports tool-calling (which entheai's loop needs).
+default_model = "osaurus/gemma-4-e2b-it-4bit"
 
 [providers.osaurus]
 base_url = "http://127.0.0.1:1337/v1"
+
+# Cloud (OpenCode Zen) — uncomment, set OPENCODE_API_KEY, and switch default_model to
+# "zen/deepseek-v4-pro" (or pass --model zen/deepseek-v4-pro). Key: https://opencode.ai/auth
+# [providers.zen]
+# base_url = "https://opencode.ai/zen/v1"
+# api_key_env = "OPENCODE_API_KEY"
