@@ -1,15 +1,19 @@
+use std::io::{BufRead, BufReader};
 use std::num::NonZeroU32;
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use clap::Parser;
 use softbuffer::Surface;
 use winit::dpi::{LogicalSize, PhysicalPosition};
-use winit::event::{Event, WindowEvent};
+use winit::event::{Event, MouseButton, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{Window, WindowLevel};
 
 use entheai_companion::qr::{self, SessionPayload};
-use entheai_companion::render;
+use entheai_companion::render::{self, AnimationState};
+use entheai_companion::state::StateChange;
 
 /// entheai companion — a tiny session beacon window.
 #[derive(Parser)]
@@ -33,6 +37,10 @@ struct Cli {
     /// Disable always-on-top.
     #[arg(long)]
     no_always_on_top: bool,
+
+    /// Path to the Unix domain socket for state events.
+    #[arg(long)]
+    socket: Option<PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -46,13 +54,24 @@ fn main() -> anyhow::Result<()> {
 
     let payload = SessionPayload {
         v: 1,
-        sid: cli.session_id,
-        host: cli.host,
+        sid: cli.session_id.clone(),
+        host: cli.host.clone(),
         port: cli.port,
         cwd,
     };
 
     let qr_grid = qr::generate(&payload)?;
+    let session_url = format!(
+        "http://{}.local:{}/session/{}",
+        cli.host, cli.port, payload.sid
+    );
+
+    // Connect to the Unix socket (non-blocking) if provided.
+    let socket_reader = cli.socket.and_then(|path| {
+        let stream = UnixStream::connect(&path).ok()?;
+        stream.set_nonblocking(true).ok()?;
+        Some(BufReader::new(stream))
+    });
 
     #[allow(deprecated)]
     let event_loop = EventLoop::new()?;
@@ -74,7 +93,6 @@ fn main() -> anyhow::Result<()> {
     #[allow(deprecated)]
     let window = event_loop.create_window(window_attrs)?;
 
-    // Position at bottom-right with 20px margin.
     if let Some(monitor) = window.current_monitor() {
         let screen = monitor.size();
         let win_size = window.outer_size();
@@ -98,6 +116,9 @@ fn main() -> anyhow::Result<()> {
     }
 
     let start = Instant::now();
+    let mut anim = AnimationState::default();
+    let mut socket_reader = socket_reader;
+    let mut last_frame = Instant::now();
 
     #[allow(deprecated)]
     event_loop.run(move |event, target| {
@@ -114,15 +135,36 @@ fn main() -> anyhow::Result<()> {
                     return;
                 }
 
+                let now = start.elapsed().as_secs_f64();
+                let dt = last_frame.elapsed().as_secs_f64();
+                last_frame = Instant::now();
+                anim.tick(dt);
+
                 let ctx = softbuffer::Context::new(&window).expect("softbuffer context");
                 let mut surf = Surface::new(&ctx, &window).expect("softbuffer surface");
 
                 let _ = surf.resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap());
 
                 if let Ok(mut buffer) = surf.buffer_mut() {
-                    let elapsed = start.elapsed().as_secs_f64();
-                    render::render_frame(&mut buffer, w, h, &qr_grid, elapsed);
+                    render::render_frame(&mut buffer, w, h, &qr_grid, &anim, now);
                     let _ = buffer.present();
+                }
+            }
+
+            // Click anywhere -> copy session URL to clipboard.
+            Event::WindowEvent {
+                event:
+                    WindowEvent::MouseInput {
+                        state: winit::event::ElementState::Released,
+                        button: MouseButton::Left,
+                        ..
+                    },
+                ..
+            } => {
+                let now = start.elapsed().as_secs_f64();
+                anim.flash(now);
+                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                    let _ = clipboard.set_text(&session_url);
                 }
             }
 
@@ -134,6 +176,35 @@ fn main() -> anyhow::Result<()> {
             }
 
             Event::AboutToWait => {
+                // Drain any pending socket events.
+                if let Some(ref mut reader) = socket_reader {
+                    loop {
+                        let mut line = String::new();
+                        match reader.read_line(&mut line) {
+                            Ok(0) => {
+                                socket_reader = None;
+                                break;
+                            }
+                            Ok(_) => {
+                                let trimmed = line.trim();
+                                if !trimmed.is_empty() {
+                                    if let Ok(change) = serde_json::from_str::<StateChange>(trimmed)
+                                    {
+                                        anim.set_state(change.state);
+                                    }
+                                }
+                            }
+                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                break;
+                            }
+                            Err(_) => {
+                                socket_reader = None;
+                                break;
+                            }
+                        }
+                    }
+                }
+
                 window.request_redraw();
             }
 

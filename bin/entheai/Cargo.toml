@@ -11,7 +11,8 @@ entheai-core = { path = "../../crates/core" }
 entheai-tools = { path = "../../crates/tools" }
 entheai-permission = { path = "../../crates/permission" }
 entheai-tui = { path = "../../crates/tui" }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
+entheai-companion = { path = "../../crates/companion" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-std", "io-util", "net"] }
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true

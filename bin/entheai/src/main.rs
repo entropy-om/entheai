@@ -1,43 +1,36 @@
+use std::path::PathBuf;
+
 use anyhow::Context;
 use clap::Parser;
+use entheai_companion::state::StateChange;
 use entheai_config::Config;
 use entheai_core::Agent;
 use entheai_providers::{ChatMessage, OpenAiCompatProvider};
+use tokio::io::AsyncWriteExt;
+use tokio::net::UnixListener;
 
-// macOS: mimalloc handles the concurrent tokio / multi-agent allocation load
-// better than the system allocator. Keep this block across future main.rs rewrites.
 #[cfg(target_os = "macos")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// entheai — hybrid coding agent (v0.1)
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
-    /// The prompt to send. Omit to launch the interactive TUI.
     prompt: Option<String>,
-    /// Path to config TOML (default: ./entheai.toml).
     #[arg(long, default_value = "entheai.toml")]
     config: String,
-    /// Override model as "<provider>/<model>".
     #[arg(long)]
     model: Option<String>,
-    /// Auto-approve all tool calls (skip the permission prompt).
     #[arg(long)]
     yolo: bool,
-    /// Disable the companion window for this session.
     #[arg(long)]
     no_companion: bool,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Load .env (DEEPSEEK_API_KEY / HUGGINGFACE_API_KEY / OPENROUTER_API_KEY / ...) into the
-    // process env before anything reads keys. A missing .env is fine (ignored).
     dotenvy::dotenv().ok();
 
-    // Crash/error reporting to Sentry (cloud). DSNs are client-embeddable by design;
-    // override or disable via the SENTRY_DSN env var. The guard flushes events on drop.
     let dsn = std::env::var("SENTRY_DSN").unwrap_or_else(|_| {
         "https://ea8a1a1d46d9c33b709aae544ff24a79@o4511756214075392.ingest.de.sentry.io/4511756233474128".to_string()
     });
@@ -45,7 +38,6 @@ async fn main() -> anyhow::Result<()> {
         dsn,
         sentry::ClientOptions {
             release: sentry::release_name!(),
-            // no PII capture (CLI has none meaningful; keeps crash reports minimal)
             send_default_pii: false,
             ..Default::default()
         },
@@ -77,7 +69,6 @@ async fn main() -> anyhow::Result<()> {
     let provider = OpenAiCompatProvider::new(pcfg.base_url.clone(), api_key);
     let agent = Agent::new(provider, model.to_string());
 
-    // Built-in tools, rooted at the canonicalized working directory.
     let root = std::env::current_dir()?.canonicalize()?;
     let mut registry = entheai_tools::ToolRegistry::new();
     registry.register(Box::new(entheai_tools::fs::ReadFile::new(root.clone())));
@@ -90,9 +81,28 @@ async fn main() -> anyhow::Result<()> {
         allowlist: vec![],
     };
 
-    // Companion: spawn the session beacon window if enabled.
     let session_id = uuid::Uuid::new_v4().to_string();
-    let _companion = if cfg.companion.enabled && !cli.no_companion {
+    let companion = if cfg.companion.enabled && !cli.no_companion {
+        let socket_path = std::env::temp_dir().join(format!("entheai-{}.sock", session_id));
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path)?;
+        let (state_tx, mut state_rx) = tokio::sync::mpsc::unbounded_channel::<StateChange>();
+
+        // Spawn a task that accepts the companion connection and forwards events.
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                while let Some(change) = state_rx.recv().await {
+                    let json = serde_json::to_string(&change).unwrap();
+                    if stream.write_all(json.as_bytes()).await.is_err() {
+                        break;
+                    }
+                    if stream.write_all(b"\n").await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
         let mut args = vec![
             "--session-id".to_string(),
             session_id.clone(),
@@ -102,17 +112,31 @@ async fn main() -> anyhow::Result<()> {
             "9876".to_string(),
             "--cwd".to_string(),
             root.display().to_string(),
+            "--socket".to_string(),
+            socket_path.display().to_string(),
         ];
         if !cfg.companion.always_on_top {
             args.push("--no-always-on-top".to_string());
         }
-        spawn_companion(&args)
+
+        let (bin, _) = find_companion_binary();
+        let child = std::process::Command::new(&bin).args(&args).spawn().ok();
+
+        Some(CompanionHandle {
+            child,
+            state_tx,
+            socket_path,
+        })
     } else {
         None
     };
 
+    // Send initial state.
+    if let Some(ref c) = companion {
+        let _ = c.state_tx.send(StateChange::working());
+    }
+
     match cli.prompt {
-        // One-shot: run the prompt, print the answer, exit.
         Some(prompt) => {
             let mut prompter = entheai_permission::StdinPrompter;
             let messages = vec![ChatMessage::user(prompt)];
@@ -121,7 +145,6 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
             println!("{answer}");
         }
-        // No prompt: launch the interactive TUI.
         None => {
             entheai_tui::run(agent, registry, policy, model_id.clone()).await?;
         }
@@ -129,10 +152,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Resolve the best hostname for the companion QR: Tailscale MagicDNS if
-/// available, otherwise the local hostname.
 fn hostname() -> String {
-    // Try Tailscale first.
     if let Ok(out) = std::process::Command::new("tailscale")
         .args(["status", "--json"])
         .output()
@@ -145,7 +165,6 @@ fn hostname() -> String {
             }
         }
     }
-    // Fall back to local hostname.
     std::process::Command::new("hostname")
         .output()
         .ok()
@@ -154,24 +173,8 @@ fn hostname() -> String {
         .unwrap_or_else(|| "localhost".to_string())
 }
 
-/// Try to spawn the companion binary. Returns a handle that kills the child
-/// on drop, or `None` if the binary couldn't be found.
-fn spawn_companion(args: &[String]) -> Option<CompanionGuard> {
-    let (bin, bin_args) = find_companion_binary();
-    let child = std::process::Command::new(&bin)
-        .args(&bin_args)
-        .args(args)
-        .spawn()
-        .ok()?;
-    Some(CompanionGuard { child })
-}
-
-/// Search for the companion binary next to the current executable, then fall
-/// back to spawning via `cargo run` during development.
 fn find_companion_binary() -> (String, Vec<String>) {
     let bin_name = "entheai-companion";
-
-    // Check next to the current executable (release builds).
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let candidate = dir.join(bin_name);
@@ -180,19 +183,28 @@ fn find_companion_binary() -> (String, Vec<String>) {
             }
         }
     }
-
-    // Fall back: try PATH (installed or `cargo install`).
     (bin_name.to_string(), vec![])
 }
 
-/// Kills the companion child process on drop.
-struct CompanionGuard {
-    child: std::process::Child,
+struct CompanionHandle {
+    child: Option<std::process::Child>,
+    state_tx: tokio::sync::mpsc::UnboundedSender<StateChange>,
+    socket_path: PathBuf,
 }
 
-impl Drop for CompanionGuard {
+impl CompanionHandle {
+    #[allow(dead_code)]
+    fn send_state(&self, change: StateChange) {
+        let _ = self.state_tx.send(change);
+    }
+}
+
+impl Drop for CompanionHandle {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(ref mut child) = self.child {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let _ = std::fs::remove_file(&self.socket_path);
     }
 }
