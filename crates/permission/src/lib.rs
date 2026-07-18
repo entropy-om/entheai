@@ -25,24 +25,33 @@ impl Policy {
 }
 
 /// Resolves an `Ask` decision to a concrete yes/no. Stdin impl for the CLI;
-/// tests use their own.
-pub trait Prompter {
+/// the TUI supplies a modal-backed impl. Async so a UI can await user input
+/// without blocking the runtime. `Send` so `run_task` stays spawnable.
+#[async_trait::async_trait]
+pub trait Prompter: Send {
     /// Return true to allow this tool call.
-    fn confirm(&mut self, tool_name: &str, args_summary: &str) -> bool;
+    async fn confirm(&mut self, tool_name: &str, args_summary: &str) -> bool;
 }
 
-/// Reads a y/N line from stdin.
+/// Reads a y/N line from stdin. The blocking read runs on a dedicated thread so
+/// it never stalls the async runtime.
 pub struct StdinPrompter;
+
+#[async_trait::async_trait]
 impl Prompter for StdinPrompter {
-    fn confirm(&mut self, tool_name: &str, args_summary: &str) -> bool {
+    async fn confirm(&mut self, tool_name: &str, args_summary: &str) -> bool {
         use std::io::Write;
         eprint!("allow {tool_name}({args_summary})? [y/N] ");
         let _ = std::io::stderr().flush();
-        let mut line = String::new();
-        if std::io::stdin().read_line(&mut line).is_err() {
-            return false;
-        }
-        matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
+        tokio::task::spawn_blocking(|| {
+            let mut line = String::new();
+            if std::io::stdin().read_line(&mut line).is_err() {
+                return false;
+            }
+            matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
+        })
+        .await
+        .unwrap_or(false)
     }
 }
 

@@ -88,7 +88,7 @@ impl<P: Provider> Agent<P> {
         let allowed = match policy.decide(name) {
             Decision::Allow => true,
             Decision::Deny => false,
-            Decision::Ask => prompter.confirm(name, &call.function.arguments),
+            Decision::Ask => prompter.confirm(name, &call.function.arguments).await,
         };
         if !allowed {
             return format!("error: permission denied for tool '{name}'");
@@ -235,8 +235,9 @@ mod tests {
     }
 
     struct AllowAll;
+    #[async_trait]
     impl Prompter for AllowAll {
-        fn confirm(&mut self, _t: &str, _a: &str) -> bool {
+        async fn confirm(&mut self, _t: &str, _a: &str) -> bool {
             true
         }
     }

@@ -13,8 +13,8 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// entheai — hybrid coding agent (v0.1)
 #[derive(Parser)]
 struct Cli {
-    /// The prompt to send.
-    prompt: String,
+    /// The prompt to send. Omit to launch the interactive TUI.
+    prompt: Option<String>,
     /// Path to config TOML (default: ./entheai.toml).
     #[arg(long, default_value = "entheai.toml")]
     config: String,
@@ -85,12 +85,21 @@ async fn main() -> anyhow::Result<()> {
         yolo: cli.yolo,
         allowlist: vec![],
     };
-    let mut prompter = entheai_permission::StdinPrompter;
 
-    let messages = vec![ChatMessage::user(cli.prompt)];
-    let answer = agent
-        .run_task(messages, &registry, &policy, &mut prompter)
-        .await?;
-    println!("{answer}");
+    match cli.prompt {
+        // One-shot: run the prompt, print the answer, exit.
+        Some(prompt) => {
+            let mut prompter = entheai_permission::StdinPrompter;
+            let messages = vec![ChatMessage::user(prompt)];
+            let answer = agent
+                .run_task(messages, &registry, &policy, &mut prompter)
+                .await?;
+            println!("{answer}");
+        }
+        // No prompt: launch the interactive TUI.
+        None => {
+            entheai_tui::run(agent, registry, policy, model_id.clone()).await?;
+        }
+    }
     Ok(())
 }

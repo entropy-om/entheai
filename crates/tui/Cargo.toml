@@ -1,0 +1,17 @@
+[package]
+name = "entheai-tui"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+entheai-core = { path = "../core" }
+entheai-providers = { path = "../providers" }
+entheai-tools = { path = "../tools" }
+entheai-permission = { path = "../permission" }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+futures = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
