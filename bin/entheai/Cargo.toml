@@ -8,9 +8,12 @@ rust-version.workspace = true
 entheai-config = { path = "../../crates/config" }
 entheai-providers = { path = "../../crates/providers" }
 entheai-core = { path = "../../crates/core" }
+entheai-tools = { path = "../../crates/tools" }
+entheai-permission = { path = "../../crates/permission" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
 anyhow.workspace = true
 clap.workspace = true
+sentry = { workspace = true }
 
 # macOS: mimalloc as the global allocator (wired in main.rs) — better under concurrent load.
 [target.'cfg(target_os = "macos")'.dependencies]

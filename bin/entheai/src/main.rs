@@ -1,9 +1,7 @@
-use std::io::Write;
-
 use anyhow::Context;
 use clap::Parser;
 use entheai_config::Config;
-use entheai_core::{Agent, TokenSink};
+use entheai_core::Agent;
 use entheai_providers::{ChatMessage, OpenAiCompatProvider};
 
 // macOS: mimalloc handles the concurrent tokio / multi-agent allocation load
@@ -12,7 +10,7 @@ use entheai_providers::{ChatMessage, OpenAiCompatProvider};
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// entheai — hybrid coding agent (v0.1 skeleton)
+/// entheai — hybrid coding agent (v0.1)
 #[derive(Parser)]
 struct Cli {
     /// The prompt to send.
@@ -23,18 +21,27 @@ struct Cli {
     /// Override model as "<provider>/<model>".
     #[arg(long)]
     model: Option<String>,
-}
-
-struct StdoutSink;
-impl TokenSink for StdoutSink {
-    fn emit(&mut self, token: &str) {
-        print!("{token}");
-        let _ = std::io::stdout().flush();
-    }
+    /// Auto-approve all tool calls (skip the permission prompt).
+    #[arg(long)]
+    yolo: bool,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Crash/error reporting to Sentry (cloud). DSNs are client-embeddable by design;
+    // override or disable via the SENTRY_DSN env var. The guard flushes events on drop.
+    let dsn = std::env::var("SENTRY_DSN").unwrap_or_else(|_| {
+        "https://ea8a1a1d46d9c33b709aae544ff24a79@o4511756214075392.ingest.de.sentry.io/4511756233474128".to_string()
+    });
+    let _sentry = sentry::init((
+        dsn,
+        sentry::ClientOptions {
+            release: sentry::release_name!(),
+            send_default_pii: true,
+            ..Default::default()
+        },
+    ));
+
     let cli = Cli::parse();
 
     let cfg_text = std::fs::read_to_string(&cli.config)
@@ -61,9 +68,24 @@ async fn main() -> anyhow::Result<()> {
     let provider = OpenAiCompatProvider::new(pcfg.base_url.clone(), api_key);
     let agent = Agent::new(provider, model.to_string());
 
-    let mut sink = StdoutSink;
+    // Built-in tools, rooted at the canonicalized working directory.
+    let root = std::env::current_dir()?.canonicalize()?;
+    let mut registry = entheai_tools::ToolRegistry::new();
+    registry.register(Box::new(entheai_tools::fs::ReadFile::new(root.clone())));
+    registry.register(Box::new(entheai_tools::fs::WriteFile::new(root.clone())));
+    registry.register(Box::new(entheai_tools::shell::RunShell::new(root.clone())));
+    registry.register(Box::new(entheai_tools::search::Search::new(root.clone())));
+
+    let policy = entheai_permission::Policy {
+        yolo: cli.yolo,
+        allowlist: vec![],
+    };
+    let mut prompter = entheai_permission::StdinPrompter;
+
     let messages = vec![ChatMessage::user(cli.prompt)];
-    agent.run_turn(messages, &mut sink).await?;
-    println!();
+    let answer = agent
+        .run_task(messages, &registry, &policy, &mut prompter)
+        .await?;
+    println!("{answer}");
     Ok(())
 }
