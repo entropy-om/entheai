@@ -46,8 +46,11 @@ impl<P: Provider> Agent<P> {
         policy: &entheai_permission::Policy,
         prompter: &mut impl entheai_permission::Prompter,
     ) -> anyhow::Result<String> {
+        // Hard cap on tool-dispatch rounds, so a looping model can't burn unbounded
+        // paid API calls (critical under --yolo, where no human approves each call).
+        const MAX_TURNS: usize = 25;
         let schemas = registry.schemas();
-        loop {
+        for _turn in 0..MAX_TURNS {
             let resp = self
                 .provider
                 .complete(&self.model, messages.clone(), schemas.clone())
@@ -62,6 +65,7 @@ impl<P: Provider> Agent<P> {
                 messages.push(ChatMessage::tool_result(call.id, result));
             }
         }
+        anyhow::bail!("run_task exceeded {MAX_TURNS} tool-dispatch turns without a final answer")
     }
 
     async fn dispatch_call(
@@ -84,8 +88,10 @@ impl<P: Provider> Agent<P> {
         let Some(tool) = registry.get(name) else {
             return format!("error: unknown tool '{name}'");
         };
-        let args: serde_json::Value = serde_json::from_str(&call.function.arguments)
-            .unwrap_or_else(|_| serde_json::json!({}));
+        let args: serde_json::Value = match serde_json::from_str(&call.function.arguments) {
+            Ok(v) => v,
+            Err(e) => return format!("error: could not parse tool arguments as JSON: {e}"),
+        };
         match tool.call(args).await {
             Ok(out) => out,
             Err(e) => format!("error: {e}"),
@@ -247,5 +253,57 @@ mod tests {
             .unwrap();
         assert_eq!(answer, "final answer");
         assert_eq!(policy.decide("echo"), Decision::Allow); // sanity
+    }
+
+    struct AlwaysToolProvider;
+    #[async_trait]
+    impl Provider for AlwaysToolProvider {
+        async fn stream_chat(
+            &self,
+            _m: &str,
+            _msgs: Vec<ChatMessage>,
+        ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
+            Ok(Box::pin(stream::iter(vec![Ok(StreamEvent::Done)])))
+        }
+        async fn complete(
+            &self,
+            _m: &str,
+            _msgs: Vec<ChatMessage>,
+            _tools: Vec<serde_json::Value>,
+        ) -> anyhow::Result<AssistantResponse> {
+            Ok(AssistantResponse {
+                content: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "c".into(),
+                    kind: "function".into(),
+                    function: FunctionCall {
+                        name: "echo".into(),
+                        arguments: "{}".into(),
+                    },
+                }],
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn run_task_caps_runaway_tool_loops() {
+        let agent = Agent::new(AlwaysToolProvider, "m".into());
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoTool));
+        let policy = Policy {
+            yolo: true,
+            allowlist: vec![],
+        };
+        let mut prompter = AllowAll;
+        let result = agent
+            .run_task(
+                vec![ChatMessage::user("loop")],
+                &registry,
+                &policy,
+                &mut prompter,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(format!("{}", result.err().unwrap()).contains("exceeded"));
     }
 }
