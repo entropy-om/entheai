@@ -33,7 +33,12 @@ Cargo.toml                          # workspace root (resolver=2)
 ├── crates/core/                    # entheai-core: Agent loop (streaming + tool-dispatch)
 ├── crates/tools/                   # entheai-tools: Tool trait + ToolRegistry + built-in tools
 ├── crates/permission/              # entheai-permission: Policy (yolo/allowlist/ask) + Prompter
-└── crates/radio/                   # entheai-radio: in-TUI music (yt-dlp download → rodio playback)
+├── crates/tui/                     # entheai-tui: Interactive ratatui chat UI
+├── crates/companion/               # entheai-companion: Session beacon window (QR + animation)
+├── crates/memory/                  # entheai-memory: Two-tier vector store (SQLite + embeddings)
+├── crates/radio/                   # entheai-radio: in-TUI music (yt-dlp download → rodio playback)
+├── crates/orchestrator/            # entheai-orchestrator: Fan-out agent orchestration
+└── crates/mcp/                     # entheai-mcp: MCP client + server
 ```
 
 Crate names use dashes (`entheai-core`) but Rust module names use underscores (`entheai_core`). Every crate is version `0.1.0`.
@@ -47,6 +52,22 @@ Crate names use dashes (`entheai-core`) but Rust module names use underscores (`
 3. **`entheai_providers::OpenAiCompatProvider`** implements the `Provider` trait. Streaming uses `eventsource-stream` to parse SSE; non-streaming `complete()` deserializes JSON including optional `tool_calls`. Both hit `POST /chat/completions`.
 4. **`entheai_tools::ToolRegistry`** stores `Box<dyn Tool>` by name. `schemas()` returns all OpenAI function-tool JSON schemas for the provider. **Built-in tools**: `read_file`, `write_file`, `search`, `run_shell`. All are rooted at the canonicalized `current_dir()`.
 5. **`entheai_permission`**: `Policy.decide(tool_name)` returns `Allow` (yolo or allowlisted), `Deny`, or `Ask`. `Ask` falls through to `Prompter::confirm()` which reads `y/N` from stdin.
+6. **`entheai-companion`** (separate binary, `crates/companion/src/main.rs`): spawned as a child process by the main binary whenever `[companion].enabled = true` (and `--no-companion` is not passed). A 180×180 px borderless always-on-top floating window (winit + softbuffer). Shows an animated breathing glow with a QR code encoding `{sid, host, port, cwd}`. Drives a four-state animation:
+   - **idle** — slow teal pulse (3s cycle) when TUI is waiting for input
+   - **working** — fast teal pulse (1.5s) + orbiting spinner while the agent runs
+   - **permission_pending** — magenta pulse (1s) + "?" glyph when a tool is gated
+   - **error** — red dim pulse (4s) on errors
+   State changes arrive over a Unix socket (`$TMPDIR/entheai-<sid>.sock`) as `StateChange` JSON lines. Clicking copies `http://<host>.local:9876/session/<sid>` to clipboard. On socket close, fades out over 500ms and exits. Full spec: `docs/superpowers/specs/2026-07-18-entheai-companion-design.md`.
+
+### Companion config (`entheai.toml`)
+
+```toml
+[companion]
+enabled = true          # spawn companion window (default: true)
+always_on_top = true    # float above other windows (default: true)
+```
+
+CLI: `--no-companion` disables for the session.
 
 ## Key patterns & conventions
 
