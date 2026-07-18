@@ -10,6 +10,7 @@
 
 use std::io::Stdout;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use crossterm::{
@@ -28,10 +29,14 @@ use ratatui::{
 };
 use tokio::sync::{mpsc, oneshot};
 
-use entheai_core::{Agent, CoreError};
+use entheai_core::{Agent, AgentEvent, CoreError};
 use entheai_permission::{Policy, Prompter};
 use entheai_providers::{ChatMessage, Provider};
 use entheai_tools::ToolRegistry;
+
+/// Spinner animation frames for the live progress line (Charm/Bubbletea-style
+/// braille spinner), advanced on each animation tick while a run is in flight.
+const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 type Backend = CrosstermBackend<Stdout>;
 
@@ -113,6 +118,14 @@ struct App {
     model_label: String,
     /// The responder for the modal currently on screen, if any.
     pending_permission: Option<oneshot::Sender<bool>>,
+    /// When the current run started; `None` while idle. Drives the elapsed-time
+    /// display in the live progress line.
+    run_started: Option<Instant>,
+    /// Current frame index into [`FRAMES`] for the progress-line spinner.
+    spinner_frame: usize,
+    /// Human-readable description of what the agent is doing right now, e.g.
+    /// "thinking" or "running read_file".
+    current_action: String,
 }
 
 /// What a key press asked the loop to do.
@@ -169,6 +182,10 @@ async fn event_loop<P: Provider + 'static>(
 
     let (perm_tx, mut perm_rx) = mpsc::channel::<PermissionRequest>(8);
     let (result_tx, mut result_rx) = mpsc::channel::<Result<String, CoreError>>(8);
+    // Receiver for the currently running task's progress events, if any. Set on
+    // submit, torn down when the run's sender is dropped (channel closes) or the
+    // result arrives.
+    let mut events_rx: Option<mpsc::UnboundedReceiver<AgentEvent>> = None;
 
     let mut app = App {
         messages: Vec::new(),
@@ -178,14 +195,20 @@ async fn event_loop<P: Provider + 'static>(
         follow: true,
         model_label,
         pending_permission: None,
+        run_started: None,
+        spinner_frame: 0,
+        current_action: "thinking".to_string(),
     };
 
     let mut events = EventStream::new();
+    let mut ticker = tokio::time::interval(Duration::from_millis(90));
 
     loop {
         // Clamp scroll against the current terminal size before drawing.
         let size = terminal.size()?;
-        let history_height = size.height.saturating_sub(STATUS_ROWS + INPUT_ROWS);
+        let history_height = size
+            .height
+            .saturating_sub(STATUS_ROWS + PROGRESS_ROWS + INPUT_ROWS);
         let lines = build_history_lines(&app.messages, size.width);
         let max_scroll = (lines.len() as u16).saturating_sub(history_height);
         if app.follow {
@@ -214,6 +237,8 @@ async fn event_loop<P: Provider + 'static>(
                             app.messages.push(Msg { role: Role::User, text });
                             app.status = Status::Working;
                             app.follow = true;
+                            app.current_action = "thinking".to_string();
+                            app.run_started = Some(Instant::now());
                             let history = build_history(&app.messages);
 
                             let agent = Arc::clone(&agent);
@@ -221,10 +246,12 @@ async fn event_loop<P: Provider + 'static>(
                             let policy = Arc::clone(&policy);
                             let perm_tx = perm_tx.clone();
                             let result_tx = result_tx.clone();
+                            let (event_tx, event_rx) = mpsc::unbounded_channel::<AgentEvent>();
+                            events_rx = Some(event_rx);
                             tokio::spawn(async move {
                                 let mut prompter = TuiPrompter { tx: perm_tx };
                                 let res = agent
-                                    .run_task(history, &registry, &policy, &mut prompter)
+                                    .run_task(history, &registry, &policy, &mut prompter, Some(event_tx))
                                     .await;
                                 let _ = result_tx.send(res).await;
                             });
@@ -243,6 +270,30 @@ async fn event_loop<P: Provider + 'static>(
                 }
                 app.status = Status::Idle;
                 app.follow = true;
+                app.run_started = None;
+                events_rx = None;
+            }
+            maybe_progress = async {
+                match events_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match maybe_progress {
+                    Some(AgentEvent::Thinking) => app.current_action = "thinking".to_string(),
+                    Some(AgentEvent::ToolStarted { name }) => {
+                        app.current_action = format!("running {name}");
+                    }
+                    Some(AgentEvent::ToolFinished { .. }) => {
+                        app.current_action = "thinking".to_string();
+                    }
+                    None => events_rx = None, // sender dropped -> run finished
+                }
+            }
+            _ = ticker.tick() => {
+                if matches!(app.status, Status::Working) {
+                    app.spinner_frame = (app.spinner_frame + 1) % FRAMES.len();
+                }
             }
         }
     }
@@ -251,6 +302,7 @@ async fn event_loop<P: Provider + 'static>(
 }
 
 const STATUS_ROWS: u16 = 1;
+const PROGRESS_ROWS: u16 = 1;
 const INPUT_ROWS: u16 = 3;
 
 /// Map a key press to an [`Action`], mutating input/scroll/modal state as needed.
@@ -371,9 +423,10 @@ fn build_history_lines(messages: &[Msg], width: u16) -> Vec<Line<'static>> {
 
 fn render(frame: &mut Frame, app: &App, lines: Vec<Line<'static>>, scroll: u16) {
     let area = frame.area();
-    let [status_area, history_area, input_area] = Layout::vertical([
+    let [status_area, history_area, progress_area, input_area] = Layout::vertical([
         Constraint::Length(STATUS_ROWS),
         Constraint::Min(1),
+        Constraint::Length(PROGRESS_ROWS),
         Constraint::Length(INPUT_ROWS),
     ])
     .areas(area);
@@ -395,6 +448,34 @@ fn render(frame: &mut Frame, app: &App, lines: Vec<Line<'static>>, scroll: u16) 
 
     // History (pre-wrapped, so scroll offset is exact).
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), history_area);
+
+    // Charm-style live progress line: spinner + current action + elapsed time.
+    // Blank when idle so the input box never jumps; the permission modal covers
+    // this row visually while awaiting approval, so we just show a static note.
+    let progress = match &app.status {
+        Status::Working => {
+            let elapsed = app.run_started.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+            Line::from(vec![
+                Span::styled(
+                    FRAMES[app.spinner_frame],
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    format!("{} · {elapsed}s", app.current_action),
+                    Style::default().add_modifier(Modifier::DIM),
+                ),
+            ])
+        }
+        Status::AwaitingPermission { .. } => Line::styled(
+            "awaiting approval",
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+        Status::Idle => Line::from(""),
+    };
+    frame.render_widget(Paragraph::new(progress), progress_area);
 
     // Input box.
     let input = Paragraph::new(app.input.as_str())

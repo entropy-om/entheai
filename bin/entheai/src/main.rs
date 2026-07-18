@@ -92,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
             let mut prompter = entheai_permission::StdinPrompter;
             let messages = vec![ChatMessage::user(prompt)];
             let answer = agent
-                .run_task(messages, &registry, &policy, &mut prompter)
+                .run_task(messages, &registry, &policy, &mut prompter, None)
                 .await?;
             println!("{answer}");
         }

@@ -9,6 +9,18 @@ pub enum CoreError {
     MaxTurnsExceeded(usize),
 }
 
+/// Progress notifications emitted by `run_task` while it works, so a UI (e.g.
+/// the TUI) can render a live "what's happening" indicator without polling.
+#[derive(Debug, Clone)]
+pub enum AgentEvent {
+    /// About to call the model.
+    Thinking,
+    /// About to execute a tool.
+    ToolStarted { name: String },
+    /// A tool call returned.
+    ToolFinished { name: String },
+}
+
 /// Where streamed tokens go (stdout in the CLI, the TUI later).
 pub trait TokenSink {
     fn emit(&mut self, token: &str);
@@ -53,12 +65,16 @@ impl<P: Provider> Agent<P> {
         registry: &entheai_tools::ToolRegistry,
         policy: &entheai_permission::Policy,
         prompter: &mut impl entheai_permission::Prompter,
+        events: Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
     ) -> Result<String, CoreError> {
         // Hard cap on tool-dispatch rounds, so a looping model can't burn unbounded
         // paid API calls (critical under --yolo, where no human approves each call).
         const MAX_TURNS: usize = 25;
         let schemas = registry.schemas();
         for _turn in 0..MAX_TURNS {
+            if let Some(tx) = &events {
+                let _ = tx.send(AgentEvent::Thinking);
+            }
             let resp = self
                 .provider
                 .complete(&self.model, messages.clone(), schemas.clone())
@@ -69,7 +85,9 @@ impl<P: Provider> Agent<P> {
             // Record the assistant's tool-call message in history.
             messages.push(ChatMessage::assistant_tool_calls(resp.tool_calls.clone()));
             for call in resp.tool_calls {
-                let result = self.dispatch_call(&call, registry, policy, prompter).await;
+                let result = self
+                    .dispatch_call(&call, registry, policy, prompter, &events)
+                    .await;
                 messages.push(ChatMessage::tool_result(call.id, result));
             }
         }
@@ -82,6 +100,7 @@ impl<P: Provider> Agent<P> {
         registry: &entheai_tools::ToolRegistry,
         policy: &entheai_permission::Policy,
         prompter: &mut impl entheai_permission::Prompter,
+        events: &Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
     ) -> String {
         use entheai_permission::Decision;
         let name = &call.function.name;
@@ -100,10 +119,17 @@ impl<P: Provider> Agent<P> {
             Ok(v) => v,
             Err(e) => return format!("error: could not parse tool arguments as JSON: {e}"),
         };
-        match tool.call(args).await {
+        if let Some(tx) = events {
+            let _ = tx.send(AgentEvent::ToolStarted { name: name.clone() });
+        }
+        let result = match tool.call(args).await {
             Ok(out) => out,
             Err(e) => format!("error: {e}"),
+        };
+        if let Some(tx) = events {
+            let _ = tx.send(AgentEvent::ToolFinished { name: name.clone() });
         }
+        result
     }
 }
 
@@ -264,6 +290,7 @@ mod tests {
                 &registry,
                 &policy,
                 &mut prompter,
+                None,
             )
             .await
             .unwrap();
@@ -320,9 +347,56 @@ mod tests {
                 &registry,
                 &policy,
                 &mut prompter,
+                None,
             )
             .await;
         assert!(result.is_err());
         assert!(format!("{}", result.err().unwrap()).contains("exceeded"));
+    }
+
+    #[tokio::test]
+    async fn run_task_emits_thinking_and_tool_events() {
+        let agent = Agent::new(
+            ScriptedProvider {
+                calls: Mutex::new(0),
+            },
+            "m".into(),
+        );
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoTool));
+        let policy = Policy {
+            yolo: true,
+            allowlist: vec![],
+        };
+        let mut prompter = AllowAll;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let answer = agent
+            .run_task(
+                vec![ChatMessage::user("do it")],
+                &registry,
+                &policy,
+                &mut prompter,
+                Some(tx),
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer, "final answer");
+
+        let mut received = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            received.push(ev);
+        }
+
+        assert!(matches!(received[0], AgentEvent::Thinking));
+        assert!(matches!(
+            &received[1],
+            AgentEvent::ToolStarted { name } if name == "echo"
+        ));
+        assert!(matches!(
+            &received[2],
+            AgentEvent::ToolFinished { name } if name == "echo"
+        ));
+        assert!(matches!(received[3], AgentEvent::Thinking));
     }
 }
