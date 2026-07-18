@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>entheai docs</title>
+<meta name="description" content="entheai documentation — installation, configuration, the agent loop, the tiered router, fan-out, permissions, memory, and architecture.">
+<link rel="stylesheet" href="../assets/css/tokens.css">
+<style>
+  body { color: var(--text-primary); }
+  header.topbar {
+    position: sticky; top: 0; z-index: 30; height: var(--topbar-h);
+    display: flex; align-items: center; gap: 16px; padding: 0 var(--gutter);
+    background: color-mix(in oklab, var(--bg-app) 82%, transparent);
+    backdrop-filter: blur(12px); border-bottom: 1px solid var(--border-subtle);
+  }
+  .burger { display: none; background: none; border: none; color: var(--text-primary); font-size: 20px; cursor: pointer; }
+  .brand { font-family: var(--font-mono); font-weight: 700; font-size: var(--text-lg); letter-spacing: -0.03em; color: var(--text-primary); }
+  .brand .sub { color: var(--text-faint); font-weight: 400; font-size: var(--text-sm); }
+  .search-wrap { flex: 1; max-width: 320px; position: relative; margin-left: auto; }
+  .search-wrap input {
+    width: 100%; padding: 7px 12px; font-family: var(--font-mono); font-size: var(--text-sm);
+    background: var(--bg-inset); border: 1px solid var(--border-default); border-radius: var(--radius-md);
+    color: var(--text-primary); outline: none;
+  }
+  .search-results {
+    position: absolute; top: 110%; left: 0; right: 0; background: var(--bg-raised);
+    border: 1px solid var(--border-default); border-radius: var(--radius-md); box-shadow: var(--shadow-lg);
+    overflow: hidden; max-height: 300px; overflow-y: auto; z-index: 40;
+  }
+  .search-hit {
+    display: block; width: 100%; text-align: left; padding: 9px 12px; background: none; border: none;
+    cursor: pointer; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-secondary);
+  }
+  .search-hit-group { color: var(--text-faint); margin-left: 8px; font-size: var(--text-xs); }
+  .search-empty { padding: 9px 12px; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--text-sm); }
+  .theme-toggle {
+    background: var(--bg-inset); border: 1px solid var(--border-default); border-radius: var(--radius-md);
+    color: var(--text-secondary); width: 34px; height: 34px; cursor: pointer; font-size: 15px;
+  }
+  .gh-link { font-family: var(--font-mono); font-size: var(--text-sm); }
+
+  .docs-grid {
+    display: grid; grid-template-columns: var(--sidebar-w) minmax(0, 1fr) var(--toc-w);
+    align-items: start; max-width: var(--container-wide); margin: 0 auto;
+  }
+  nav.sidebar { padding: 20px 14px; font-family: var(--font-mono); position: sticky; top: var(--topbar-h);
+    height: calc(100vh - var(--topbar-h)); overflow-y: auto; border-right: 1px solid var(--border-subtle); }
+  .nav-group { margin-bottom: 20px; }
+  .nav-group-label {
+    font-size: var(--text-xs); text-transform: uppercase; letter-spacing: var(--tracking-caps);
+    color: var(--text-faint); padding: 0 10px 8px;
+  }
+  .nav-item {
+    display: block; width: 100%; text-align: left; padding: 7px 10px; margin-bottom: 1px;
+    font-family: var(--font-mono); font-size: var(--text-sm); cursor: pointer; border-radius: var(--radius-sm);
+    border: none; border-left: 2px solid transparent; background: transparent; color: var(--text-muted);
+    transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+    text-decoration: none;
+  }
+  .nav-item:hover { color: var(--text-secondary); }
+  .nav-item.is-active {
+    background: color-mix(in oklab, var(--teal-400) 12%, transparent);
+    color: var(--teal-300); border-left-color: var(--teal-400);
+  }
+
+  main.docs-main { padding: 40px clamp(24px, 4vw, 64px) 80px; min-height: 70vh; }
+  [data-page] { animation: ent-docfade var(--dur-base) var(--ease-out); }
+  [data-page] h1 { font: var(--font-h1); color: var(--text-primary); margin: 0 0 12px; }
+  [data-page] h2 { font: var(--font-h2); color: var(--text-primary); margin: 40px 0 14px; scroll-margin-top: 80px; }
+  [data-page] p { font: var(--font-body-lg); color: var(--text-secondary); margin: 0 0 16px; max-width: 680px; }
+  [data-page] p strong { color: var(--text-primary); }
+  .copy-page-btn { display: inline-block; margin: 0 0 20px; }
+
+  .key-table { width: 100%; border-collapse: collapse; margin: 6px 0 20px; font-family: var(--font-mono); font-size: var(--text-sm); }
+  .key-table th {
+    text-align: left; padding: 9px 12px; color: var(--text-muted); font-weight: 600;
+    border-bottom: 1px solid var(--border-default); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .key-table td { padding: 9px 12px; border-bottom: 1px solid var(--border-subtle); }
+  .key-table td.key { color: var(--teal-300); }
+  .key-table td.type { color: var(--magenta-300); }
+  .key-table td.desc { color: var(--text-secondary); font-family: var(--font-sans); }
+
+  .doc-nav-links { display: flex; justify-content: space-between; gap: 16px; margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--border-subtle); }
+  .doc-nav-btn {
+    background: var(--bg-raised); border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+    padding: 12px 16px; cursor: pointer; font-family: var(--font-mono); font-size: var(--text-sm); max-width: 260px;
+    text-decoration: none; display: block; color: inherit;
+  }
+  .doc-nav-btn .eyebrow-label { color: var(--text-faint); font-size: var(--text-xs); display: block; }
+  .doc-nav-btn div[data-label] { color: var(--text-primary); }
+  .doc-nav-btn.next { text-align: right; }
+  .doc-nav-btn[hidden] { display: none; }
+
+  aside.toc { position: sticky; top: var(--topbar-h); padding: 44px 20px; font-family: var(--font-mono); font-size: var(--text-xs); }
+  .toc-label { color: var(--text-faint); text-transform: uppercase; letter-spacing: var(--tracking-caps); margin-bottom: 12px; }
+
+  .drawer-overlay { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.5); }
+  .drawer-panel { position: absolute; top: 0; left: 0; bottom: 0; width: 280px; background: var(--bg-app); border-right: 1px solid var(--border-default); overflow-y: auto; }
+
+  @media (max-width: 1080px) {
+    aside.toc { display: none; }
+    .docs-grid { grid-template-columns: var(--sidebar-w) minmax(0, 1fr); }
+  }
+  @media (max-width: 760px) {
+    nav.sidebar { display: none; }
+    .docs-grid { grid-template-columns: minmax(0, 1fr); }
+    .burger { display: block !important; }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <button class="burger" data-burger>☰</button>
+  <div class="brand">entheai <span class="sub">docs</span></div>
+  <div class="search-wrap">
+    <input type="text" placeholder="Search…" data-search-input>
+    <div class="search-results" data-search-results hidden></div>
+  </div>
+  <button class="theme-toggle" data-theme-toggle title="Toggle theme">☾</button>
+  <a class="gh-link" href="https://github.com/peterlodri-sec/entheai" target="_blank" rel="noopener">GitHub ↗</a>
+</header>
+
+<div class="docs-grid">
+  <nav class="sidebar" id="sidebar-nav">
+<!--NAV-->
+  </nav>
+
+  <main class="docs-main">
+
+<!--PAGES-->
+
+    <div class="doc-nav-links">
+      <a class="doc-nav-btn prev" href="#" data-nav-prev hidden>
+        <span class="eyebrow-label">← Previous</span>
+        <div data-label></div>
+      </a>
+      <a class="doc-nav-btn next" href="#" data-nav-next hidden>
+        <span class="eyebrow-label">Next →</span>
+        <div data-label></div>
+      </a>
+    </div>
+
+  </main>
+
+  <aside class="toc">
+    <div class="toc-label">On this page</div>
+    <div data-toc></div>
+  </aside>
+</div>
+
+<div class="drawer-overlay" data-drawer hidden>
+  <div class="drawer-panel" id="drawer-nav"></div>
+</div>
+
+<script>
+  document.getElementById("drawer-nav").innerHTML = document.getElementById("sidebar-nav").innerHTML;
+</script>
+<script src="../assets/js/docs.js"></script>
+<!--MD_SCRIPTS-->
+</body>
+</html>
