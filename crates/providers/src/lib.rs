@@ -194,6 +194,7 @@ mod message_tests {
         };
         let j = serde_json::to_value(ChatMessage::assistant_tool_calls(vec![call])).unwrap();
         assert_eq!(j["role"], "assistant");
+        assert!(j.get("content").is_none(), "empty content must be omitted");
         assert_eq!(j["tool_calls"][0]["id"], "call_1");
         assert_eq!(j["tool_calls"][0]["type"], "function");
         assert_eq!(j["tool_calls"][0]["function"]["name"], "read_file");
