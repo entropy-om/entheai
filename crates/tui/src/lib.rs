@@ -32,6 +32,7 @@ use tokio::sync::{mpsc, oneshot};
 use entheai_core::{Agent, AgentEvent, CoreError};
 use entheai_permission::{Policy, Prompter};
 use entheai_providers::{ChatMessage, Provider};
+use entheai_radio::{Command as RadioCommand, Event as RadioEvent, Radio};
 use entheai_tools::ToolRegistry;
 
 /// Spinner animation frames for the live progress line (Charm/Bubbletea-style
@@ -148,6 +149,8 @@ struct App {
     /// Human-readable description of what the agent is doing right now, e.g.
     /// "thinking" or "running read_file".
     current_action: String,
+    /// Title of the radio track currently playing, shown in the status bar.
+    now_playing: Option<String>,
 }
 
 /// What a key press asked the loop to do.
@@ -155,6 +158,10 @@ enum Action {
     None,
     Quit,
     Submit(String),
+    /// Ctrl-P: toggle radio pause/resume.
+    RadioToggle,
+    /// Ctrl-N: skip to the next radio track.
+    RadioNext,
 }
 
 /// Run the interactive TUI. Sets up the terminal, runs the event loop, and
@@ -220,7 +227,11 @@ async fn event_loop<P: Provider + 'static>(
         run_started: None,
         spinner_frame: 0,
         current_action: "thinking".to_string(),
+        now_playing: None,
     };
+
+    // Background music player (yt-dlp + rodio); one per TUI session.
+    let mut radio = Radio::spawn(Radio::default_cache_dir());
 
     let mut events = EventStream::new();
     let mut ticker = tokio::time::interval(Duration::from_millis(90));
@@ -255,6 +266,11 @@ async fn event_loop<P: Provider + 'static>(
                     match handle_key(&mut app, key) {
                         Action::Quit => break,
                         Action::None => {}
+                        Action::RadioToggle => radio.send(RadioCommand::TogglePause),
+                        Action::RadioNext => radio.send(RadioCommand::Next),
+                        Action::Submit(text) if is_radio_command(&text) => {
+                            handle_radio_command(&mut app, &radio, &text);
+                        }
                         Action::Submit(text) => {
                             app.messages.push(Msg { role: Role::User, text });
                             app.status = Status::Working;
@@ -320,6 +336,9 @@ async fn event_loop<P: Provider + 'static>(
                     None => events_rx = None, // sender dropped -> run finished
                 }
             }
+            Some(rev) = radio.next_event() => {
+                handle_radio_event(&mut app, rev);
+            }
             _ = ticker.tick() => {
                 if matches!(app.status, Status::Working) {
                     app.spinner_frame = (app.spinner_frame + 1) % FRAMES.len();
@@ -364,6 +383,13 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     let idle = matches!(app.status, Status::Idle);
 
     match key.code {
+        // Radio transport keys work whether idle or mid-run.
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return Action::RadioToggle;
+        }
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return Action::RadioNext;
+        }
         // Ctrl-C / Esc quit only when idle (never mid-run or mid-modal).
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             if idle {
@@ -397,6 +423,87 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     }
 
     Action::None
+}
+
+/// True when the submitted input is a local `/radio` command (never sent to the
+/// agent).
+fn is_radio_command(text: &str) -> bool {
+    let t = text.trim_start();
+    t == "/radio" || t.starts_with("/radio ")
+}
+
+/// Parse and dispatch a `/radio` command, echoing feedback into the history.
+///
+/// Forms: `/radio <url>` · `/radio add <url>` · `/radio pause` · `/radio next`
+/// · `/radio stop` · `/radio` (help).
+fn handle_radio_command(app: &mut App, radio: &Radio, text: &str) {
+    app.messages.push(Msg {
+        role: Role::User,
+        text: text.to_string(),
+    });
+    let mut parts = text.split_whitespace().skip(1); // skip "/radio"
+    let feedback = match (parts.next(), parts.next()) {
+        (Some("add"), Some(url)) => {
+            radio.send(RadioCommand::Add(url.to_string()));
+            format!("♪ fetching {url}")
+        }
+        (Some(url), None) if url.starts_with("http") => {
+            radio.send(RadioCommand::Add(url.to_string()));
+            format!("♪ fetching {url}")
+        }
+        (Some("pause"), None) | (Some("resume"), None) => {
+            radio.send(RadioCommand::TogglePause);
+            "♪ toggled pause (Ctrl-P)".to_string()
+        }
+        (Some("next"), None) | (Some("skip"), None) => {
+            radio.send(RadioCommand::Next);
+            "♪ skipping (Ctrl-N)".to_string()
+        }
+        (Some("stop"), None) => {
+            radio.send(RadioCommand::Stop);
+            "♪ stopping".to_string()
+        }
+        _ => "usage: /radio <url> | add <url> | pause | next | stop  (Ctrl-P pause, Ctrl-N next)"
+            .to_string(),
+    };
+    app.messages.push(Msg {
+        role: Role::Tool,
+        text: feedback,
+    });
+    app.follow = true;
+}
+
+/// Fold a player event into UI state, echoing noteworthy ones into history.
+fn handle_radio_event(app: &mut App, ev: RadioEvent) {
+    match ev {
+        RadioEvent::Fetching { .. } => {} // already echoed on submit
+        RadioEvent::Queued { title } => app.messages.push(Msg {
+            role: Role::Tool,
+            text: format!("♪ queued: {title}"),
+        }),
+        RadioEvent::NowPlaying { title } => {
+            app.messages.push(Msg {
+                role: Role::Tool,
+                text: format!("♪ now playing: {title}"),
+            });
+            app.now_playing = Some(title);
+        }
+        RadioEvent::Paused => {
+            if let Some(t) = &app.now_playing {
+                app.now_playing = Some(format!("{} (paused)", t.trim_end_matches(" (paused)")));
+            }
+        }
+        RadioEvent::Resumed => {
+            if let Some(t) = &app.now_playing {
+                app.now_playing = Some(t.trim_end_matches(" (paused)").to_string());
+            }
+        }
+        RadioEvent::Stopped | RadioEvent::QueueEmpty => app.now_playing = None,
+        RadioEvent::Error(e) => app.messages.push(Msg {
+            role: Role::Error,
+            text: format!("radio: {e}"),
+        }),
+    }
 }
 
 /// Map the display history to provider messages for the next run. Only User and
@@ -481,6 +588,15 @@ fn render(frame: &mut Frame, app: &App, lines: Vec<Line<'static>>, scroll: u16) 
         Span::raw(" · "),
         Span::styled(state, Style::default().fg(Color::Yellow)),
     ]);
+    let mut status_spans: Vec<Span> = status.spans.to_vec();
+    if let Some(title) = &app.now_playing {
+        status_spans.push(Span::raw(" · "));
+        status_spans.push(Span::styled(
+            format!("♪ {}", truncate(title, 40)),
+            Style::default().fg(Color::Magenta),
+        ));
+    }
+    let status = Line::from(status_spans);
     frame.render_widget(Paragraph::new(status), status_area);
 
     // History (pre-wrapped, so scroll offset is exact).
@@ -659,5 +775,45 @@ mod tests {
         let big = centered_rect(200, 100, area);
         assert_eq!(big.width, 100);
         assert_eq!(big.height, 40);
+    }
+
+    #[test]
+    fn radio_command_detection() {
+        assert!(is_radio_command("/radio"));
+        assert!(is_radio_command("/radio https://youtu.be/x"));
+        assert!(is_radio_command("  /radio pause"));
+        assert!(!is_radio_command("/radiohead"));
+        assert!(!is_radio_command("play some music"));
+    }
+
+    #[test]
+    fn radio_events_update_now_playing() {
+        let mut app = App {
+            messages: Vec::new(),
+            input: String::new(),
+            status: Status::Idle,
+            scroll: 0,
+            follow: true,
+            model_label: "m".into(),
+            pending_permission: None,
+            run_started: None,
+            spinner_frame: 0,
+            current_action: String::new(),
+            now_playing: None,
+        };
+        handle_radio_event(
+            &mut app,
+            RadioEvent::NowPlaying {
+                title: "Song".into(),
+            },
+        );
+        assert_eq!(app.now_playing.as_deref(), Some("Song"));
+        handle_radio_event(&mut app, RadioEvent::Paused);
+        assert_eq!(app.now_playing.as_deref(), Some("Song (paused)"));
+        handle_radio_event(&mut app, RadioEvent::Resumed);
+        assert_eq!(app.now_playing.as_deref(), Some("Song"));
+        handle_radio_event(&mut app, RadioEvent::Stopped);
+        assert!(app.now_playing.is_none());
+        assert!(app.messages.iter().any(|m| m.text.contains("now playing")));
     }
 }

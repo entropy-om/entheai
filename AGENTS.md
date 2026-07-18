@@ -32,7 +32,8 @@ Cargo.toml                          # workspace root (resolver=2)
 ├── crates/providers/               # entheai-providers: Provider trait + OpenAiCompatProvider
 ├── crates/core/                    # entheai-core: Agent loop (streaming + tool-dispatch)
 ├── crates/tools/                   # entheai-tools: Tool trait + ToolRegistry + built-in tools
-└── crates/permission/              # entheai-permission: Policy (yolo/allowlist/ask) + Prompter
+├── crates/permission/              # entheai-permission: Policy (yolo/allowlist/ask) + Prompter
+└── crates/radio/                   # entheai-radio: in-TUI music (yt-dlp download → rodio playback)
 ```
 
 Crate names use dashes (`entheai-core`) but Rust module names use underscores (`entheai_core`). Every crate is version `0.1.0`.
