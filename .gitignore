@@ -3,6 +3,8 @@
 .DS_Store
 node_modules
 .wrangler
+.worktrees
+.repowise
 
 # Secrets — NEVER commit. Real keys live in .env (gitignored); .env.example is the template.
 .env
