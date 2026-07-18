@@ -65,6 +65,32 @@ async fn main() -> anyhow::Result<()> {
     registry.register(Box::new(entheai_tools::shell::RunShell::new(root.clone())));
     registry.register(Box::new(entheai_tools::search::Search::new(root.clone())));
 
+    // MCP servers: spawn each configured server, register its tools. A server
+    // that fails or hangs is skipped with a warning (never blocks startup).
+    // Guards are held for the whole session so the child processes stay alive.
+    let mut _mcp_guards = Vec::new();
+    for (name, mcp_cfg) in &cfg.mcp {
+        let load = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let (client, guard) =
+                entheai_mcp::McpClient::spawn(&mcp_cfg.command, &mcp_cfg.args, name).await?;
+            let tools = entheai_mcp::load_tools(client).await?;
+            Ok::<_, entheai_mcp::McpError>((guard, tools))
+        })
+        .await;
+        match load {
+            Ok(Ok((guard, tools))) => {
+                let n = tools.len();
+                for tool in tools {
+                    registry.register(Box::new(tool));
+                }
+                eprintln!("mcp: '{name}' connected ({n} tool(s))");
+                _mcp_guards.push(guard);
+            }
+            Ok(Err(e)) => eprintln!("mcp: '{name}' failed: {e}"),
+            Err(_) => eprintln!("mcp: '{name}' timed out after 10s — skipping"),
+        }
+    }
+
     let policy = entheai_permission::Policy {
         yolo: cli.yolo,
         allowlist: vec![],

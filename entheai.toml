@@ -43,6 +43,11 @@ max_parallel = 4                         # cap on concurrently-running sub-agent
 # [fanout]
 # verify = "cargo test"
 
+# MCP servers — spawned at startup; their tools appear to the agent as `<name>__<tool>`.
+# [mcp.codebase]
+# command = "codebase-memory-mcp"
+# args = ["--root", "."]
+
 [agents.explore]
 model = ["deepseek/deepseek-chat"] # local instead: ["osaurus/<your-local-model>"]
 

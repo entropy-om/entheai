@@ -21,6 +21,8 @@ pub struct Config {
     pub agents: HashMap<String, AgentConfig>,
     #[serde(default)]
     pub fanout: FanoutConfig,
+    #[serde(default)]
+    pub mcp: std::collections::HashMap<String, McpServerConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -68,6 +70,14 @@ pub struct FanoutConfig {
     /// changed branches without verifying.
     #[serde(default)]
     pub verify: Option<String>,
+}
+
+/// One MCP server entheai spawns at startup; its tools are exposed to the agent.
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpServerConfig {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -193,5 +203,35 @@ mod tests {
         .unwrap();
 
         assert_eq!(cfg.fanout.verify, None);
+    }
+
+    #[test]
+    fn parses_mcp_servers_when_present() {
+        let cfg = Config::from_toml_str(
+            r#"
+            [mcp.codebase]
+            command = "codebase-memory-mcp"
+            args = ["--root", "."]
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.mcp["codebase"].command, "codebase-memory-mcp");
+        assert_eq!(
+            cfg.mcp["codebase"].args,
+            vec!["--root".to_string(), ".".to_string()]
+        );
+    }
+
+    #[test]
+    fn mcp_defaults_to_empty_map_when_absent() {
+        let cfg = Config::from_toml_str(
+            r#"
+            default_model = "osaurus/qwen3-coder"
+            "#,
+        )
+        .unwrap();
+
+        assert!(cfg.mcp.is_empty());
     }
 }
