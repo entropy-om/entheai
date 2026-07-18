@@ -1,0 +1,13 @@
+[package]
+name = "entheai"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+entheai-config = { path = "../../crates/config" }
+entheai-providers = { path = "../../crates/providers" }
+entheai-core = { path = "../../crates/core" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
+anyhow.workspace = true
+clap.workspace = true

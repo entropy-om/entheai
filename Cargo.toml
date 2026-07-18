@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/config", "crates/providers", "crates/core", "bin/entheai"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.80"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+anyhow = "1"
+thiserror = "2"
+futures = "0.3"
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+eventsource-stream = "0.2"
+clap = { version = "4", features = ["derive"] }
+wiremock = "0.6"
+
+# Perf-first (spec §9): optimize release builds hard. NOTE: do NOT set panic="abort"
+# — sub-agents (later plans) run as tokio tasks and we must catch their panics.
+[profile.release]
+lto = true
+codegen-units = 1
