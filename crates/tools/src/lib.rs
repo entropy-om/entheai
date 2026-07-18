@@ -1,4 +1,6 @@
 pub mod fs;
+pub mod search;
+pub mod shell;
 
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -61,5 +63,44 @@ mod tests {
         let tool = ReadFile::new(dir.path());
         let err = tool.call(serde_json::json!({ "path": "../secret" })).await;
         assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn write_file_writes_within_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = crate::fs::WriteFile::new(dir.path());
+        let out = tool
+            .call(serde_json::json!({ "path": "out.txt", "content": "data" }))
+            .await
+            .unwrap();
+        assert!(out.contains("out.txt"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("out.txt")).unwrap(),
+            "data"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_shell_captures_stdout() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = crate::shell::RunShell::new(dir.path());
+        let out = tool
+            .call(serde_json::json!({ "command": "echo hello" }))
+            .await
+            .unwrap();
+        assert!(out.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn search_finds_matching_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "alpha\nNEEDLE here\nbeta").unwrap();
+        let tool = crate::search::Search::new(dir.path());
+        let out = tool
+            .call(serde_json::json!({ "query": "NEEDLE" }))
+            .await
+            .unwrap();
+        assert!(out.contains("a.txt"));
+        assert!(out.contains("NEEDLE here"));
     }
 }

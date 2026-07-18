@@ -51,7 +51,7 @@ impl Tool for ReadFile {
         serde_json::json!({
             "type": "function",
             "function": {
-                "name": "read_file",
+                "name": self.name(),
                 "description": "Read a UTF-8 text file within the workspace.",
                 "parameters": {
                     "type": "object",
@@ -64,6 +64,50 @@ impl Tool for ReadFile {
     async fn call(&self, args: serde_json::Value) -> anyhow::Result<String> {
         let rel = path_arg(&args)?;
         let path = resolve_in_root(&self.root, &rel)?;
-        Ok(std::fs::read_to_string(&path)?)
+        Ok(tokio::fs::read_to_string(&path).await?)
+    }
+}
+
+pub struct WriteFile {
+    root: PathBuf,
+}
+impl WriteFile {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+}
+#[async_trait]
+impl Tool for WriteFile {
+    fn name(&self) -> &str {
+        "write_file"
+    }
+    fn schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": self.name(),
+                "description": "Create or overwrite a UTF-8 text file within the workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Path relative to the workspace root." },
+                        "content": { "type": "string", "description": "Full file contents to write." }
+                    },
+                    "required": ["path", "content"]
+                }
+            }
+        })
+    }
+    async fn call(&self, args: serde_json::Value) -> anyhow::Result<String> {
+        let rel = path_arg(&args)?;
+        let content = args["content"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing string arg 'content'"))?;
+        let path = resolve_in_root(&self.root, &rel)?;
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(&path, content).await?;
+        Ok(format!("wrote {} bytes to {rel}", content.len()))
     }
 }
