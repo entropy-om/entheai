@@ -2,11 +2,13 @@ function firstSentence(markdownBody) {
   const plain = markdownBody
     .replace(/```[\s\S]*?```/g, "")
     .replace(/^>.*$/gm, "")
-    .replace(/[#*_`]/g, "")
+    .replace(/`([^`]*)`/g, (_m, inner) => inner.replace(/\./g, "@@DOT@@"))
+    .replace(/[#*_]/g, "")
     .replace(/\s+/g, " ")
     .trim();
   const match = plain.match(/^[^.!?]*[.!?]/);
-  return (match ? match[0] : plain.slice(0, 140)).trim();
+  const result = (match ? match[0] : plain.slice(0, 140)).trim();
+  return result.replace(/@@DOT@@/g, ".");
 }
 
 export function renderLlmsTxt(pages, groupOrder, opts) {

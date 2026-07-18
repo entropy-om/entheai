@@ -10,3 +10,7 @@ node_modules
 .env
 .env.*
 !.env.example
+
+public/docs/index.html
+public/llms.txt
+public/llms-full.txt
