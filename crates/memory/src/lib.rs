@@ -18,6 +18,7 @@
 //! an OpenAI-compatible endpoint (Osaurus by default).
 
 mod embed;
+mod runtime;
 mod store;
 
 use std::sync::Arc;
@@ -26,6 +27,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub use embed::Embedder;
+pub use runtime::{
+    MemoryRuntime, MemoryRuntimeConfig, MemoryScope, ToolEvidence,
+};
 pub use store::SqliteStore;
 
 /// The five memory namespaces defined by the design spec.

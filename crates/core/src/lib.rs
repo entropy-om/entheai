@@ -20,6 +20,8 @@ pub enum AgentEvent {
     /// A tool call returned (or was denied/failed — `result` carries the
     /// "error: …" text in that case, same string fed back to the model).
     ToolFinished { name: String, result: String },
+    /// A text delta streamed live from the model.
+    Token(String),
 }
 
 /// Where streamed tokens go (stdout in the CLI, the TUI later).
@@ -76,10 +78,26 @@ impl<P: Provider> Agent<P> {
             if let Some(tx) = &events {
                 let _ = tx.send(AgentEvent::Thinking);
             }
-            let resp = self
-                .provider
-                .complete(&self.model, messages.clone(), schemas.clone())
-                .await?;
+            let (ttx, mut trx) = futures::channel::mpsc::unbounded::<String>();
+            let completion =
+                self.provider
+                    .stream_complete(&self.model, messages.clone(), schemas.clone(), Some(ttx));
+            tokio::pin!(completion);
+            let resp = loop {
+                tokio::select! {
+                    biased;
+                    Some(tok) = trx.next() => {
+                        if let Some(tx) = &events { let _ = tx.send(AgentEvent::Token(tok)); }
+                    }
+                    r = &mut completion => {
+                        // drain any tokens buffered right before the future resolved
+                        while let Ok(Some(tok)) = trx.try_recv() {
+                            if let Some(tx) = &events { let _ = tx.send(AgentEvent::Token(tok)); }
+                        }
+                        break r?;
+                    }
+                }
+            };
             if resp.tool_calls.is_empty() {
                 return Ok(resp.content);
             }

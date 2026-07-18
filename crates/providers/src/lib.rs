@@ -114,6 +114,26 @@ pub trait Provider: Send + Sync {
         messages: Vec<ChatMessage>,
         tools: Vec<serde_json::Value>,
     ) -> Result<AssistantResponse, ProviderError>;
+
+    /// Streaming completion. Sends each text delta to `token_tx` (if provided) as
+    /// it arrives, and returns the fully-assembled response (content + tool_calls).
+    /// Default: falls back to non-streaming `complete`, emitting the whole content
+    /// as a single token. `OpenAiCompatProvider` overrides this with real SSE streaming.
+    async fn stream_complete(
+        &self,
+        model: &str,
+        messages: Vec<ChatMessage>,
+        tools: Vec<serde_json::Value>,
+        token_tx: Option<futures::channel::mpsc::UnboundedSender<String>>,
+    ) -> Result<AssistantResponse, ProviderError> {
+        let resp = self.complete(model, messages, tools).await?;
+        if let Some(tx) = &token_tx {
+            if !resp.content.is_empty() {
+                let _ = tx.unbounded_send(resp.content.clone());
+            }
+        }
+        Ok(resp)
+    }
 }
 
 use eventsource_stream::Eventsource;
@@ -220,6 +240,82 @@ impl Provider for OpenAiCompatProvider {
             Some(tc) if tc.is_array() => serde_json::from_value(tc.clone())?,
             _ => Vec::new(),
         };
+        Ok(AssistantResponse {
+            content,
+            tool_calls,
+        })
+    }
+
+    async fn stream_complete(
+        &self,
+        model: &str,
+        messages: Vec<ChatMessage>,
+        tools: Vec<serde_json::Value>,
+        token_tx: Option<futures::channel::mpsc::UnboundedSender<String>>,
+    ) -> Result<AssistantResponse, ProviderError> {
+        let mut body = serde_json::json!({
+            "model": model,
+            "messages": messages,
+            "stream": true,
+        });
+        if !tools.is_empty() {
+            body["tools"] = serde_json::Value::Array(tools);
+        }
+        let resp = self.post_chat(body).await?;
+
+        let mut content = String::new();
+        // Tool-call fragments accumulate here, keyed by the delta's `index`;
+        // arguments arrive as JSON-string fragments that must be concatenated
+        // in arrival order to reassemble the full arguments string.
+        let mut tcs: Vec<(String, String, String)> = Vec::new();
+
+        let mut stream = resp.bytes_stream().eventsource();
+        while let Some(item) = stream.next().await {
+            let event = item.map_err(|e| ProviderError::Stream(e.to_string()))?;
+            if event.data.trim() == "[DONE]" {
+                break;
+            }
+            let v: serde_json::Value = serde_json::from_str(&event.data)?;
+            let delta = &v["choices"][0]["delta"];
+
+            if let Some(s) = delta["content"].as_str() {
+                if !s.is_empty() {
+                    content.push_str(s);
+                    if let Some(tx) = &token_tx {
+                        let _ = tx.unbounded_send(s.to_string());
+                    }
+                }
+            }
+
+            if let Some(arr) = delta["tool_calls"].as_array() {
+                for tc in arr {
+                    let idx = tc["index"].as_u64().unwrap_or(0) as usize;
+                    while tcs.len() <= idx {
+                        tcs.push((String::new(), String::new(), String::new()));
+                    }
+                    if let Some(id) = tc["id"].as_str() {
+                        tcs[idx].0 = id.to_string();
+                    }
+                    if let Some(name) = tc["function"]["name"].as_str() {
+                        tcs[idx].1.push_str(name);
+                    }
+                    if let Some(args) = tc["function"]["arguments"].as_str() {
+                        tcs[idx].2.push_str(args);
+                    }
+                }
+            }
+        }
+
+        let tool_calls: Vec<ToolCall> = tcs
+            .into_iter()
+            .filter(|(_, name, _)| !name.is_empty())
+            .map(|(id, name, arguments)| ToolCall {
+                id,
+                kind: "function".to_string(),
+                function: FunctionCall { name, arguments },
+            })
+            .collect();
+
         Ok(AssistantResponse {
             content,
             tool_calls,
@@ -352,6 +448,73 @@ mod openai_tests {
             msg.contains("bad model"),
             "error should include body, got: {msg}"
         );
+    }
+}
+
+#[cfg(test)]
+mod stream_complete_tests {
+    use super::*;
+    use futures::StreamExt;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn stream_complete_streams_text_and_returns_content() {
+        let server = MockServer::start().await;
+        let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n\
+                   data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\n\
+                   data: [DONE]\n\n";
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse),
+            )
+            .mount(&server)
+            .await;
+
+        let p = OpenAiCompatProvider::new(server.uri(), None);
+        let (tx, rx) = futures::channel::mpsc::unbounded();
+        let resp = p
+            .stream_complete("m", vec![ChatMessage::user("hi")], vec![], Some(tx))
+            .await
+            .unwrap();
+
+        let tokens: Vec<String> = rx.collect().await;
+        assert_eq!(tokens, vec!["Hel".to_string(), "lo".to_string()]);
+        assert_eq!(resp.content, "Hello");
+        assert!(resp.tool_calls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stream_complete_assembles_tool_calls_from_deltas() {
+        let server = MockServer::start().await;
+        let sse = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"\"}}]}}]}\n\n\
+                   data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n\
+                   data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"x\\\"}\"}}]}}]}\n\n\
+                   data: [DONE]\n\n";
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse),
+            )
+            .mount(&server)
+            .await;
+
+        let p = OpenAiCompatProvider::new(server.uri(), None);
+        let resp = p
+            .stream_complete("m", vec![ChatMessage::user("hi")], vec![], None)
+            .await
+            .unwrap();
+
+        assert_eq!(resp.content, "");
+        assert_eq!(resp.tool_calls.len(), 1);
+        assert_eq!(resp.tool_calls[0].id, "call_1");
+        assert_eq!(resp.tool_calls[0].function.name, "read_file");
+        assert_eq!(resp.tool_calls[0].function.arguments, "{\"path\":\"x\"}");
     }
 }
 
