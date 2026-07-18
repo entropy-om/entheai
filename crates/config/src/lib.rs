@@ -19,6 +19,8 @@ pub struct Config {
     pub router: RouterConfig,
     #[serde(default)]
     pub agents: HashMap<String, AgentConfig>,
+    #[serde(default)]
+    pub fanout: FanoutConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -57,6 +59,15 @@ pub struct AgentConfig {
     /// Preference-ordered model ids ("<provider>/<model>") for this role.
     #[serde(default)]
     pub model: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct FanoutConfig {
+    /// Shell command run inside each coder's worktree to decide whether its
+    /// changes are integrated (e.g. "cargo test"). Unset = integrate all
+    /// changed branches without verifying.
+    #[serde(default)]
+    pub verify: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -157,5 +168,30 @@ mod tests {
         assert_eq!(cfg.router.orchestrator, None);
         assert_eq!(cfg.router.max_parallel, 8);
         assert!(cfg.agents.is_empty());
+    }
+
+    #[test]
+    fn parses_fanout_verify_when_present() {
+        let cfg = Config::from_toml_str(
+            r#"
+            [fanout]
+            verify = "cargo test"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.fanout.verify.as_deref(), Some("cargo test"));
+    }
+
+    #[test]
+    fn fanout_verify_defaults_to_none() {
+        let cfg = Config::from_toml_str(
+            r#"
+            default_model = "osaurus/qwen3-coder"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.fanout.verify, None);
     }
 }

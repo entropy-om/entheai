@@ -39,6 +39,10 @@ base_url = "http://127.0.0.1:1337/v1"
 orchestrator = "deepseek/deepseek-chat" # DeepSeek V4 Pro via credits: "zen/deepseek-v4-pro"
 max_parallel = 4                         # cap on concurrently-running sub-agents
 
+# Optional: verify each coder's worktree before integrating its changes.
+# [fanout]
+# verify = "cargo test"
+
 [agents.explore]
 model = ["deepseek/deepseek-chat"] # local instead: ["osaurus/<your-local-model>"]
 
