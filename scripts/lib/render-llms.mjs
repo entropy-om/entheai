@@ -2,7 +2,8 @@ function firstSentence(markdownBody) {
   const plain = markdownBody
     .replace(/```[\s\S]*?```/g, "")
     .replace(/^>.*$/gm, "")
-    .replace(/[#*_`]/g, "")
+    .replace(/`[^`]*`/g, " ")
+    .replace(/[#*_]/g, "")
     .replace(/\s+/g, " ")
     .trim();
   const match = plain.match(/^[^.!?]*[.!?]/);

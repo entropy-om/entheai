@@ -49,3 +49,17 @@ test("renderLlmsFullTxt concatenates all pages with title headings and separator
   assert.match(out, /entheai is a hybrid coding agent\. It does many things\./);
   assert.match(out, /\n---\n/);
 });
+
+test("renderLlmsTxt does not truncate at periods inside inline code spans", () => {
+  const pages = [
+    { id: "config", title: "Configuration", navTitle: "Configuration", group: "Overview", order: 1, body: "Read `entheai.toml` for config. More text here." },
+  ];
+  const out = renderLlmsTxt(pages, ["Overview"], {
+    siteTitle: "test",
+    summary: "test",
+    baseUrl: "https://test.com",
+  });
+  // Should contain the full first sentence, not truncated at "Read entheai."
+  assert.match(out, /Read\s+for config\./);
+  assert.doesNotMatch(out, /Read entheai\./);
+});
