@@ -276,7 +276,8 @@ async fn event_loop<P: Provider + 'static>(
     };
 
     // Background music player (yt-dlp + rodio); one per TUI session.
-    let mut radio = Radio::spawn(Radio::default_cache_dir());
+    let mut radio = Radio::spawn(Radio::default_cache_dir())
+        .expect("spawn radio thread");
 
     let mut events = EventStream::new();
     let mut ticker = tokio::time::interval(Duration::from_millis(90));

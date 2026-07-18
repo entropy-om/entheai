@@ -84,15 +84,14 @@ impl Radio {
     /// Start the player thread. `cache_dir` is where yt-dlp keeps audio files
     /// (created on demand; downloads are keyed by video id, so repeats are
     /// served from cache by yt-dlp itself).
-    pub fn spawn(cache_dir: PathBuf) -> Radio {
+    pub fn spawn(cache_dir: PathBuf) -> Result<Radio, std::io::Error> {
         let (cmd_tx, cmd_rx) = std_mpsc::channel::<Msg>();
         let (event_tx, events) = tokio_mpsc::unbounded_channel::<Event>();
         let dl_tx = cmd_tx.clone();
         std::thread::Builder::new()
             .name("entheai-radio".into())
-            .spawn(move || player_thread(cmd_rx, dl_tx, event_tx, cache_dir))
-            .expect("spawn radio thread");
-        Radio { cmd_tx, events }
+            .spawn(move || player_thread(cmd_rx, dl_tx, event_tx, cache_dir))?;
+        Ok(Radio { cmd_tx, events })
     }
 
     /// Default cache dir: `~/.cache/entheai/radio` (temp dir fallback).
@@ -370,7 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_stop_emits_stopped_and_shuts_down() {
-        let mut radio = Radio::spawn(std::env::temp_dir().join("entheai-radio-test"));
+        let mut radio = Radio::spawn(std::env::temp_dir().join("entheai-radio-test")).unwrap();
         radio.send(Command::Stop);
         assert_eq!(radio.next_event().await, Some(Event::Stopped));
     }
