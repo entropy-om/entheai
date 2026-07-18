@@ -1300,6 +1300,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "crossterm",
+ "entheai-companion",
  "entheai-config",
  "entheai-core",
  "entheai-orchestrator",
