@@ -59,7 +59,19 @@ test("renderLlmsTxt does not truncate at periods inside inline code spans", () =
     summary: "test",
     baseUrl: "https://test.com",
   });
-  // Should contain the full first sentence, not truncated at "Read entheai."
-  assert.match(out, /Read\s+for config\./);
-  assert.doesNotMatch(out, /Read entheai\./);
+  // Should contain the full first sentence with code content preserved
+  assert.match(out, /Read entheai\.toml for config\./);
+});
+
+test("renderLlmsTxt preserves inline code text for grammar", () => {
+  const pages = [
+    { id: "roles", title: "Roles", navTitle: "Roles", group: "Overview", order: 1, body: "Roles include `coder`, `docs`, and `test`." },
+  ];
+  const out = renderLlmsTxt(pages, ["Overview"], {
+    siteTitle: "test",
+    summary: "test",
+    baseUrl: "https://test.com",
+  });
+  // Should preserve inline code text for proper grammar
+  assert.match(out, /Roles include coder, docs, and test\./);
 });
