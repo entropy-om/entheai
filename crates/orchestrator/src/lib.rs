@@ -23,6 +23,39 @@ use serde::Deserialize;
 
 pub mod worktree;
 
+/// Lifecycle progress events emitted by [`run_fanout`] as it decomposes,
+/// dispatches coders, and integrates their work. Consumers (e.g. the TUI) pass
+/// an `UnboundedSender` to receive a live feed; `None` is a no-op producer
+/// (used by the one-shot CLI path, which only cares about the final report).
+#[derive(Debug, Clone)]
+pub enum FanoutEvent {
+    /// `root` isn't a git repo — falling back to the read-only v1 path.
+    Fallback,
+    /// The orchestrator decomposed the task into `count` sub-tasks.
+    Decomposed { count: usize },
+    /// A coder sub-agent started work on its sub-task.
+    CoderStarted {
+        index: usize,
+        role: String,
+        task: String,
+    },
+    /// A coder sub-agent finished; `status` is a short human summary (e.g.
+    /// "no changes", "verify failed", "verified", "changes committed (unverified)").
+    CoderFinished {
+        index: usize,
+        committed: bool,
+        status: String,
+    },
+    /// Integrating `branches` eligible coder branches onto a fresh branch.
+    Integrating { branches: usize },
+    /// Fan-out finished.
+    Done {
+        integration_branch: Option<String>,
+        merged: usize,
+        conflicted: usize,
+    },
+}
+
 /// One decomposed unit of work: a role (routes to a model) + its focused task.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct SubTask {
@@ -254,7 +287,19 @@ struct CoderRun {
 /// Run one coder sub-agent to completion inside its own worktree. Never returns
 /// Err — a failure is captured as the run's `output`, mirroring [`run_subagent`],
 /// so one bad coder doesn't sink the whole fan-out.
-async fn run_coder(config: &Config, wt: worktree::Worktree, st: SubTask) -> CoderRun {
+async fn run_coder(
+    config: &Config,
+    wt: worktree::Worktree,
+    st: SubTask,
+    events: Option<tokio::sync::mpsc::UnboundedSender<FanoutEvent>>,
+) -> CoderRun {
+    if let Some(tx) = &events {
+        let _ = tx.send(FanoutEvent::CoderStarted {
+            index: wt.index,
+            role: st.role.clone(),
+            task: st.task.clone(),
+        });
+    }
     let output = async {
         let model_id = entheai_router::model_for_role(config, &st.role)?;
         let agent = entheai_router::build_agent(&model_id, config)?;
@@ -355,8 +400,16 @@ pub struct CoderOutcome {
 ///
 /// Falls back to the read-only v1 fan-out ([`run_fanout_readonly`]) when `root`
 /// isn't a git repo (isolated worktrees require one).
-pub async fn run_fanout(config: &Config, root: &Path, task: &str) -> anyhow::Result<String> {
+pub async fn run_fanout(
+    config: &Config,
+    root: &Path,
+    task: &str,
+    events: Option<tokio::sync::mpsc::UnboundedSender<FanoutEvent>>,
+) -> anyhow::Result<String> {
     if !worktree::is_git_repo(root).await {
+        if let Some(tx) = &events {
+            let _ = tx.send(FanoutEvent::Fallback);
+        }
         let out = run_fanout_readonly(config, root, task).await?;
         return Ok(format!("(not a git repo — read-only fan-out)\n\n{out}"));
     }
@@ -371,6 +424,11 @@ pub async fn run_fanout(config: &Config, root: &Path, task: &str) -> anyhow::Res
     // Fallback: couldn't decompose → just run the task once on the orchestrator.
     if subtasks.is_empty() {
         return orchestrate_once(config, &orch_model, vec![ChatMessage::user(task)]).await;
+    }
+    if let Some(tx) = &events {
+        let _ = tx.send(FanoutEvent::Decomposed {
+            count: subtasks.len(),
+        });
     }
 
     let session = uuid::Uuid::new_v4().simple().to_string();
@@ -387,7 +445,10 @@ pub async fn run_fanout(config: &Config, root: &Path, task: &str) -> anyhow::Res
 
     // 3. Run coders in parallel, bounded by max_parallel.
     let mut runs: Vec<CoderRun> = stream::iter(wts.iter().cloned())
-        .map(|(wt, st)| run_coder(config, wt, st))
+        .map(|(wt, st)| {
+            let events = events.clone();
+            run_coder(config, wt, st, events)
+        })
         .buffer_unordered(max_par)
         .collect()
         .await;
@@ -410,6 +471,23 @@ pub async fn run_fanout(config: &Config, root: &Path, task: &str) -> anyhow::Res
         } else {
             VerifyStatus::NoChanges
         };
+        if let Some(tx) = &events {
+            let status = if !committed {
+                "no changes"
+            } else {
+                match &verify {
+                    VerifyStatus::Failed(_) => "verify failed",
+                    VerifyStatus::Passed => "verified",
+                    VerifyStatus::Skipped => "changes committed (unverified)",
+                    VerifyStatus::NoChanges => "no changes",
+                }
+            };
+            let _ = tx.send(FanoutEvent::CoderFinished {
+                index: run.index,
+                committed,
+                status: status.to_string(),
+            });
+        }
         let integrated =
             committed && matches!(verify, VerifyStatus::Skipped | VerifyStatus::Passed);
         if integrated {
@@ -435,6 +513,11 @@ pub async fn run_fanout(config: &Config, root: &Path, task: &str) -> anyhow::Res
     let integration = if eligible_branches.is_empty() {
         None
     } else {
+        if let Some(tx) = &events {
+            let _ = tx.send(FanoutEvent::Integrating {
+                branches: eligible_branches.len(),
+            });
+        }
         let integration = worktree::integrate(
             root,
             &base,
@@ -454,6 +537,17 @@ pub async fn run_fanout(config: &Config, root: &Path, task: &str) -> anyhow::Res
     // 6. Cleanup worktrees (best-effort; keep the integration branch for review).
     for (wt, _) in &wts {
         let _ = pool.remove(wt).await;
+    }
+
+    if let Some(tx) = &events {
+        let _ = tx.send(FanoutEvent::Done {
+            integration_branch: integration.as_ref().map(|i| i.branch.clone()),
+            merged: integration.as_ref().map(|i| i.merged.len()).unwrap_or(0),
+            conflicted: integration
+                .as_ref()
+                .map(|i| i.conflicted.len())
+                .unwrap_or(0),
+        });
     }
 
     Ok(format_v2_report(

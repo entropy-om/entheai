@@ -29,7 +29,7 @@ use ratatui::{
 };
 use tokio::sync::{mpsc, oneshot};
 
-use entheai_core::{Agent, AgentEvent, CoreError};
+use entheai_core::{Agent, AgentEvent};
 use entheai_permission::{Policy, Prompter};
 use entheai_providers::{ChatMessage, Provider};
 use entheai_radio::{Command as RadioCommand, Event as RadioEvent, Radio};
@@ -151,6 +151,10 @@ struct App {
     current_action: String,
     /// Title of the radio track currently playing, shown in the status bar.
     now_playing: Option<String>,
+    /// Whether this session runs submitted messages through fan-out
+    /// (decompose → parallel coders → integrate) instead of the single-agent
+    /// `run_task` loop. Set once at construction; shown in the status bar.
+    fanout: bool,
 }
 
 /// What a key press asked the loop to do.
@@ -172,10 +176,23 @@ pub async fn run<P: Provider + 'static>(
     registry: ToolRegistry,
     policy: Policy,
     model_label: String,
+    config: entheai_config::Config,
+    root: std::path::PathBuf,
+    fanout: bool,
 ) -> anyhow::Result<()> {
     let mut terminal = init_terminal()?;
     let guard = TerminalGuard;
-    let result = event_loop(&mut terminal, agent, registry, policy, model_label).await;
+    let result = event_loop(
+        &mut terminal,
+        agent,
+        registry,
+        policy,
+        model_label,
+        config,
+        root,
+        fanout,
+    )
+    .await;
     drop(guard); // restore the terminal before surfacing any error
     result
 }
@@ -197,24 +214,35 @@ fn init_terminal() -> anyhow::Result<Terminal<Backend>> {
     Ok(Terminal::new(CrosstermBackend::new(stdout))?)
 }
 
+// Mirrors `run`'s signature 1:1 (terminal is the only addition) so the two
+// stay easy to read side by side; grouping the fan-out/session params into a
+// struct would obscure that correspondence for one extra argument.
+#[allow(clippy::too_many_arguments)]
 async fn event_loop<P: Provider + 'static>(
     terminal: &mut Terminal<Backend>,
     agent: Agent<P>,
     registry: ToolRegistry,
     policy: Policy,
     model_label: String,
+    config: entheai_config::Config,
+    root: std::path::PathBuf,
+    fanout: bool,
 ) -> anyhow::Result<()> {
-    // Arc so each spawned run task can share the agent/registry/policy.
+    // Arc so each spawned run task can share the agent/registry/policy/config.
     let agent = Arc::new(agent);
     let registry = Arc::new(registry);
     let policy = Arc::new(policy);
+    let config = Arc::new(config);
 
     let (perm_tx, mut perm_rx) = mpsc::channel::<PermissionRequest>(8);
-    let (result_tx, mut result_rx) = mpsc::channel::<Result<String, CoreError>>(8);
+    let (result_tx, mut result_rx) = mpsc::channel::<Result<String, String>>(8);
     // Receiver for the currently running task's progress events, if any. Set on
     // submit, torn down when the run's sender is dropped (channel closes) or the
     // result arrives.
     let mut events_rx: Option<mpsc::UnboundedReceiver<AgentEvent>> = None;
+    // Receiver for the currently running fan-out's lifecycle events, if any.
+    // Same lifecycle as `events_rx`, but only ever set in fan-out mode.
+    let mut fanout_rx: Option<mpsc::UnboundedReceiver<entheai_orchestrator::FanoutEvent>> = None;
 
     let mut app = App {
         messages: Vec::new(),
@@ -228,6 +256,7 @@ async fn event_loop<P: Provider + 'static>(
         spinner_frame: 0,
         current_action: "thinking".to_string(),
         now_playing: None,
+        fanout,
     };
 
     // Background music player (yt-dlp + rodio); one per TUI session.
@@ -272,27 +301,43 @@ async fn event_loop<P: Provider + 'static>(
                             handle_radio_command(&mut app, &radio, &text);
                         }
                         Action::Submit(text) => {
-                            app.messages.push(Msg { role: Role::User, text });
+                            app.messages.push(Msg { role: Role::User, text: text.clone() });
                             app.status = Status::Working;
                             app.follow = true;
                             app.current_action = "thinking".to_string();
                             app.run_started = Some(Instant::now());
-                            let history = build_history(&app.messages);
 
-                            let agent = Arc::clone(&agent);
-                            let registry = Arc::clone(&registry);
-                            let policy = Arc::clone(&policy);
-                            let perm_tx = perm_tx.clone();
-                            let result_tx = result_tx.clone();
-                            let (event_tx, event_rx) = mpsc::unbounded_channel::<AgentEvent>();
-                            events_rx = Some(event_rx);
-                            tokio::spawn(async move {
-                                let mut prompter = TuiPrompter { tx: perm_tx };
-                                let res = agent
-                                    .run_task(history, &registry, &policy, &mut prompter, Some(event_tx))
-                                    .await;
-                                let _ = result_tx.send(res).await;
-                            });
+                            if fanout {
+                                let config = Arc::clone(&config);
+                                let root = root.clone();
+                                let result_tx = result_tx.clone();
+                                let (ftx, frx) =
+                                    mpsc::unbounded_channel::<entheai_orchestrator::FanoutEvent>();
+                                fanout_rx = Some(frx);
+                                tokio::spawn(async move {
+                                    let res =
+                                        entheai_orchestrator::run_fanout(&config, &root, &text, Some(ftx))
+                                            .await;
+                                    let _ = result_tx.send(res.map_err(|e| e.to_string())).await;
+                                });
+                            } else {
+                                let history = build_history(&app.messages);
+
+                                let agent = Arc::clone(&agent);
+                                let registry = Arc::clone(&registry);
+                                let policy = Arc::clone(&policy);
+                                let perm_tx = perm_tx.clone();
+                                let result_tx = result_tx.clone();
+                                let (event_tx, event_rx) = mpsc::unbounded_channel::<AgentEvent>();
+                                events_rx = Some(event_rx);
+                                tokio::spawn(async move {
+                                    let mut prompter = TuiPrompter { tx: perm_tx };
+                                    let res = agent
+                                        .run_task(history, &registry, &policy, &mut prompter, Some(event_tx))
+                                        .await;
+                                    let _ = result_tx.send(res.map_err(|e| e.to_string())).await;
+                                });
+                            }
                         }
                     }
                 }
@@ -304,12 +349,13 @@ async fn event_loop<P: Provider + 'static>(
             Some(result) = result_rx.recv() => {
                 match result {
                     Ok(answer) => app.messages.push(Msg { role: Role::Assistant, text: answer }),
-                    Err(err) => app.messages.push(Msg { role: Role::Error, text: format!("{err}") }),
+                    Err(err) => app.messages.push(Msg { role: Role::Error, text: err }),
                 }
                 app.status = Status::Idle;
                 app.follow = true;
                 app.run_started = None;
                 events_rx = None;
+                fanout_rx = None;
             }
             maybe_progress = async {
                 match events_rx.as_mut() {
@@ -334,6 +380,58 @@ async fn event_loop<P: Provider + 'static>(
                         app.current_action = "thinking".to_string();
                     }
                     None => events_rx = None, // sender dropped -> run finished
+                }
+            }
+            maybe_fanout = async {
+                match fanout_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match maybe_fanout {
+                    Some(entheai_orchestrator::FanoutEvent::Fallback) => {
+                        app.messages.push(Msg {
+                            role: Role::Tool,
+                            text: "⋔ not a git repo — read-only fan-out".to_string(),
+                        });
+                    }
+                    Some(entheai_orchestrator::FanoutEvent::Decomposed { count }) => {
+                        app.messages.push(Msg {
+                            role: Role::Tool,
+                            text: format!("◇ decomposed into {count} sub-task(s)"),
+                        });
+                        app.current_action = "fanning out".to_string();
+                    }
+                    Some(entheai_orchestrator::FanoutEvent::CoderStarted { index, role, task }) => {
+                        app.messages.push(Msg {
+                            role: Role::Tool,
+                            text: format!("▸ [{role} #{index}] {}", truncate(&task, 80)),
+                        });
+                        app.current_action = "running coders".to_string();
+                    }
+                    Some(entheai_orchestrator::FanoutEvent::CoderFinished { index, committed: _, status }) => {
+                        app.messages.push(Msg {
+                            role: Role::Tool,
+                            text: format!("  #{index}: {status}"),
+                        });
+                    }
+                    Some(entheai_orchestrator::FanoutEvent::Integrating { branches }) => {
+                        app.messages.push(Msg {
+                            role: Role::Tool,
+                            text: format!("⧉ integrating {branches} branch(es)…"),
+                        });
+                        app.current_action = "integrating".to_string();
+                    }
+                    Some(entheai_orchestrator::FanoutEvent::Done { integration_branch, merged, conflicted }) => {
+                        app.messages.push(Msg {
+                            role: Role::Tool,
+                            text: format!(
+                                "◆ done — {merged} merged, {conflicted} conflicted{}",
+                                integration_branch.map(|b| format!(" · branch {b}")).unwrap_or_default()
+                            ),
+                        });
+                    }
+                    None => fanout_rx = None, // sender dropped -> run finished
                 }
             }
             Some(rev) = radio.next_event() => {
@@ -581,14 +679,17 @@ fn render(frame: &mut Frame, app: &App, lines: Vec<Line<'static>>, scroll: u16) 
         Status::Working => "working…",
         Status::AwaitingPermission { .. } => "awaiting permission",
     };
-    let status = Line::from(vec![
+    let mut status_spans: Vec<Span> = vec![
         Span::styled("entheai", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" · "),
         Span::raw(app.model_label.clone()),
-        Span::raw(" · "),
-        Span::styled(state, Style::default().fg(Color::Yellow)),
-    ]);
-    let mut status_spans: Vec<Span> = status.spans.to_vec();
+    ];
+    if app.fanout {
+        status_spans.push(Span::raw(" · "));
+        status_spans.push(Span::styled("fan-out", Style::default().fg(Color::Magenta)));
+    }
+    status_spans.push(Span::raw(" · "));
+    status_spans.push(Span::styled(state, Style::default().fg(Color::Yellow)));
     if let Some(title) = &app.now_playing {
         status_spans.push(Span::raw(" · "));
         status_spans.push(Span::styled(
@@ -800,6 +901,7 @@ mod tests {
             spinner_frame: 0,
             current_action: String::new(),
             now_playing: None,
+            fanout: false,
         };
         handle_radio_event(
             &mut app,

@@ -10,6 +10,8 @@ entheai-providers = { path = "../providers" }
 entheai-tools = { path = "../tools" }
 entheai-permission = { path = "../permission" }
 entheai-radio = { path = "../radio" }
+entheai-config = { path = "../config" }
+entheai-orchestrator = { path = "../orchestrator" }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

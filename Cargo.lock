@@ -1121,8 +1121,10 @@ dependencies = [
  "entheai-companion",
  "entheai-config",
  "entheai-core",
+ "entheai-orchestrator",
  "entheai-permission",
  "entheai-providers",
+ "entheai-router",
  "entheai-tools",
  "entheai-tui",
  "mimalloc",
@@ -1189,6 +1191,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "entheai-orchestrator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "entheai-config",
+ "entheai-core",
+ "entheai-permission",
+ "entheai-providers",
+ "entheai-router",
+ "entheai-tools",
+ "futures",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "entheai-permission"
 version = "0.1.0"
 dependencies = [
@@ -1221,6 +1243,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "entheai-router"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "entheai-config",
+ "entheai-core",
+ "entheai-providers",
+]
+
+[[package]]
 name = "entheai-tools"
 version = "0.1.0"
 dependencies = [
@@ -1241,7 +1273,9 @@ dependencies = [
  "anyhow",
  "async-trait",
  "crossterm",
+ "entheai-config",
  "entheai-core",
+ "entheai-orchestrator",
  "entheai-permission",
  "entheai-providers",
  "entheai-radio",
