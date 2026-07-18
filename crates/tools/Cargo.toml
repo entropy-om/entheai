@@ -1,17 +1,17 @@
 [package]
-name = "entheai-core"
+name = "entheai-tools"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-entheai-providers = { path = "../providers" }
-entheai-tools = { path = "../tools" }
-entheai-permission = { path = "../permission" }
+serde.workspace = true
+serde_json.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
-futures.workspace = true
-serde_json = { workspace = true }
+walkdir.workspace = true
+tokio = { workspace = true, features = ["fs", "process", "rt", "time"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = "3"

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/config", "crates/providers", "crates/core", "bin/entheai"]
+members = ["crates/config", "crates/providers", "crates/core", "crates/tools", "crates/permission", "bin/entheai"]
 
 [workspace.package]
 edition = "2021"
@@ -19,9 +19,16 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 eventsource-stream = "0.2"
 clap = { version = "4", features = ["derive"] }
 wiremock = "0.6"
+walkdir = "2"
+mimalloc = { version = "0.1", default-features = false }
+sentry = "0.48.5"
 
 # Perf-first (spec §9): optimize release builds hard. NOTE: do NOT set panic="abort"
 # — sub-agents (later plans) run as tokio tasks and we must catch their panics.
 [profile.release]
-lto = true
-codegen-units = 1
+opt-level = 3            # aggressive speed
+lto = "fat"              # cross-crate link-time optimization
+codegen-units = 1        # maximize LLVM optimization scope
+panic = "unwind"         # explicit: sub-agent tokio-task panics must stay catchable (never "abort")
+strip = "symbols"        # smaller binary + faster macOS link (revisit when Sonar needs backtraces)
+overflow-checks = false  # release default; explicit for raw speed

@@ -1,3 +1,7 @@
 [toolchain]
-channel = "stable"
-components = ["rustfmt", "clippy"]
+# BUILD compiler — pinned to a recent stable for deterministic, high-perf codegen.
+# NOTE: this is NOT the MSRV. `rust-version = "1.80"` in Cargo.toml is the (lower)
+# minimum-supported-version floor; you still build with a modern compiler for best codegen.
+channel = "1.96.0"
+components = ["rustfmt", "clippy", "llvm-tools"]  # llvm-tools enables cargo-pgo (PGO)
+targets = ["aarch64-apple-darwin"]                # Apple Silicon only; never fall back to x86_64/Rosetta
