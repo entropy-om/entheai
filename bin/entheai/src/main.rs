@@ -195,6 +195,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         None => {
+            let companion_tx = companion.as_ref().map(|c| c.state_tx.clone());
             entheai_tui::run(
                 agent,
                 registry,
@@ -204,6 +205,7 @@ async fn main() -> anyhow::Result<()> {
                 root.clone(),
                 cli.fanout,
                 system_prompt,
+                companion_tx,
             )
             .await?;
         }

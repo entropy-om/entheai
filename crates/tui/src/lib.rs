@@ -34,6 +34,7 @@ use entheai_permission::{Policy, Prompter};
 use entheai_providers::{ChatMessage, Provider};
 use entheai_radio::{Command as RadioCommand, Event as RadioEvent, Radio};
 use entheai_tools::ToolRegistry;
+use entheai_companion::state::StateChange;
 
 /// Spinner animation frames for the live progress line (Charm/Bubbletea-style
 /// braille spinner), advanced on each animation tick while a run is in flight.
@@ -158,6 +159,9 @@ struct App {
     /// Optional system prompt (e.g. skills advertisement) prepended to the
     /// conversation history sent on each single-agent run.
     system_prompt: Option<String>,
+    /// Index into `messages` of the assistant bubble currently being streamed
+    /// into by live `AgentEvent::Token`s, if any.
+    streaming_idx: Option<usize>,
 }
 
 /// What a key press asked the loop to do.
@@ -184,6 +188,7 @@ pub async fn run<P: Provider + 'static>(
     root: std::path::PathBuf,
     fanout: bool,
     system_prompt: Option<String>,
+    companion_tx: Option<tokio::sync::mpsc::UnboundedSender<StateChange>>,
 ) -> anyhow::Result<()> {
     let mut terminal = init_terminal()?;
     let guard = TerminalGuard;
@@ -197,6 +202,7 @@ pub async fn run<P: Provider + 'static>(
         root,
         fanout,
         system_prompt,
+        companion_tx,
     )
     .await;
     drop(guard); // restore the terminal before surfacing any error
@@ -234,6 +240,7 @@ async fn event_loop<P: Provider + 'static>(
     root: std::path::PathBuf,
     fanout: bool,
     system_prompt: Option<String>,
+    companion_tx: Option<tokio::sync::mpsc::UnboundedSender<StateChange>>,
 ) -> anyhow::Result<()> {
     // Arc so each spawned run task can share the agent/registry/policy/config.
     let agent = Arc::new(agent);
@@ -265,6 +272,7 @@ async fn event_loop<P: Provider + 'static>(
         now_playing: None,
         fanout,
         system_prompt,
+        streaming_idx: None,
     };
 
     // Background music player (yt-dlp + rodio); one per TUI session.
@@ -311,6 +319,9 @@ async fn event_loop<P: Provider + 'static>(
                         Action::Submit(text) => {
                             app.messages.push(Msg { role: Role::User, text: text.clone() });
                             app.status = Status::Working;
+                            if let Some(ref tx) = companion_tx {
+                                let _ = tx.send(StateChange::working());
+                            }
                             app.follow = true;
                             app.current_action = "thinking".to_string();
                             app.run_started = Some(Instant::now());
@@ -352,18 +363,33 @@ async fn event_loop<P: Provider + 'static>(
             }
             Some(req) = perm_rx.recv() => {
                 app.pending_permission = Some(req.respond);
+                if let Some(ref tx) = companion_tx {
+                    let _ = tx.send(StateChange::permission_pending(&req.tool, &req.args));
+                }
                 app.status = Status::AwaitingPermission { tool: req.tool, args: req.args };
             }
             Some(result) = result_rx.recv() => {
                 match result {
-                    Ok(answer) => app.messages.push(Msg { role: Role::Assistant, text: answer }),
+                    Ok(answer) => {
+                        if let Some(idx) = app.streaming_idx {
+                            // Authoritative final text overwrites whatever streamed in live.
+                            app.messages[idx].text = answer;
+                        } else {
+                            // No tokens streamed this run (e.g. a tool-only path) -> push fresh.
+                            app.messages.push(Msg { role: Role::Assistant, text: answer });
+                        }
+                    }
                     Err(err) => app.messages.push(Msg { role: Role::Error, text: err }),
                 }
                 app.status = Status::Idle;
+                if let Some(ref tx) = companion_tx {
+                    let _ = tx.send(StateChange::idle());
+                }
                 app.follow = true;
                 app.run_started = None;
                 events_rx = None;
                 fanout_rx = None;
+                app.streaming_idx = None;
             }
             maybe_progress = async {
                 match events_rx.as_mut() {
@@ -372,13 +398,35 @@ async fn event_loop<P: Provider + 'static>(
                 }
             } => {
                 match maybe_progress {
-                    Some(AgentEvent::Thinking) => app.current_action = "thinking".to_string(),
+                    Some(AgentEvent::Thinking) => {
+                        app.current_action = "thinking".to_string();
+                        // Finalize any reasoning bubble from a prior turn so the next
+                        // turn's tokens start a fresh one.
+                        app.streaming_idx = None;
+                    }
+                    Some(AgentEvent::Token(t)) => {
+                        let idx = match app.streaming_idx {
+                            Some(idx) => idx,
+                            None => {
+                                app.messages.push(Msg {
+                                    role: Role::Assistant,
+                                    text: String::new(),
+                                });
+                                let idx = app.messages.len() - 1;
+                                app.streaming_idx = Some(idx);
+                                idx
+                            }
+                        };
+                        app.messages[idx].text.push_str(&t);
+                    }
                     Some(AgentEvent::ToolStarted { name, args }) => {
                         app.messages.push(Msg {
                             role: Role::Tool,
                             text: format!("⚙ {name}({})", truncate_args(&args, 80)),
                         });
                         app.current_action = format!("running {name}");
+                        // Post-tool tokens start a new bubble.
+                        app.streaming_idx = None;
                     }
                     Some(AgentEvent::ToolFinished { name: _, result }) => {
                         app.messages.push(Msg {
@@ -914,6 +962,7 @@ mod tests {
             now_playing: None,
             fanout: false,
             system_prompt: None,
+            streaming_idx: None,
         };
         handle_radio_event(
             &mut app,
