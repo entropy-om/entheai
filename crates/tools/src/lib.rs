@@ -5,13 +5,27 @@ pub mod shell;
 use async_trait::async_trait;
 use std::collections::HashMap;
 
+#[derive(Debug, thiserror::Error)]
+pub enum ToolError {
+    #[error("path escapes workspace root: {0}")]
+    PathEscape(String),
+    #[error("missing string arg '{0}'")]
+    MissingArg(String),
+    #[error("command timed out after {secs}s: {command}")]
+    Timeout { secs: u64, command: String },
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("tool task failed: {0}")]
+    Join(#[from] tokio::task::JoinError),
+}
+
 /// A callable tool. `schema()` is the OpenAI function-tool JSON schema;
 /// `call()` executes with JSON `args` (already parsed) and returns text output.
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn schema(&self) -> serde_json::Value;
-    async fn call(&self, args: serde_json::Value) -> anyhow::Result<String>;
+    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError>;
 }
 
 #[derive(Default)]

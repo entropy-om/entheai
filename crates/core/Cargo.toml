@@ -9,6 +9,7 @@ entheai-providers = { path = "../providers" }
 entheai-tools = { path = "../tools" }
 entheai-permission = { path = "../permission" }
 anyhow.workspace = true
+thiserror = { workspace = true }
 async-trait.workspace = true
 futures.workspace = true
 serde_json = { workspace = true }

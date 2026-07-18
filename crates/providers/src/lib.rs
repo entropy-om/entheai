@@ -1,7 +1,22 @@
-use anyhow::Context;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProviderError {
+    #[error("could not reach model provider at {url} — is the server running (e.g. `osaurus serve` for a local provider), or did you mean a cloud provider like OpenCode Zen?")]
+    Unreachable {
+        url: String,
+        #[source]
+        source: reqwest::Error,
+    },
+    #[error("provider returned {status}: {body}")]
+    Status { status: u16, body: String },
+    #[error("failed to decode provider response: {0}")]
+    Decode(#[from] serde_json::Error),
+    #[error("stream error: {0}")]
+    Stream(String),
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FunctionCall {
@@ -88,7 +103,7 @@ pub trait Provider: Send + Sync {
         &self,
         model: &str,
         messages: Vec<ChatMessage>,
-    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>>;
+    ) -> Result<BoxStream<'static, Result<StreamEvent, ProviderError>>, ProviderError>;
 
     /// Non-streaming completion. `tools` is a list of OpenAI function-tool JSON
     /// schemas; pass an empty Vec for no tools. Returns the assistant message.
@@ -97,7 +112,7 @@ pub trait Provider: Send + Sync {
         model: &str,
         messages: Vec<ChatMessage>,
         tools: Vec<serde_json::Value>,
-    ) -> anyhow::Result<AssistantResponse>;
+    ) -> Result<AssistantResponse, ProviderError>;
 }
 
 use eventsource_stream::Eventsource;
@@ -120,19 +135,26 @@ impl OpenAiCompatProvider {
 
     /// Build, send, and status-check a POST to `/chat/completions`.
     /// Callers consume the returned response (streaming vs. JSON) as needed.
-    async fn post_chat(&self, body: serde_json::Value) -> anyhow::Result<reqwest::Response> {
+    async fn post_chat(&self, body: serde_json::Value) -> Result<reqwest::Response, ProviderError> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let mut req = self.client.post(&url).json(&body);
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
-        let resp = req.send().await.with_context(|| {
-            format!("could not reach model provider at {url} — is the server running (e.g. `osaurus serve` for a local provider), or did you mean a cloud provider like OpenCode Zen?")
-        })?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|source| ProviderError::Unreachable {
+                url: url.clone(),
+                source,
+            })?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("provider returned {status}: {body}");
+            return Err(ProviderError::Status {
+                status: status.as_u16(),
+                body,
+            });
         }
         Ok(resp)
     }
@@ -144,7 +166,7 @@ impl Provider for OpenAiCompatProvider {
         &self,
         model: &str,
         messages: Vec<ChatMessage>,
-    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
+    ) -> Result<BoxStream<'static, Result<StreamEvent, ProviderError>>, ProviderError> {
         let body = serde_json::json!({
             "model": model,
             "messages": messages,
@@ -154,7 +176,7 @@ impl Provider for OpenAiCompatProvider {
 
         // v0.2: add request timeout, filter empty/role-only deltas, detect mid-body error payloads
         let stream = resp.bytes_stream().eventsource().map(|item| {
-            let event = item.map_err(|e| anyhow::anyhow!(e))?;
+            let event = item.map_err(|e| ProviderError::Stream(e.to_string()))?;
             if event.data.trim() == "[DONE]" {
                 return Ok(StreamEvent::Done);
             }
@@ -174,7 +196,7 @@ impl Provider for OpenAiCompatProvider {
         model: &str,
         messages: Vec<ChatMessage>,
         tools: Vec<serde_json::Value>,
-    ) -> anyhow::Result<AssistantResponse> {
+    ) -> Result<AssistantResponse, ProviderError> {
         let mut body = serde_json::json!({
             "model": model,
             "messages": messages,
@@ -184,7 +206,13 @@ impl Provider for OpenAiCompatProvider {
             body["tools"] = serde_json::Value::Array(tools);
         }
         let resp = self.post_chat(body).await?;
-        let v: serde_json::Value = resp.json().await?;
+        // `Response::json`/`text` surface a reqwest transport error (not a serde error),
+        // so it can't route through `Decode`'s `#[from]`; read the body then parse it.
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ProviderError::Stream(e.to_string()))?;
+        let v: serde_json::Value = serde_json::from_str(&text)?;
         let msg = &v["choices"][0]["message"];
         let content = msg["content"].as_str().unwrap_or("").to_string();
         let tool_calls: Vec<ToolCall> = match msg.get("tool_calls") {

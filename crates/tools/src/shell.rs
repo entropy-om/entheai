@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-use crate::Tool;
+use crate::{Tool, ToolError};
 
 pub struct RunShell {
     cwd: PathBuf,
@@ -32,10 +32,10 @@ impl Tool for RunShell {
             }
         })
     }
-    async fn call(&self, args: serde_json::Value) -> anyhow::Result<String> {
+    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
         let command = args["command"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("missing string arg 'command'"))?;
+            .ok_or_else(|| ToolError::MissingArg("command".into()))?;
         let fut = tokio::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(command)
@@ -47,7 +47,12 @@ impl Tool for RunShell {
             .output();
         let output = match tokio::time::timeout(Duration::from_secs(120), fut).await {
             Ok(res) => res?,
-            Err(_) => anyhow::bail!("command timed out after 120s: {command}"),
+            Err(_) => {
+                return Err(ToolError::Timeout {
+                    secs: 120,
+                    command: command.to_string(),
+                })
+            }
         };
         let mut out = String::new();
         out.push_str(&String::from_utf8_lossy(&output.stdout));

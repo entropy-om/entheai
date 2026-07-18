@@ -561,6 +561,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "serde",
+ "thiserror",
  "toml",
 ]
 
@@ -575,6 +576,7 @@ dependencies = [
  "entheai-tools",
  "futures",
  "serde_json",
+ "thiserror",
  "tokio",
 ]
 
@@ -593,6 +595,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "thiserror",
  "tokio",
  "wiremock",
 ]
@@ -606,6 +609,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "tokio",
  "walkdir",
 ]

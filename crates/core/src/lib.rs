@@ -1,6 +1,14 @@
 use entheai_providers::{ChatMessage, Provider, StreamEvent};
 use futures::StreamExt;
 
+#[derive(Debug, thiserror::Error)]
+pub enum CoreError {
+    #[error(transparent)]
+    Provider(#[from] entheai_providers::ProviderError),
+    #[error("run_task exceeded {0} tool-dispatch turns without a final answer")]
+    MaxTurnsExceeded(usize),
+}
+
 /// Where streamed tokens go (stdout in the CLI, the TUI later).
 pub trait TokenSink {
     fn emit(&mut self, token: &str);
@@ -21,7 +29,7 @@ impl<P: Provider> Agent<P> {
         &self,
         messages: Vec<ChatMessage>,
         sink: &mut impl TokenSink,
-    ) -> anyhow::Result<String> {
+    ) -> Result<String, CoreError> {
         let mut stream = self.provider.stream_chat(&self.model, messages).await?;
         let mut full = String::new();
         while let Some(ev) = stream.next().await {
@@ -45,7 +53,7 @@ impl<P: Provider> Agent<P> {
         registry: &entheai_tools::ToolRegistry,
         policy: &entheai_permission::Policy,
         prompter: &mut impl entheai_permission::Prompter,
-    ) -> anyhow::Result<String> {
+    ) -> Result<String, CoreError> {
         // Hard cap on tool-dispatch rounds, so a looping model can't burn unbounded
         // paid API calls (critical under --yolo, where no human approves each call).
         const MAX_TURNS: usize = 25;
@@ -65,7 +73,7 @@ impl<P: Provider> Agent<P> {
                 messages.push(ChatMessage::tool_result(call.id, result));
             }
         }
-        anyhow::bail!("run_task exceeded {MAX_TURNS} tool-dispatch turns without a final answer")
+        Err(CoreError::MaxTurnsExceeded(MAX_TURNS))
     }
 
     async fn dispatch_call(
@@ -116,8 +124,11 @@ mod tests {
             &self,
             _model: &str,
             _messages: Vec<ChatMessage>,
-        ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
-            let mut evs: Vec<anyhow::Result<StreamEvent>> = self
+        ) -> Result<
+            BoxStream<'static, Result<StreamEvent, entheai_providers::ProviderError>>,
+            entheai_providers::ProviderError,
+        > {
+            let mut evs: Vec<Result<StreamEvent, entheai_providers::ProviderError>> = self
                 .tokens
                 .iter()
                 .map(|t| Ok(StreamEvent::Token((*t).to_string())))
@@ -131,7 +142,8 @@ mod tests {
             _model: &str,
             _messages: Vec<ChatMessage>,
             _tools: Vec<serde_json::Value>,
-        ) -> anyhow::Result<entheai_providers::AssistantResponse> {
+        ) -> Result<entheai_providers::AssistantResponse, entheai_providers::ProviderError>
+        {
             Ok(entheai_providers::AssistantResponse::default())
         }
     }
@@ -173,7 +185,10 @@ mod tests {
             &self,
             _m: &str,
             _msgs: Vec<ChatMessage>,
-        ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
+        ) -> Result<
+            BoxStream<'static, Result<StreamEvent, entheai_providers::ProviderError>>,
+            entheai_providers::ProviderError,
+        > {
             Ok(Box::pin(stream::iter(vec![Ok(StreamEvent::Done)])))
         }
         async fn complete(
@@ -181,7 +196,7 @@ mod tests {
             _m: &str,
             _msgs: Vec<ChatMessage>,
             _tools: Vec<serde_json::Value>,
-        ) -> anyhow::Result<AssistantResponse> {
+        ) -> Result<AssistantResponse, entheai_providers::ProviderError> {
             let mut n = self.calls.lock().unwrap();
             *n += 1;
             if *n == 1 {
@@ -214,7 +229,7 @@ mod tests {
         fn schema(&self) -> serde_json::Value {
             serde_json::json!({"type":"function","function":{"name":"echo","parameters":{"type":"object","properties":{}}}})
         }
-        async fn call(&self, args: serde_json::Value) -> anyhow::Result<String> {
+        async fn call(&self, args: serde_json::Value) -> Result<String, entheai_tools::ToolError> {
             Ok(format!("echoed: {}", args["text"].as_str().unwrap_or("")))
         }
     }
@@ -262,7 +277,10 @@ mod tests {
             &self,
             _m: &str,
             _msgs: Vec<ChatMessage>,
-        ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
+        ) -> Result<
+            BoxStream<'static, Result<StreamEvent, entheai_providers::ProviderError>>,
+            entheai_providers::ProviderError,
+        > {
             Ok(Box::pin(stream::iter(vec![Ok(StreamEvent::Done)])))
         }
         async fn complete(
@@ -270,7 +288,7 @@ mod tests {
             _m: &str,
             _msgs: Vec<ChatMessage>,
             _tools: Vec<serde_json::Value>,
-        ) -> anyhow::Result<AssistantResponse> {
+        ) -> Result<AssistantResponse, entheai_providers::ProviderError> {
             Ok(AssistantResponse {
                 content: String::new(),
                 tool_calls: vec![ToolCall {

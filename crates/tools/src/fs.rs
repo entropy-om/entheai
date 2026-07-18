@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 
-use crate::Tool;
+use crate::{Tool, ToolError};
 
 /// Resolve `rel` against `root`, rejecting any path that escapes `root`.
-fn resolve_in_root(root: &Path, rel: &str) -> anyhow::Result<PathBuf> {
+fn resolve_in_root(root: &Path, rel: &str) -> Result<PathBuf, ToolError> {
     let joined = root.join(rel);
     // Reject `..` traversal without requiring the file to exist yet (write_file).
     let mut normalized = PathBuf::new();
@@ -13,7 +13,7 @@ fn resolve_in_root(root: &Path, rel: &str) -> anyhow::Result<PathBuf> {
         match comp {
             ParentDir => {
                 if !normalized.starts_with(root) || normalized == *root {
-                    anyhow::bail!("path escapes workspace root: {rel}");
+                    return Err(ToolError::PathEscape(rel.to_string()));
                 }
                 normalized.pop();
             }
@@ -22,7 +22,7 @@ fn resolve_in_root(root: &Path, rel: &str) -> anyhow::Result<PathBuf> {
         }
     }
     if !normalized.starts_with(root) {
-        anyhow::bail!("path escapes workspace root: {rel}");
+        return Err(ToolError::PathEscape(rel.to_string()));
     }
 
     // Symlink defense: the lexical `..` check above can't see through symlinks. Canonicalize
@@ -42,17 +42,17 @@ fn resolve_in_root(root: &Path, rel: &str) -> anyhow::Result<PathBuf> {
     if let Ok(canonical) = ancestor.canonicalize() {
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         if !canonical.starts_with(&canonical_root) {
-            anyhow::bail!("path escapes workspace root via symlink: {rel}");
+            return Err(ToolError::PathEscape(rel.to_string()));
         }
     }
     Ok(normalized)
 }
 
-fn path_arg(args: &serde_json::Value) -> anyhow::Result<String> {
+fn path_arg(args: &serde_json::Value) -> Result<String, ToolError> {
     args["path"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| anyhow::anyhow!("missing string arg 'path'"))
+        .ok_or_else(|| ToolError::MissingArg("path".into()))
 }
 
 pub struct ReadFile {
@@ -82,7 +82,7 @@ impl Tool for ReadFile {
             }
         })
     }
-    async fn call(&self, args: serde_json::Value) -> anyhow::Result<String> {
+    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
         let rel = path_arg(&args)?;
         let path = resolve_in_root(&self.root, &rel)?;
         Ok(tokio::fs::read_to_string(&path).await?)
@@ -119,11 +119,11 @@ impl Tool for WriteFile {
             }
         })
     }
-    async fn call(&self, args: serde_json::Value) -> anyhow::Result<String> {
+    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
         let rel = path_arg(&args)?;
         let content = args["content"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("missing string arg 'content'"))?;
+            .ok_or_else(|| ToolError::MissingArg("content".into()))?;
         let path = resolve_in_root(&self.root, &rel)?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;

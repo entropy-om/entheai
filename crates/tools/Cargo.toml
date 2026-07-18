@@ -8,6 +8,7 @@ rust-version.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+thiserror = { workspace = true }
 async-trait.workspace = true
 walkdir.workspace = true
 tokio = { workspace = true, features = ["fs", "process", "rt", "time"] }

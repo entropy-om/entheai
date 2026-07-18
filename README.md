@@ -90,6 +90,13 @@ entheai leans hard on [OpenCode Zen](https://opencode.ai) for cloud inference �
 
 **Try it — you get $5 in credit, they get $5 too → [opencode.ai/go](https://opencode.ai/go?ref=BG9E87CD74)**. Honestly the best referral I've ever seen. Thank you to the whole OpenCode team for all their work. 💛
 
+## Community
+
+- [Contributing guide](.github/CONTRIBUTING.md)
+- [Code of conduct](.github/CODE_OF_CONDUCT.md)
+- [Security policy](.github/SECURITY.md)
+- [Support](.github/SUPPORT.md)
+
 ## License
 
 [Apache-2.0](LICENSE). Note: some bundled or optional components carry their own licenses (e.g. Honcho is AGPL-3.0; Crush is used as design inspiration only, not code) — see the design spec for details.

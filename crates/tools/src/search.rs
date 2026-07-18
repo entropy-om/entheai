@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 use walkdir::WalkDir;
 
-use crate::Tool;
+use crate::{Tool, ToolError};
 
 pub struct Search {
     root: PathBuf,
@@ -39,10 +39,10 @@ impl Tool for Search {
             }
         })
     }
-    async fn call(&self, args: serde_json::Value) -> anyhow::Result<String> {
+    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
         let query = args["query"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("missing string arg 'query'"))?
+            .ok_or_else(|| ToolError::MissingArg("query".into()))?
             .to_string();
         let query_for_search = query.clone();
         let root = self.root.clone();

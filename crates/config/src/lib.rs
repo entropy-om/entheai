@@ -1,6 +1,12 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("failed to parse config TOML: {0}")]
+    Toml(#[from] toml::de::Error),
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -17,7 +23,7 @@ pub struct ProviderConfig {
 }
 
 impl Config {
-    pub fn from_toml_str(s: &str) -> anyhow::Result<Self> {
+    pub fn from_toml_str(s: &str) -> Result<Self, ConfigError> {
         Ok(toml::from_str(s)?)
     }
 }
