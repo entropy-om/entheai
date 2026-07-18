@@ -45,9 +45,8 @@ type Backend = CrosstermBackend<Stdout>;
 enum Role {
     User,
     Assistant,
-    /// Reserved for a future inline tool-progress feature; styling exists (dim)
-    /// but v1 never emits it (no inline tool list).
-    #[allow(dead_code)]
+    /// Inline tool-call/result lines pushed as `ToolStarted`/`ToolFinished`
+    /// events arrive; display-only (never fed back into `build_history`).
     Tool,
     Error,
 }
@@ -304,10 +303,18 @@ async fn event_loop<P: Provider + 'static>(
             } => {
                 match maybe_progress {
                     Some(AgentEvent::Thinking) => app.current_action = "thinking".to_string(),
-                    Some(AgentEvent::ToolStarted { name }) => {
+                    Some(AgentEvent::ToolStarted { name, args }) => {
+                        app.messages.push(Msg {
+                            role: Role::Tool,
+                            text: format!("⚙ {name}({})", truncate_args(&args, 80)),
+                        });
                         app.current_action = format!("running {name}");
                     }
-                    Some(AgentEvent::ToolFinished { .. }) => {
+                    Some(AgentEvent::ToolFinished { name: _, result }) => {
+                        app.messages.push(Msg {
+                            role: Role::Tool,
+                            text: format!("  ↳ {}", first_line_trunc(&result, 120)),
+                        });
                         app.current_action = "thinking".to_string();
                     }
                     None => events_rx = None, // sender dropped -> run finished
@@ -548,6 +555,19 @@ fn truncate(s: &str, max: usize) -> String {
         out.push('…');
         out
     }
+}
+
+/// Truncate a tool call's raw JSON argument string for the inline "⚙
+/// name(args)" progress line.
+fn truncate_args(args: &str, max: usize) -> String {
+    truncate(args, max)
+}
+
+/// Take the first line of a (possibly multi-line) tool result and truncate it
+/// for the inline "  ↳ result" progress line.
+fn first_line_trunc(s: &str, max: usize) -> String {
+    let first = s.lines().next().unwrap_or("");
+    truncate(first, max)
 }
 
 /// A `width` x `height` rectangle centered within `area` (clamped to fit).

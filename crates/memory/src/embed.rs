@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde::Deserialize;
 
 /// OpenAI-compatible embeddings client.
@@ -23,12 +25,20 @@ struct EmbedData {
     embedding: Vec<f32>,
 }
 
+/// Default timeout for embedding requests.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl Embedder {
-    /// Create a new embedder. `base_url` should include the `/v1` prefix
+    /// Create a new embedder with a 30-second request timeout.
+    /// `base_url` should include the `/v1` prefix
     /// (e.g. `http://127.0.0.1:1337/v1`).
     pub fn new(base_url: impl Into<String>, model: impl Into<String>) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(DEFAULT_TIMEOUT)
+            .build()
+            .expect("reqwest Client::builder() should never fail");
         Embedder {
-            client: reqwest::Client::new(),
+            client,
             base_url: base_url.into(),
             model: model.into(),
         }

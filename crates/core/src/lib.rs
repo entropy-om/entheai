@@ -16,9 +16,10 @@ pub enum AgentEvent {
     /// About to call the model.
     Thinking,
     /// About to execute a tool.
-    ToolStarted { name: String },
-    /// A tool call returned.
-    ToolFinished { name: String },
+    ToolStarted { name: String, args: String },
+    /// A tool call returned (or was denied/failed — `result` carries the
+    /// "error: …" text in that case, same string fed back to the model).
+    ToolFinished { name: String, result: String },
 }
 
 /// Where streamed tokens go (stdout in the CLI, the TUI later).
@@ -82,8 +83,12 @@ impl<P: Provider> Agent<P> {
             if resp.tool_calls.is_empty() {
                 return Ok(resp.content);
             }
-            // Record the assistant's tool-call message in history.
-            messages.push(ChatMessage::assistant_tool_calls(resp.tool_calls.clone()));
+            // Record the assistant's tool-call message in history, preserving any
+            // reasoning text the model emitted alongside the tool calls.
+            messages.push(ChatMessage::assistant_tool_calls(
+                resp.content.clone(),
+                resp.tool_calls.clone(),
+            ));
             for call in resp.tool_calls {
                 let result = self
                     .dispatch_call(&call, registry, policy, prompter, &events)
@@ -104,30 +109,42 @@ impl<P: Provider> Agent<P> {
     ) -> String {
         use entheai_permission::Decision;
         let name = &call.function.name;
+
+        // Emit ToolStarted up front so the UI can show "about to run X" even if
+        // the call is ultimately denied/unknown/malformed — ToolFinished below
+        // always follows with whatever result string (including "error: …")
+        // ends up fed back to the model.
+        if let Some(tx) = events {
+            let _ = tx.send(AgentEvent::ToolStarted {
+                name: name.clone(),
+                args: call.function.arguments.clone(),
+            });
+        }
+
         let allowed = match policy.decide(name) {
             Decision::Allow => true,
             Decision::Deny => false,
             Decision::Ask => prompter.confirm(name, &call.function.arguments).await,
         };
-        if !allowed {
-            return format!("error: permission denied for tool '{name}'");
-        }
-        let Some(tool) = registry.get(name) else {
-            return format!("error: unknown tool '{name}'");
+        let result = if !allowed {
+            format!("error: permission denied for tool '{name}'")
+        } else if let Some(tool) = registry.get(name) {
+            match serde_json::from_str(&call.function.arguments) {
+                Ok(args) => match tool.call(args).await {
+                    Ok(out) => out,
+                    Err(e) => format!("error: {e}"),
+                },
+                Err(e) => format!("error: could not parse tool arguments as JSON: {e}"),
+            }
+        } else {
+            format!("error: unknown tool '{name}'")
         };
-        let args: serde_json::Value = match serde_json::from_str(&call.function.arguments) {
-            Ok(v) => v,
-            Err(e) => return format!("error: could not parse tool arguments as JSON: {e}"),
-        };
+
         if let Some(tx) = events {
-            let _ = tx.send(AgentEvent::ToolStarted { name: name.clone() });
-        }
-        let result = match tool.call(args).await {
-            Ok(out) => out,
-            Err(e) => format!("error: {e}"),
-        };
-        if let Some(tx) = events {
-            let _ = tx.send(AgentEvent::ToolFinished { name: name.clone() });
+            let _ = tx.send(AgentEvent::ToolFinished {
+                name: name.clone(),
+                result: result.clone(),
+            });
         }
         result
     }
@@ -391,12 +408,196 @@ mod tests {
         assert!(matches!(received[0], AgentEvent::Thinking));
         assert!(matches!(
             &received[1],
-            AgentEvent::ToolStarted { name } if name == "echo"
+            AgentEvent::ToolStarted { name, .. } if name == "echo"
         ));
         assert!(matches!(
             &received[2],
-            AgentEvent::ToolFinished { name } if name == "echo"
+            AgentEvent::ToolFinished { name, .. } if name == "echo"
         ));
         assert!(matches!(received[3], AgentEvent::Thinking));
+    }
+
+    /// A provider that records every `messages` vec it's called with (so tests
+    /// can inspect exactly what gets fed back after a tool dispatch), and walks
+    /// through a scripted sequence of responses: a single tool call, then a
+    /// final answer.
+    struct RecordingProvider {
+        seen: Mutex<Vec<Vec<ChatMessage>>>,
+        responses: Mutex<Vec<AssistantResponse>>,
+    }
+    #[async_trait]
+    impl Provider for RecordingProvider {
+        async fn stream_chat(
+            &self,
+            _m: &str,
+            _msgs: Vec<ChatMessage>,
+        ) -> Result<
+            BoxStream<'static, Result<StreamEvent, entheai_providers::ProviderError>>,
+            entheai_providers::ProviderError,
+        > {
+            Ok(Box::pin(stream::iter(vec![Ok(StreamEvent::Done)])))
+        }
+        async fn complete(
+            &self,
+            _m: &str,
+            msgs: Vec<ChatMessage>,
+            _tools: Vec<serde_json::Value>,
+        ) -> Result<AssistantResponse, entheai_providers::ProviderError> {
+            self.seen.lock().unwrap().push(msgs);
+            let mut responses = self.responses.lock().unwrap();
+            Ok(responses.remove(0))
+        }
+    }
+
+    fn tool_call_then_final(tool_name: &str, args: &str) -> Vec<AssistantResponse> {
+        vec![
+            AssistantResponse {
+                content: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "call_1".into(),
+                    kind: "function".into(),
+                    function: FunctionCall {
+                        name: tool_name.into(),
+                        arguments: args.into(),
+                    },
+                }],
+            },
+            AssistantResponse {
+                content: "final answer".into(),
+                tool_calls: vec![],
+            },
+        ]
+    }
+
+    struct DenyAll;
+    #[async_trait]
+    impl Prompter for DenyAll {
+        async fn confirm(&mut self, _t: &str, _a: &str) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn run_task_feeds_back_permission_denied_tool_result() {
+        let provider = RecordingProvider {
+            seen: Mutex::new(Vec::new()),
+            responses: Mutex::new(tool_call_then_final("echo", "{\"text\":\"hi\"}")),
+        };
+        let agent = Agent::new(provider, "m".into());
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoTool));
+        // Non-yolo policy with no allowlist -> `decide` asks the prompter, which
+        // denies everything.
+        let policy = Policy {
+            yolo: false,
+            allowlist: vec![],
+        };
+        let mut prompter = DenyAll;
+
+        let answer = agent
+            .run_task(
+                vec![ChatMessage::user("do it")],
+                &registry,
+                &policy,
+                &mut prompter,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer, "final answer");
+
+        // The second `complete()` call sees the tool-result message fed back
+        // after dispatch; assert it carries the permission-denied error.
+        let seen = agent.provider.seen.lock().unwrap();
+        let second_call_messages = &seen[1];
+        let tool_msg = second_call_messages
+            .iter()
+            .find(|m| m.role == "tool")
+            .expect("expected a tool-result message");
+        assert!(
+            tool_msg.content.contains("permission denied"),
+            "expected permission denied, got: {}",
+            tool_msg.content
+        );
+    }
+
+    #[tokio::test]
+    async fn run_task_feeds_back_unknown_tool_error() {
+        let provider = RecordingProvider {
+            seen: Mutex::new(Vec::new()),
+            responses: Mutex::new(tool_call_then_final("does_not_exist", "{}")),
+        };
+        let agent = Agent::new(provider, "m".into());
+        // Registry has no tools registered at all.
+        let registry = ToolRegistry::new();
+        let policy = Policy {
+            yolo: true,
+            allowlist: vec![],
+        };
+        let mut prompter = AllowAll;
+
+        let answer = agent
+            .run_task(
+                vec![ChatMessage::user("do it")],
+                &registry,
+                &policy,
+                &mut prompter,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer, "final answer");
+
+        let seen = agent.provider.seen.lock().unwrap();
+        let second_call_messages = &seen[1];
+        let tool_msg = second_call_messages
+            .iter()
+            .find(|m| m.role == "tool")
+            .expect("expected a tool-result message");
+        assert!(
+            tool_msg.content.contains("unknown tool"),
+            "expected unknown tool error, got: {}",
+            tool_msg.content
+        );
+    }
+
+    #[tokio::test]
+    async fn run_task_feeds_back_bad_json_args_error() {
+        let provider = RecordingProvider {
+            seen: Mutex::new(Vec::new()),
+            responses: Mutex::new(tool_call_then_final("echo", "{not json")),
+        };
+        let agent = Agent::new(provider, "m".into());
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoTool));
+        let policy = Policy {
+            yolo: true,
+            allowlist: vec![],
+        };
+        let mut prompter = AllowAll;
+
+        let answer = agent
+            .run_task(
+                vec![ChatMessage::user("do it")],
+                &registry,
+                &policy,
+                &mut prompter,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer, "final answer");
+
+        let seen = agent.provider.seen.lock().unwrap();
+        let second_call_messages = &seen[1];
+        let tool_msg = second_call_messages
+            .iter()
+            .find(|m| m.role == "tool")
+            .expect("expected a tool-result message");
+        assert!(
+            tool_msg.content.contains("could not parse tool arguments"),
+            "expected bad JSON args error, got: {}",
+            tool_msg.content
+        );
     }
 }

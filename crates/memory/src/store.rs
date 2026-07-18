@@ -9,8 +9,12 @@ use super::{Embedder, Entry, Memory, MemoryError, Namespace, ScoredEntry};
 ///
 /// Wraps a single `rusqlite::Connection` behind an `Arc<Mutex<>>`. All DB I/O
 /// is dispatched through `spawn_blocking` so the async runtime never stalls,
-/// even on single-threaded executors. WAL journal mode, 256 MB mmap, and
+/// even on single-threaded executors. WAL journal mode, 256 MB mmap, and
 /// NORMAL synchronous are applied at open time.
+///
+/// Mutex poisoning is recovered via `into_inner()` — a panic in one DB
+/// operation does not permanently brick the store. `spawn_blocking` panics
+/// are mapped to `MemoryError::Internal`.
 pub struct SqliteStore {
     db: Arc<Mutex<Connection>>,
     embedder: Option<Embedder>,
@@ -81,6 +85,11 @@ impl SqliteStore {
     pub fn set_embedder(&mut self, embedder: Embedder) {
         self.embedder = Some(embedder);
     }
+
+    /// Lock the connection, recovering from a poisoned mutex.
+    fn lock_db(db: &Mutex<Connection>) -> std::sync::MutexGuard<'_, Connection> {
+        db.lock().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
 #[async_trait::async_trait]
@@ -115,28 +124,33 @@ impl Memory for SqliteStore {
         let k2 = k.clone();
         let c2 = c.clone();
 
-        tokio::task::spawn_blocking(move || {
-            let conn = db.lock().unwrap();
-            conn.execute(
+        // Use RETURNING to get the real created_at (preserved on conflict).
+        let created_at = tokio::task::spawn_blocking(move || {
+            let conn = Self::lock_db(&db);
+            conn.query_row(
                 "INSERT INTO entries (namespace, key, content, metadata, embedding, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT (namespace, key) DO UPDATE SET
                      content = excluded.content,
                      metadata = excluded.metadata,
                      embedding = excluded.embedding,
-                     updated_at = excluded.updated_at",
+                     updated_at = excluded.updated_at
+                 RETURNING created_at",
                 params![ns2, k2, c2, meta_json, embedding_blob, now, now],
+                |row| row.get(0),
             )
         })
         .await
-        .expect("spawn_blocking panicked")?;
+        .map_err(|e| MemoryError::Internal(format!("spawn_blocking panicked: {e}")))?;
+
+        let real_created_at = created_at?;
 
         Ok(Entry {
             namespace,
             key: k,
             content: c,
             metadata,
-            created_at: now,
+            created_at: real_created_at,
             updated_at: now,
         })
     }
@@ -149,7 +163,7 @@ impl Memory for SqliteStore {
         let ns2 = ns.clone();
         let k2 = k.clone();
         let row = tokio::task::spawn_blocking(move || {
-            let conn = db.lock().unwrap();
+            let conn = Self::lock_db(&db);
             conn.query_row(
                 "SELECT content, metadata, created_at, updated_at FROM entries WHERE namespace = ?1 AND key = ?2",
                 params![ns2, k2],
@@ -164,12 +178,14 @@ impl Memory for SqliteStore {
             ).optional()
         })
         .await
-        .expect("spawn_blocking panicked")?;
+        .map_err(|e| MemoryError::Internal(format!("spawn_blocking panicked: {e}")))??;
 
         match row {
             Some((content, metadata_json, created_at, updated_at)) => {
                 let metadata = metadata_json
-                    .and_then(|m| serde_json::from_str(&m).ok());
+                    .map(|m| serde_json::from_str(&m))
+                    .transpose()
+                    .map_err(|e| MemoryError::Embedding(e.into()))?;
                 Ok(Some(Entry {
                     namespace,
                     key: k,
@@ -199,7 +215,7 @@ impl Memory for SqliteStore {
         let db = Arc::clone(&self.db);
 
         let rows = tokio::task::spawn_blocking(move || {
-            let conn = db.lock().unwrap();
+            let conn = Self::lock_db(&db);
             let mut stmt = conn.prepare(
                 "SELECT key, content, metadata, embedding, created_at, updated_at
                  FROM entries
@@ -221,17 +237,21 @@ impl Memory for SqliteStore {
             Ok::<_, rusqlite::Error>(rows)
         })
         .await
-        .expect("spawn_blocking panicked")?;
+        .map_err(|e| MemoryError::Internal(format!("spawn_blocking panicked: {e}")))??;
 
         let mut scored: Vec<ScoredEntry> = Vec::with_capacity(rows.len());
         for (key, content, metadata_json, emb_blob, created_at, updated_at) in rows {
             let emb = blob_to_f32_vec(&emb_blob);
             if emb.len() != query_vec.len() {
+                // Dimension mismatch — embedding model changed. Skip this entry
+                // rather than failing the entire search (v0.1 best-effort).
                 continue;
             }
             let score = cosine_similarity(&query_vec, &emb);
             let metadata = metadata_json
-                .and_then(|m| serde_json::from_str(&m).ok());
+                .map(|m| serde_json::from_str(&m))
+                .transpose()
+                .map_err(|e| MemoryError::Embedding(e.into()))?;
             scored.push(ScoredEntry {
                 entry: Entry {
                     namespace,
@@ -245,7 +265,11 @@ impl Memory for SqliteStore {
             });
         }
 
-        scored.sort_unstable_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_unstable_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         scored.truncate(limit);
         Ok(scored)
     }
@@ -256,14 +280,14 @@ impl Memory for SqliteStore {
         let db = Arc::clone(&self.db);
 
         tokio::task::spawn_blocking(move || {
-            let conn = db.lock().unwrap();
+            let conn = Self::lock_db(&db);
             conn.execute(
                 "DELETE FROM entries WHERE namespace = ?1 AND key = ?2",
                 params![ns, k],
             )
         })
         .await
-        .expect("spawn_blocking panicked")?;
+        .map_err(|e| MemoryError::Internal(format!("spawn_blocking panicked: {e}")))??;
 
         Ok(())
     }
@@ -278,7 +302,7 @@ impl Memory for SqliteStore {
         let db = Arc::clone(&self.db);
 
         let rows = tokio::task::spawn_blocking(move || {
-            let conn = db.lock().unwrap();
+            let conn = Self::lock_db(&db);
             let mut stmt = conn.prepare(
                 "SELECT key, content, metadata, created_at, updated_at
                  FROM entries
@@ -286,7 +310,7 @@ impl Memory for SqliteStore {
                  ORDER BY created_at DESC
                  LIMIT ?2 OFFSET ?3",
             )?;
-            let rows = stmt
+            let rows: Vec<(String, String, Option<String>, i64, i64)> = stmt
                 .query_map(params![ns, limit as i64, offset as i64], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -296,28 +320,27 @@ impl Memory for SqliteStore {
                         row.get::<_, i64>(4)?,
                     ))
                 })?
-                .filter_map(|r| r.ok())
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>, _>>()?;
             Ok::<_, rusqlite::Error>(rows)
         })
         .await
-        .expect("spawn_blocking panicked")?;
+        .map_err(|e| MemoryError::Internal(format!("spawn_blocking panicked: {e}")))??;
 
-        let entries = rows
-            .into_iter()
-            .map(|(key, content, metadata_json, created_at, updated_at)| {
-                let metadata = metadata_json
-                    .and_then(|m| serde_json::from_str(&m).ok());
-                Entry {
-                    namespace,
-                    key,
-                    content,
-                    metadata,
-                    created_at,
-                    updated_at,
-                }
-            })
-            .collect();
+        let mut entries = Vec::with_capacity(rows.len());
+        for (key, content, metadata_json, created_at, updated_at) in rows {
+            let metadata: Option<serde_json::Value> = metadata_json
+                .map(|m| serde_json::from_str(&m))
+                .transpose()
+                .map_err(|e| MemoryError::Embedding(e.into()))?;
+            entries.push(Entry {
+                namespace,
+                key,
+                content,
+                metadata,
+                created_at,
+                updated_at,
+            });
+        }
 
         Ok(entries)
     }
@@ -428,23 +451,32 @@ mod tests {
             .await
             .unwrap();
 
-        let entry = store.get(Namespace::Learnings, "tip/1").await.unwrap().unwrap();
+        let entry = store
+            .get(Namespace::Learnings, "tip/1")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(entry.content, "use Arc<str>");
     }
 
     #[tokio::test]
     async fn store_updates_existing() {
         let store = SqliteStore::open_memory(None).unwrap();
-        store
+        let first = store
             .store(Namespace::Tools, "out", "v1", None)
             .await
             .unwrap();
-        store
+        // Small sleep so timestamps differ.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let second = store
             .store(Namespace::Tools, "out", "v2", None)
             .await
             .unwrap();
         let entry = store.get(Namespace::Tools, "out").await.unwrap().unwrap();
         assert_eq!(entry.content, "v2");
+        // created_at preserved, updated_at bumped.
+        assert_eq!(second.created_at, first.created_at);
+        assert!(second.updated_at > first.updated_at);
     }
 
     #[tokio::test]
@@ -462,7 +494,11 @@ mod tests {
             .await
             .unwrap();
         store.delete(Namespace::Subagents, "s/1").await.unwrap();
-        assert!(store.get(Namespace::Subagents, "s/1").await.unwrap().is_none());
+        assert!(store
+            .get(Namespace::Subagents, "s/1")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -470,7 +506,12 @@ mod tests {
         let store = SqliteStore::open_memory(None).unwrap();
         for i in 0..5 {
             store
-                .store(Namespace::Learnings, &format!("k{i}"), &format!("v{i}"), None)
+                .store(
+                    Namespace::Learnings,
+                    &format!("k{i}"),
+                    &format!("v{i}"),
+                    None,
+                )
                 .await
                 .unwrap();
         }
@@ -530,5 +571,52 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, MemoryError::Embedding(_)));
+    }
+
+    #[tokio::test]
+    async fn metadata_roundtrip() {
+        let store = SqliteStore::open_memory(None).unwrap();
+        let meta = serde_json::json!({"priority": 1, "tags": ["rust", "sqlite"]});
+        store
+            .store(
+                Namespace::Learnings,
+                "meta/1",
+                "content",
+                Some(meta.clone()),
+            )
+            .await
+            .unwrap();
+        let entry = store
+            .get(Namespace::Learnings, "meta/1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.metadata, Some(meta));
+    }
+
+    #[tokio::test]
+    async fn on_disk_persistence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+
+        // Write in one store instance.
+        {
+            let store = SqliteStore::open(&path, None).unwrap();
+            store
+                .store(Namespace::Tools, "disk/1", "persisted", None)
+                .await
+                .unwrap();
+        }
+
+        // Read back in a fresh instance.
+        {
+            let store = SqliteStore::open(&path, None).unwrap();
+            let entry = store
+                .get(Namespace::Tools, "disk/1")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(entry.content, "persisted");
+        }
     }
 }

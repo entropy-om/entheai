@@ -102,6 +102,8 @@ pub enum MemoryError {
     Embedding(#[from] anyhow::Error),
     #[error("entry not found: {namespace}/{key}")]
     NotFound { namespace: String, key: String },
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 /// The unified memory interface — two tiers, five namespaces, one engine.
