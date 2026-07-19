@@ -19,9 +19,9 @@ use super::{Embedder, Entry, Memory, MemoryError, Namespace, ScoredEntry};
 ///   `SqliteStore` constructor is expected to do exactly that, before its
 ///   `open`) and must not race a first registration against an open on another
 ///   thread.
-// Currently exercised only by the gate test; the store constructors wire it in
-// once the vec0 tables land (memory-v1 Task 1+).
-#[allow(dead_code)]
+// Called by every `SqliteStore` constructor (`open`/`open_memory`) before the
+// connection is opened, so `vec0` is available to the tables that later tasks
+// add.
 fn ensure_vec_extension() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
@@ -62,11 +62,35 @@ fn ensure_vec_extension() {
 pub struct SqliteStore {
     db: Arc<Mutex<Connection>>,
     embedder: Option<Embedder>,
+    recall: RecallParams,
+}
+
+/// Recall scoring parameters (populated from config; see Task 5).
+#[derive(Debug, Clone)]
+pub struct RecallParams {
+    pub w_recency: f64,
+    pub w_conf: f64,
+    pub half_life_days: f64,
+    pub rrf_k: f64,
+    pub overfetch: usize,
+}
+
+impl Default for RecallParams {
+    fn default() -> Self {
+        Self {
+            w_recency: 0.3,
+            w_conf: 0.2,
+            half_life_days: 14.0,
+            rrf_k: 60.0,
+            overfetch: 3,
+        }
+    }
 }
 
 impl SqliteStore {
     /// Open (or create) the database at `path`, applying the schema and pragmas.
     pub fn open(path: impl AsRef<Path>, embedder: Option<Embedder>) -> Result<Self, MemoryError> {
+        ensure_vec_extension();
         let conn = Connection::open_with_flags(
             path.as_ref(),
             OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -77,51 +101,25 @@ impl SqliteStore {
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
              PRAGMA mmap_size = 268435456;
-             PRAGMA foreign_keys = ON;
-
-             CREATE TABLE IF NOT EXISTS entries (
-                 namespace TEXT NOT NULL,
-                 key       TEXT NOT NULL,
-                 content   TEXT NOT NULL,
-                 metadata  TEXT,
-                 embedding BLOB,
-                 created_at INTEGER NOT NULL,
-                 updated_at INTEGER NOT NULL,
-                 PRIMARY KEY (namespace, key)
-             ) WITHOUT ROWID;
-
-             CREATE INDEX IF NOT EXISTS idx_ns_created
-                 ON entries(namespace, created_at DESC);",
+             PRAGMA foreign_keys = ON;",
         )?;
-
+        ensure_schema(&conn)?;
         Ok(SqliteStore {
             db: Arc::new(Mutex::new(conn)),
             embedder,
+            recall: RecallParams::default(),
         })
     }
 
     /// Open an in-memory database (for testing).
     pub fn open_memory(embedder: Option<Embedder>) -> Result<Self, MemoryError> {
+        ensure_vec_extension();
         let conn = Connection::open_in_memory()?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS entries (
-                 namespace TEXT NOT NULL,
-                 key       TEXT NOT NULL,
-                 content   TEXT NOT NULL,
-                 metadata  TEXT,
-                 embedding BLOB,
-                 created_at INTEGER NOT NULL,
-                 updated_at INTEGER NOT NULL,
-                 PRIMARY KEY (namespace, key)
-             ) WITHOUT ROWID;
-
-             CREATE INDEX IF NOT EXISTS idx_ns_created
-                 ON entries(namespace, created_at DESC);",
-        )?;
-
+        ensure_schema(&conn)?;
         Ok(SqliteStore {
             db: Arc::new(Mutex::new(conn)),
             embedder,
+            recall: RecallParams::default(),
         })
     }
 
@@ -130,9 +128,69 @@ impl SqliteStore {
         self.embedder = Some(embedder);
     }
 
+    /// Set the recall scoring parameters after construction.
+    pub fn set_recall_params(&mut self, params: RecallParams) {
+        self.recall = params;
+    }
+
     /// Lock the connection, recovering from a poisoned mutex.
     fn lock_db(db: &Mutex<Connection>) -> std::sync::MutexGuard<'_, Connection> {
         db.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Store (or upsert) an entry with a precomputed embedding.
+    ///
+    /// The single write seam behind [`Memory::store`]: the public method embeds
+    /// (when an embedder is configured) and delegates here. `created_at` is
+    /// preserved on conflict via `RETURNING`.
+    async fn store_inner(
+        &self,
+        namespace: Namespace,
+        key: &str,
+        content: &str,
+        metadata: Option<serde_json::Value>,
+        embedding: Option<Vec<f32>>,
+    ) -> Result<Entry, MemoryError> {
+        let ns = namespace.as_str().to_string();
+        let k = key.to_string();
+        let c = content.to_string();
+        let meta_json = metadata
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| MemoryError::Embedding(e.into()))?;
+        let embedding_blob = embedding.as_ref().map(|v| f32_slice_to_blob(v));
+
+        let db = Arc::clone(&self.db);
+        let now = timestamp_ms();
+        let (ns2, k2, c2) = (ns.clone(), k.clone(), c.clone());
+
+        let created_at = tokio::task::spawn_blocking(move || -> rusqlite::Result<i64> {
+            let conn = Self::lock_db(&db);
+            let (_id, created_at): (i64, i64) = conn.query_row(
+                "INSERT INTO entries (namespace, key, content, metadata, embedding, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT (namespace, key) DO UPDATE SET
+                     content = excluded.content, metadata = excluded.metadata,
+                     embedding = excluded.embedding, updated_at = excluded.updated_at
+                 RETURNING id, created_at",
+                params![ns2, k2, c2, meta_json, embedding_blob, now, now],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            // --- SYNC POINT: Task 2 adds FTS, Task 3 adds vec, keyed by `_id`. ---
+            Ok(created_at)
+        })
+        .await
+        .map_err(|e| MemoryError::Internal(format!("spawn_blocking panicked: {e}")))??;
+
+        Ok(Entry {
+            namespace,
+            key: k,
+            content: c,
+            metadata,
+            created_at,
+            updated_at: now,
+        })
     }
 }
 
@@ -145,58 +203,12 @@ impl Memory for SqliteStore {
         content: &str,
         metadata: Option<serde_json::Value>,
     ) -> Result<Entry, MemoryError> {
-        let ns = namespace.as_str().to_string();
-        let k = key.to_string();
-        let c = content.to_string();
-        let meta_json = metadata
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|e| MemoryError::Embedding(e.into()))?;
-
-        let embedding_blob = match &self.embedder {
-            Some(emb) => {
-                let vec = emb.embed(&c).await?;
-                Some(f32_slice_to_blob(&vec))
-            }
+        let embedding = match &self.embedder {
+            Some(emb) => Some(emb.embed(content).await?),
             None => None,
         };
-
-        let db = Arc::clone(&self.db);
-        let now = timestamp_ms();
-        let ns2 = ns.clone();
-        let k2 = k.clone();
-        let c2 = c.clone();
-
-        // Use RETURNING to get the real created_at (preserved on conflict).
-        let created_at = tokio::task::spawn_blocking(move || {
-            let conn = Self::lock_db(&db);
-            conn.query_row(
-                "INSERT INTO entries (namespace, key, content, metadata, embedding, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT (namespace, key) DO UPDATE SET
-                     content = excluded.content,
-                     metadata = excluded.metadata,
-                     embedding = excluded.embedding,
-                     updated_at = excluded.updated_at
-                 RETURNING created_at",
-                params![ns2, k2, c2, meta_json, embedding_blob, now, now],
-                |row| row.get(0),
-            )
-        })
-        .await
-        .map_err(|e| MemoryError::Internal(format!("spawn_blocking panicked: {e}")))?;
-
-        let real_created_at = created_at?;
-
-        Ok(Entry {
-            namespace,
-            key: k,
-            content: c,
-            metadata,
-            created_at: real_created_at,
-            updated_at: now,
-        })
+        self.store_inner(namespace, key, content, metadata, embedding)
+            .await
     }
 
     async fn get(&self, namespace: Namespace, key: &str) -> Result<Option<Entry>, MemoryError> {
@@ -393,6 +405,62 @@ impl Memory for SqliteStore {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        if row.get::<_, String>(1)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        params![table],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+/// Create the v1 schema, migrating a pre-v1 `WITHOUT ROWID` `entries` table
+/// (no `id` column) in place. `vec_entries`/`entries_fts` are added in later
+/// tasks; this task only establishes the rowid `entries` table + `meta`.
+fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
+    if table_exists(conn, "entries")? && !column_exists(conn, "entries", "id")? {
+        conn.execute_batch(
+            "ALTER TABLE entries RENAME TO entries_old;
+             CREATE TABLE entries (
+                 id INTEGER PRIMARY KEY,
+                 namespace TEXT NOT NULL, key TEXT NOT NULL, content TEXT NOT NULL,
+                 metadata TEXT, embedding BLOB,
+                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                 UNIQUE (namespace, key));
+             INSERT INTO entries
+                 (namespace, key, content, metadata, embedding, created_at, updated_at)
+                 SELECT namespace, key, content, metadata, embedding, created_at, updated_at
+                 FROM entries_old;
+             DROP TABLE entries_old;",
+        )?;
+    } else {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS entries (
+                 id INTEGER PRIMARY KEY,
+                 namespace TEXT NOT NULL, key TEXT NOT NULL, content TEXT NOT NULL,
+                 metadata TEXT, embedding BLOB,
+                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                 UNIQUE (namespace, key));",
+        )?;
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_ns_created ON entries(namespace, created_at DESC);
+         CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);",
+    )?;
+    Ok(())
+}
 
 fn timestamp_ms() -> i64 {
     std::time::SystemTime::now()
@@ -662,6 +730,39 @@ mod tests {
                 .unwrap();
             assert_eq!(entry.content, "persisted");
         }
+    }
+
+    #[tokio::test]
+    async fn migrates_pre_v1_without_rowid_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        // Hand-build a pre-v1 schema (WITHOUT ROWID, no `id`) with one row.
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE entries (
+                     namespace TEXT NOT NULL, key TEXT NOT NULL, content TEXT NOT NULL,
+                     metadata TEXT, embedding BLOB,
+                     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                     PRIMARY KEY (namespace, key)
+                 ) WITHOUT ROWID;",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO entries VALUES ('learnings','k1','old content',NULL,NULL,100,100)",
+                [],
+            )
+            .unwrap();
+        }
+        // Opening with the v1 store must migrate and preserve the row.
+        let store = SqliteStore::open(&path, None).unwrap();
+        let entry = store
+            .get(Namespace::Learnings, "k1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.content, "old content");
+        assert_eq!(entry.created_at, 100);
     }
 
     #[test]
