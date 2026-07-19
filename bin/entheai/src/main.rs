@@ -175,7 +175,11 @@ fn build_memory(cfg: &Config) -> anyhow::Result<Option<entheai_memory::SharedMem
     }
     let embedder = cfg.memory.embed_provider.as_ref().and_then(|p| {
         cfg.providers.get(p).map(|pc| {
-            entheai_memory::Embedder::new(pc.base_url.clone(), cfg.memory.embed_model.clone())
+            entheai_memory::Embedder::new(
+                pc.base_url.clone(),
+                cfg.memory.embed_model.clone(),
+                cfg.memory.embed_timeout_secs,
+            )
         })
     });
     let path = expand_home(&cfg.memory.path);

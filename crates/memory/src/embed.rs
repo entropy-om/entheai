@@ -25,16 +25,14 @@ struct EmbedData {
     embedding: Vec<f32>,
 }
 
-/// Default timeout for embedding requests.
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-
 impl Embedder {
-    /// Create a new embedder with a 30-second request timeout.
+    /// Create a new embedder with a configurable request timeout.
     /// `base_url` should include the `/v1` prefix
-    /// (e.g. `http://127.0.0.1:1337/v1`).
-    pub fn new(base_url: impl Into<String>, model: impl Into<String>) -> Self {
+    /// (e.g. `http://127.0.0.1:1337/v1`). `timeout_secs` is clamped to a
+    /// minimum of 1 second.
+    pub fn new(base_url: impl Into<String>, model: impl Into<String>, timeout_secs: u64) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(DEFAULT_TIMEOUT)
+            .timeout(Duration::from_secs(timeout_secs.max(1)))
             .build()
             .expect("reqwest Client::builder() should never fail");
         Embedder {
@@ -100,7 +98,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let embedder = Embedder::new(server.uri() + "/v1", "nomic-embed-text");
+        let embedder = Embedder::new(server.uri() + "/v1", "nomic-embed-text", 30);
         let vec = embedder.embed("hello").await.unwrap();
         assert_eq!(vec, vec![0.1, 0.2, 0.3]);
     }
@@ -119,7 +117,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let embedder = Embedder::new(server.uri() + "/v1", "nomic-embed-text");
+        let embedder = Embedder::new(server.uri() + "/v1", "nomic-embed-text", 30);
         let vecs = embedder
             .embed_batch(&["a".into(), "b".into()])
             .await
@@ -136,8 +134,29 @@ mod tests {
             .mount(&server)
             .await;
 
-        let embedder = Embedder::new(server.uri() + "/v1", "nomic-embed-text");
+        let embedder = Embedder::new(server.uri() + "/v1", "nomic-embed-text", 30);
         let err = embedder.embed("boom").await.unwrap_err();
         assert!(err.to_string().contains("500"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn embedder_honors_timeout() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(2))
+                    .set_body_json(serde_json::json!({"data":[{"embedding":[0.1]}]})),
+            )
+            .mount(&server)
+            .await;
+        let emb = Embedder::new(server.uri() + "/v1", "m", 1); // 1s timeout
+        let err = emb.embed("hi").await.unwrap_err();
+        // anyhow's `Display` only surfaces the top-level message; the
+        // "operation timed out" detail lives in the source chain, which
+        // shows up via `Debug` (`Caused by: ...`). Check both.
+        let s = format!("{err} {err:?}").to_lowercase();
+        assert!(s.contains("timeout") || s.contains("timed out"), "{err:?}");
     }
 }
