@@ -57,7 +57,7 @@ impl VaultWriter {
             }
         }
 
-        // Assets (copy bytes from the repo; hash the source path + len cheaply).
+        // Assets (copy bytes from the repo; hash the file contents).
         for asset in &out.assets {
             let key = rel_key(&asset.vault_rel);
             let src = repo_root.join(&asset.repo_rel);
@@ -73,7 +73,12 @@ impl VaultWriter {
             }
         }
 
-        // Orphan GC: anything in the old manifest but not desired.
+        // Orphan GC: delete manifest entries no longer desired. Resilient — a
+        // single failing/poison key (a hand-corrupted "../x" manifest entry, a
+        // locked/iCloud-busy file) must NOT wedge the whole sync: log and
+        // continue so the manifest still persists and the rest proceeds.
+        // Confinement still holds — safe_target rejects an escaping key before
+        // any delete happens.
         let orphans: Vec<String> = self
             .manifest
             .keys()
@@ -81,7 +86,9 @@ impl VaultWriter {
             .cloned()
             .collect();
         for key in orphans {
-            self.delete_confined(Path::new(&key))?;
+            if let Err(e) = self.delete_confined(Path::new(&key)) {
+                log::warn!("obsidian: skipping orphan '{key}': {e}");
+            }
         }
 
         self.manifest = desired;
@@ -90,6 +97,10 @@ impl VaultWriter {
     }
 
     /// Join `rel` under the subtree, refusing any path that escapes it.
+    ///
+    /// Confinement is lexical (component-based); it does not resolve symlinks.
+    /// Acceptable under the v1 trust model — entheai owns the subtree and
+    /// rel_paths derive from the user's own repo.
     fn safe_target(&self, rel: &Path) -> io::Result<PathBuf> {
         for c in rel.components() {
             match c {
@@ -148,13 +159,14 @@ fn rel_key(p: &Path) -> String {
 /// Replace the `{UPDATED}` front-matter token with a fixed synthetic timestamp.
 /// NOTE: real wall-clock is injected by the runtime; tests use this stable form.
 fn stamp_updated(md: &str) -> String {
-    md.replace("{UPDATED}", &now_iso8601())
+    md.replace("{UPDATED}", &now_stamp())
 }
 
-/// Current time as ISO-8601. Isolated here so tests can rely on a fixed value
-/// via the `test` cfg (avoids nondeterministic hashing — the token is replaced
-/// AFTER hashing, so the timestamp never affects change detection).
-fn now_iso8601() -> String {
+/// Current time as unix epoch seconds (kept dep-free; cosmetic metadata).
+/// Isolated here so tests can rely on a fixed value via the `test` cfg
+/// (avoids nondeterministic hashing — the token is replaced AFTER hashing,
+/// so the timestamp never affects change detection).
+fn now_stamp() -> String {
     #[cfg(test)]
     {
         "1970-01-01T00:00:00Z".to_string()
@@ -166,7 +178,7 @@ fn now_iso8601() -> String {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        format!("epoch:{secs}")
+        format!("{secs}")
     }
 }
 
@@ -276,6 +288,37 @@ mod tests {
         assert_eq!(
             std::fs::read(subtree.join("_assets/docs/images/brain.png")).unwrap(),
             b"PNGDATA"
+        );
+    }
+
+    #[test]
+    fn poison_manifest_key_does_not_wedge_apply_or_escape() {
+        let vault = tempfile::tempdir().unwrap();
+        let subtree = vault.path().join("entheai-sync");
+        std::fs::create_dir_all(&subtree).unwrap();
+        // Hand-corrupt the manifest with an escaping key.
+        std::fs::write(
+            subtree.join(".entheai-sync-manifest.json"),
+            r#"{"../escape.md":123}"#,
+        )
+        .unwrap();
+        let mut w = VaultWriter::new(subtree.clone());
+        // A normal render must STILL succeed (poison key logged + dropped), and
+        // nothing is deleted outside the subtree.
+        let out = RenderOutput {
+            notes: vec![note("Home.md", "hi")],
+            assets: vec![],
+        };
+        w.apply(&out, vault.path()).unwrap(); // must NOT error
+        assert!(subtree.join("Home.md").is_file());
+        assert!(
+            !vault.path().join("escape.md").exists(),
+            "no external delete"
+        );
+        let m = std::fs::read_to_string(subtree.join(".entheai-sync-manifest.json")).unwrap();
+        assert!(
+            !m.contains("escape"),
+            "poison key dropped from persisted manifest"
         );
     }
 }
