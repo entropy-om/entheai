@@ -488,6 +488,7 @@ async fn event_loop<P: Provider + 'static>(
             }
             Some(req) = perm_rx.recv() => {
                 dirty = true;
+                app.view = ViewMode::Chat; // ensure the y/n/a modal (chat-layout only) is visible
                 app.pending_permission = Some(req.respond);
                 if let Some(ref tx) = companion_tx {
                     let _ = tx.send(StateChange::permission_pending(&req.tool, &req.args));
@@ -1529,6 +1530,31 @@ mod tests {
         active.decompose(&[("a".into(), "t".into())]);
         assert_eq!(swarm_rows_for(true, &active), 3); // 1 node + 2 border
         assert_eq!(swarm_rows_for(false, &active), 0); // disabled → collapsed
+    }
+
+    #[test]
+    fn swarm_pane_clamps_at_cap() {
+        let mut m = entheai_viz::SwarmModel::new();
+        let tasks: Vec<(String, String)> = (0..12).map(|i| (format!("r{i}"), "t".into())).collect();
+        m.decompose(&tasks);
+        assert_eq!(
+            swarm_rows_for(true, &m),
+            SWARM_PANE_CAP,
+            "12 nodes clamp to the cap"
+        );
+    }
+
+    #[test]
+    fn swarm_pane_collapses_after_done() {
+        let mut m = entheai_viz::SwarmModel::new();
+        m.decompose(&[("a".into(), "t".into())]);
+        assert!(swarm_rows_for(true, &m) > 0, "active during the run");
+        m.done(None, 1, 0);
+        assert_eq!(
+            swarm_rows_for(true, &m),
+            0,
+            "collapses once the run is Done"
+        );
     }
 
     #[test]
