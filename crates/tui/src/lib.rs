@@ -70,6 +70,25 @@ fn fmt_tokens(n: usize) -> String {
     }
 }
 
+/// Render the live plan (from the `todo` tool or fan-out decomposition) as one
+/// styled line per item: a status marker + truncated text. Empty plan -> no
+/// rows (the caller collapses the pane's layout region to height 0).
+fn plan_lines(plan: &[entheai_tools::todo::TodoItem], width: u16) -> Vec<Line<'static>> {
+    use entheai_tools::todo::TodoStatus;
+    let w = (width.max(4) as usize).saturating_sub(2);
+    plan.iter()
+        .map(|it| {
+            let (marker, style) = match it.status {
+                TodoStatus::Pending => ("◻", Style::default().add_modifier(Modifier::DIM)),
+                TodoStatus::InProgress => ("◐", Style::default().fg(Color::Cyan)),
+                TodoStatus::Done => ("✓", Style::default().fg(Color::Green)),
+                TodoStatus::Failed => ("✗", Style::default().fg(Color::Red)),
+            };
+            Line::styled(format!("{marker} {}", truncate(&it.text, w)), style)
+        })
+        .collect()
+}
+
 type Backend = CrosstermBackend<Stdout>;
 
 /// Who authored a line of history.
@@ -199,6 +218,10 @@ struct App {
     /// Index into `VERBS`, advanced once per submitted turn so the progress
     /// line's idle verb varies run to run.
     verb_idx: usize,
+    /// The live task plan, sourced from the `todo` tool (single-agent runs) or
+    /// seeded/updated by fan-out lifecycle events. Empty -> the plan pane
+    /// collapses to zero height.
+    plan: Vec<entheai_tools::todo::TodoItem>,
 }
 
 /// What a key press asked the loop to do.
@@ -312,6 +335,7 @@ async fn event_loop<P: Provider + 'static>(
         streaming_idx: None,
         out_tokens: 0,
         verb_idx: 0,
+        plan: Vec::new(),
     };
 
     // Background music player (yt-dlp + rodio); one per TUI session.
@@ -323,9 +347,10 @@ async fn event_loop<P: Provider + 'static>(
     loop {
         // Clamp scroll against the current terminal size before drawing.
         let size = terminal.size()?;
+        let plan_rows = plan_rows_for(app.plan.len());
         let history_height = size
             .height
-            .saturating_sub(STATUS_ROWS + PROGRESS_ROWS + INPUT_ROWS);
+            .saturating_sub(STATUS_ROWS + PROGRESS_ROWS + INPUT_ROWS + plan_rows);
         let lines = build_history_lines(&app.messages, size.width);
         let max_scroll = (lines.len() as u16).saturating_sub(history_height);
         if app.follow {
@@ -337,7 +362,7 @@ async fn event_loop<P: Provider + 'static>(
             }
         }
         let scroll = app.scroll;
-        terminal.draw(|frame| render(frame, &app, lines, scroll))?;
+        terminal.draw(|frame| render(frame, &app, lines, scroll, plan_rows))?;
 
         tokio::select! {
             maybe_event = events.next() => {
@@ -366,6 +391,7 @@ async fn event_loop<P: Provider + 'static>(
                             app.run_started = Some(Instant::now());
                             app.out_tokens = 0;
                             app.verb_idx = app.verb_idx.wrapping_add(1);
+                            app.plan.clear();
 
                             if fanout {
                                 let config = Arc::clone(&config);
@@ -431,6 +457,7 @@ async fn event_loop<P: Provider + 'static>(
                 events_rx = None;
                 fanout_rx = None;
                 app.streaming_idx = None;
+                app.plan.clear();
             }
             maybe_progress = async {
                 match events_rx.as_mut() {
@@ -462,6 +489,11 @@ async fn event_loop<P: Provider + 'static>(
                         app.messages[idx].text.push_str(&t);
                     }
                     Some(AgentEvent::ToolStarted { name, args }) => {
+                        if name == "todo" {
+                            let parsed: serde_json::Value =
+                                serde_json::from_str(&args).unwrap_or(serde_json::Value::Null);
+                            app.plan = entheai_tools::todo::parse_todos(&parsed);
+                        }
                         app.messages.push(Msg {
                             role: Role::Tool,
                             text: format!("⚙ {name}({})", truncate_args(&args, 80)),
@@ -495,6 +527,13 @@ async fn event_loop<P: Provider + 'static>(
                     }
                     Some(entheai_orchestrator::FanoutEvent::Decomposed { tasks }) => {
                         let count = tasks.len();
+                        app.plan = tasks
+                            .iter()
+                            .map(|(role, task)| entheai_tools::todo::TodoItem {
+                                text: format!("[{role}] {task}"),
+                                status: entheai_tools::todo::TodoStatus::Pending,
+                            })
+                            .collect();
                         app.messages.push(Msg {
                             role: Role::Tool,
                             text: format!("◇ decomposed into {count} sub-task(s)"),
@@ -502,6 +541,9 @@ async fn event_loop<P: Provider + 'static>(
                         app.current_action = "fanning out".to_string();
                     }
                     Some(entheai_orchestrator::FanoutEvent::CoderStarted { index, role, task }) => {
+                        if let Some(item) = app.plan.get_mut(index) {
+                            item.status = entheai_tools::todo::TodoStatus::InProgress;
+                        }
                         app.messages.push(Msg {
                             role: Role::Tool,
                             text: format!("▸ [{role} #{index}] {}", truncate(&task, 80)),
@@ -509,6 +551,13 @@ async fn event_loop<P: Provider + 'static>(
                         app.current_action = "running coders".to_string();
                     }
                     Some(entheai_orchestrator::FanoutEvent::CoderFinished { index, committed: _, status }) => {
+                        if let Some(item) = app.plan.get_mut(index) {
+                            item.status = if status.contains("fail") {
+                                entheai_tools::todo::TodoStatus::Failed
+                            } else {
+                                entheai_tools::todo::TodoStatus::Done
+                            };
+                        }
                         app.messages.push(Msg {
                             role: Role::Tool,
                             text: format!("  #{index}: {status}"),
@@ -550,6 +599,19 @@ async fn event_loop<P: Provider + 'static>(
 const STATUS_ROWS: u16 = 1;
 const PROGRESS_ROWS: u16 = 1;
 const INPUT_ROWS: u16 = 3;
+/// Cap on the plan pane's height in rows, so a long plan can't crowd out the
+/// history entirely.
+const PLAN_ROWS_CAP: u16 = 8;
+
+/// Height of the plan-pane layout region for a plan with `plan_len` items:
+/// zero when empty (the pane collapses), capped at [`PLAN_ROWS_CAP`] rows.
+fn plan_rows_for(plan_len: usize) -> u16 {
+    if plan_len == 0 {
+        0
+    } else {
+        (plan_len as u16).min(PLAN_ROWS_CAP)
+    }
+}
 
 /// Map a key press to an [`Action`], mutating input/scroll/modal state as needed.
 fn handle_key(app: &mut App, key: KeyEvent) -> Action {
@@ -765,10 +827,11 @@ fn build_history_lines(messages: &[Msg], width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-fn render(frame: &mut Frame, app: &App, lines: Vec<Line<'static>>, scroll: u16) {
+fn render(frame: &mut Frame, app: &App, lines: Vec<Line<'static>>, scroll: u16, plan_rows: u16) {
     let area = frame.area();
-    let [status_area, history_area, progress_area, input_area] = Layout::vertical([
+    let [status_area, plan_area, history_area, progress_area, input_area] = Layout::vertical([
         Constraint::Length(STATUS_ROWS),
+        Constraint::Length(plan_rows),
         Constraint::Min(1),
         Constraint::Length(PROGRESS_ROWS),
         Constraint::Length(INPUT_ROWS),
@@ -801,6 +864,13 @@ fn render(frame: &mut Frame, app: &App, lines: Vec<Line<'static>>, scroll: u16) 
     }
     let status = Line::from(status_spans);
     frame.render_widget(Paragraph::new(status), status_area);
+
+    // Plan pane: boxless, dim-prefixed rows (one per todo item); collapses to
+    // zero height (via `plan_rows`) when there's no live plan.
+    if !app.plan.is_empty() {
+        let plan = Paragraph::new(plan_lines(&app.plan, plan_area.width));
+        frame.render_widget(plan, plan_area);
+    }
 
     // History (pre-wrapped, so scroll offset is exact).
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), history_area);
@@ -1000,6 +1070,36 @@ mod tests {
     }
 
     #[test]
+    fn plan_lines_markers_and_empty() {
+        use entheai_tools::todo::{TodoItem, TodoStatus};
+        assert!(plan_lines(&[], 40).is_empty()); // empty -> no rows
+        let plan = vec![
+            TodoItem {
+                text: "read".into(),
+                status: TodoStatus::Done,
+            },
+            TodoItem {
+                text: "map".into(),
+                status: TodoStatus::InProgress,
+            },
+            TodoItem {
+                text: "add".into(),
+                status: TodoStatus::Pending,
+            },
+        ];
+        let lines = plan_lines(&plan, 40);
+        assert_eq!(lines.len(), 3);
+        // render to strings to check markers
+        let s: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|sp| sp.content.as_ref()).collect())
+            .collect();
+        assert!(s[0].starts_with('✓'));
+        assert!(s[1].starts_with('◐'));
+        assert!(s[2].starts_with('◻'));
+    }
+
+    #[test]
     fn radio_command_detection() {
         assert!(is_radio_command("/radio"));
         assert!(is_radio_command("/radio https://youtu.be/x"));
@@ -1027,6 +1127,7 @@ mod tests {
             streaming_idx: None,
             out_tokens: 0,
             verb_idx: 0,
+            plan: Vec::new(),
         };
         handle_radio_event(
             &mut app,

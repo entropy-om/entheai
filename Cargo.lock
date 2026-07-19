@@ -1313,6 +1313,7 @@ dependencies = [
  "entheai-tools",
  "futures",
  "ratatui",
+ "serde_json",
  "tokio",
 ]
 
