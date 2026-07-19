@@ -91,7 +91,7 @@ impl SqliteStore {
     /// Open (or create) the database at `path`, applying the schema and pragmas.
     pub fn open(path: impl AsRef<Path>, embedder: Option<Embedder>) -> Result<Self, MemoryError> {
         ensure_vec_extension();
-        let conn = Connection::open_with_flags(
+        let mut conn = Connection::open_with_flags(
             path.as_ref(),
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_CREATE
@@ -103,7 +103,7 @@ impl SqliteStore {
              PRAGMA mmap_size = 268435456;
              PRAGMA foreign_keys = ON;",
         )?;
-        ensure_schema(&conn)?;
+        ensure_schema(&mut conn)?;
         Ok(SqliteStore {
             db: Arc::new(Mutex::new(conn)),
             embedder,
@@ -114,8 +114,8 @@ impl SqliteStore {
     /// Open an in-memory database (for testing).
     pub fn open_memory(embedder: Option<Embedder>) -> Result<Self, MemoryError> {
         ensure_vec_extension();
-        let conn = Connection::open_in_memory()?;
-        ensure_schema(&conn)?;
+        let mut conn = Connection::open_in_memory()?;
+        ensure_schema(&mut conn)?;
         Ok(SqliteStore {
             db: Arc::new(Mutex::new(conn)),
             embedder,
@@ -407,14 +407,12 @@ impl Memory for SqliteStore {
 // ---------------------------------------------------------------------------
 
 fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
-    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        if row.get::<_, String>(1)? == column {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    let n: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        params![table, column],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
 }
 
 fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
@@ -429,9 +427,14 @@ fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
 /// Create the v1 schema, migrating a pre-v1 `WITHOUT ROWID` `entries` table
 /// (no `id` column) in place. `vec_entries`/`entries_fts` are added in later
 /// tasks; this task only establishes the rowid `entries` table + `meta`.
-fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
+fn ensure_schema(conn: &mut Connection) -> rusqlite::Result<()> {
     if table_exists(conn, "entries")? && !column_exists(conn, "entries", "id")? {
-        conn.execute_batch(
+        // Atomic rebuild: IMMEDIATE tx acquires the write lock up front (serializing
+        // concurrent openers on this shared checkout) and rolls back via RAII on any
+        // early `?`, so a mid-migration failure leaves the original WITHOUT ROWID
+        // table intact rather than stranding rows in `entries_old`.
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute_batch(
             "ALTER TABLE entries RENAME TO entries_old;
              CREATE TABLE entries (
                  id INTEGER PRIMARY KEY,
@@ -445,6 +448,7 @@ fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
                  FROM entries_old;
              DROP TABLE entries_old;",
         )?;
+        tx.commit()?;
     } else {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS entries (
