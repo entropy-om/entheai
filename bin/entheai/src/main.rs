@@ -32,12 +32,15 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let _sentry = init_telemetry();
+    // Load `.env` first so provider keys, MCP URLs, etc. are visible to
+    // everything downstream (config parsing, providers, MCP spawn).
+    dotenvy::dotenv().ok();
     let cli = Cli::parse();
 
     let cfg_text = std::fs::read_to_string(&cli.config)
         .with_context(|| format!("reading config {}", cli.config))?;
     let cfg = Config::from_toml_str(&cfg_text)?;
+    let _sentry = init_telemetry(cfg.telemetry.sentry_dsn.clone());
     let root = std::env::current_dir()?.canonicalize()?;
 
     // Tool registry (built-ins + skills + MCP servers) + the skills system prompt.
@@ -48,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
         .model
         .clone()
         .or(cfg.default_model.clone())
-        .context("no model: pass --model or set default_model in config")?;
+        .unwrap_or_else(|| entheai_router::DEFAULT_ORCHESTRATOR.to_string());
     let agent = entheai_router::build_agent(&model_id, &cfg)?;
     let policy = entheai_permission::Policy::new(
         cli.yolo || cfg.permission.yolo,
@@ -121,13 +124,16 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Load `.env` and initialize Sentry crash reporting (PII disabled). The
-/// returned guard flushes events on drop, so `main` must hold it.
-fn init_telemetry() -> sentry::ClientInitGuard {
-    dotenvy::dotenv().ok();
-    let dsn = std::env::var("SENTRY_DSN").unwrap_or_else(|_| {
-        "https://ea8a1a1d46d9c33b709aae544ff24a79@o4511756214075392.ingest.de.sentry.io/4511756233474128".to_string()
-    });
+/// Initialize Sentry crash reporting (PII disabled). Resolves the DSN from the
+/// config (`[telemetry].sentry_dsn`), else the `SENTRY_DSN` env var, else the
+/// built-in fallback so crash reporting works out of the box. The returned guard
+/// flushes events on drop, so `main` must hold it.
+fn init_telemetry(config_dsn: Option<String>) -> sentry::ClientInitGuard {
+    let dsn = config_dsn
+        .or_else(|| std::env::var("SENTRY_DSN").ok())
+        .unwrap_or_else(|| {
+            "https://ea8a1a1d46d9c33b709aae544ff24a79@o4511756214075392.ingest.de.sentry.io/4511756233474128".to_string()
+        });
     sentry::init((
         dsn,
         sentry::ClientOptions {
@@ -261,12 +267,15 @@ async fn build_tools(
     // that fails or hangs is skipped with a warning (never blocks startup).
     let mut guards = Vec::new();
     for (name, mcp_cfg) in &cfg.mcp {
-        let load = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            let (client, guard) =
-                entheai_mcp::McpClient::spawn(&mcp_cfg.command, &mcp_cfg.args, name).await?;
-            let tools = entheai_mcp::load_tools(client).await?;
-            Ok::<_, entheai_mcp::McpError>((guard, tools))
-        })
+        let load = tokio::time::timeout(
+            std::time::Duration::from_secs(cfg.mcp_defaults.spawn_timeout_secs),
+            async {
+                let (client, guard) =
+                    entheai_mcp::McpClient::spawn(&mcp_cfg.command, &mcp_cfg.args, name).await?;
+                let tools = entheai_mcp::load_tools(client).await?;
+                Ok::<_, entheai_mcp::McpError>((guard, tools))
+            },
+        )
         .await;
         match load {
             Ok(Ok((guard, tools))) => {
@@ -278,7 +287,10 @@ async fn build_tools(
                 guards.push(guard);
             }
             Ok(Err(e)) => eprintln!("mcp: '{name}' failed: {e}"),
-            Err(_) => eprintln!("mcp: '{name}' timed out after 10s — skipping"),
+            Err(_) => eprintln!(
+                "mcp: '{name}' timed out after {}s — skipping",
+                cfg.mcp_defaults.spawn_timeout_secs
+            ),
         }
     }
 
