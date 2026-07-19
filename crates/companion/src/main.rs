@@ -1,3 +1,5 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::num::NonZeroU32;
 use std::os::unix::net::UnixStream;
@@ -50,8 +52,32 @@ struct Cli {
     socket: Option<PathBuf>,
 }
 
+const ADJECTIVES: [&str; 16] = [
+    "quiet", "brisk", "amber", "cobalt", "drift", "ember", "frost", "gilded", "hollow", "inky",
+    "jagged", "keen", "lush", "murky", "nimble", "opal",
+];
+
+const NOUNS: [&str; 16] = [
+    "lynx", "otter", "raven", "heron", "badger", "falcon", "marten", "wren", "vole", "gecko",
+    "ibex", "civet", "puffin", "serval", "tapir", "wombat",
+];
+
+/// Derives a stable, human-friendly codename (`"{adjective}-{noun}"`) from a
+/// session id. Uses `DefaultHasher`, which hashes with fixed keys, so the
+/// same session id always maps to the same codename — no RNG, no new crates.
+fn codename(session_id: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    session_id.hash(&mut hasher);
+    let hash = hasher.finish();
+    let adj = ADJECTIVES[(hash as usize) % ADJECTIVES.len()];
+    let noun = NOUNS[((hash >> 32) as usize) % NOUNS.len()];
+    format!("{adj}-{noun}")
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let name = codename(&cli.session_id);
+    eprintln!("companion '{name}' (session {})", cli.session_id);
 
     let cwd = cli.cwd.unwrap_or_else(|| {
         std::env::current_dir()
@@ -65,6 +91,7 @@ fn main() -> anyhow::Result<()> {
         host: cli.host.clone(),
         port: cli.port,
         cwd,
+        name: name.clone(),
     };
 
     let qr_grid = qr::generate(&payload)?;
@@ -90,7 +117,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let window_attrs = Window::default_attributes()
-        .with_title("entheai companion")
+        .with_title(format!("entheai · {name}"))
         .with_decorations(false)
         .with_resizable(false)
         .with_inner_size(LogicalSize::new(180.0, 180.0))
@@ -129,6 +156,7 @@ fn main() -> anyhow::Result<()> {
     let mut fading_since: Option<f64> = None;
     let mut line_buf = String::new();
     let mut surface_state: Option<SoftbufferState> = None;
+    let mut shift_held = false;
 
     #[allow(deprecated)]
     event_loop.run(move |event, target| {
@@ -183,12 +211,35 @@ fn main() -> anyhow::Result<()> {
                 let _ = surf.resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap());
 
                 if let Ok(mut buffer) = surf.buffer_mut() {
-                    render::render_frame(&mut buffer, w, h, &qr_grid, &anim, now);
+                    render::render_frame(&mut buffer, w, h, &qr_grid, &anim, now, &name);
                     let _ = buffer.present();
                 }
             }
 
-            // Click anywhere -> copy session URL to clipboard.
+            Event::WindowEvent {
+                event: WindowEvent::ModifiersChanged(mods),
+                ..
+            } => {
+                shift_held = mods.state().shift_key();
+            }
+
+            // Shift + press -> start an OS-level window drag instead of the
+            // normal click-to-copy interaction.
+            Event::WindowEvent {
+                event:
+                    WindowEvent::MouseInput {
+                        state: winit::event::ElementState::Pressed,
+                        button: MouseButton::Left,
+                        ..
+                    },
+                ..
+            } => {
+                if shift_held {
+                    let _ = window.drag_window();
+                }
+            }
+
+            // Click anywhere (without Shift) -> copy session URL to clipboard.
             Event::WindowEvent {
                 event:
                     WindowEvent::MouseInput {
@@ -198,9 +249,11 @@ fn main() -> anyhow::Result<()> {
                     },
                 ..
             } => {
-                anim.flash(now);
-                if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                    let _ = clipboard.set_text(&session_url);
+                if !shift_held {
+                    anim.flash(now);
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        let _ = clipboard.set_text(&session_url);
+                    }
                 }
             }
 

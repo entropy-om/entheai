@@ -14,6 +14,9 @@ pub struct SessionPayload {
     pub port: u16,
     /// Working directory the session was started from.
     pub cwd: String,
+    /// Stable, human-friendly codename for this companion instance
+    /// (derived deterministically from the session id).
+    pub name: String,
 }
 
 /// A 2D boolean grid representing the QR code modules.
@@ -65,6 +68,7 @@ mod tests {
             host: "mac-top.local".into(),
             port: 9876,
             cwd: "/home/user/project".into(),
+            name: "quiet-lynx".into(),
         };
         let grid = generate(&payload).unwrap();
         assert!(grid.size >= 21); // at least version 1
@@ -85,10 +89,12 @@ mod tests {
             host: "mac-top.peterlodri-sec.ts.net".into(),
             port: 9876,
             cwd: "/Users/peter/workspace/entheai".into(),
+            name: "brisk-otter".into(),
         };
         let json = serde_json::to_string(&payload).unwrap();
         let parsed: SessionPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.sid, payload.sid);
         assert_eq!(parsed.host, payload.host);
+        assert_eq!(parsed.name, payload.name);
     }
 }

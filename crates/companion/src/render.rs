@@ -8,6 +8,7 @@ struct GlowParams((f32, f32, f32), f64, (f32, f32), bool, f32);
 const FPS: f64 = 24.0;
 const TRANSITION_S: f64 = 0.3;
 const FLASH_S: f64 = 0.2;
+const SPIN_PERIOD_S: f64 = 6.0; // seconds per full revolution of the working-state orbit dot
 
 const BG: (u8, u8, u8) = (0x0a, 0x0f, 0x14);
 const TEAL: (u8, u8, u8) = (0x00, 0xe5, 0xff);
@@ -15,6 +16,7 @@ const MAGENTA: (u8, u8, u8) = (0xff, 0x00, 0xe5);
 const RED: (u8, u8, u8) = (0xff, 0x44, 0x44);
 const QR_DARK: (u8, u8, u8) = (0x2a, 0x4a, 0x55);
 const QR_LIGHT: (u8, u8, u8) = (0x0d, 0x18, 0x1f);
+const NAME_COLOR: (u8, u8, u8) = (0x00, 0x77, 0x82); // dim teal for the codename label
 
 const GLYPH_QUESTION: [[bool; 5]; 7] = [
     [false, true, true, true, false],
@@ -142,6 +144,7 @@ pub fn render_frame(
     qr: &QrGrid,
     anim: &AnimationState,
     time: f64,
+    name: &str,
 ) {
     let w = width as f32;
     let h = height as f32;
@@ -231,11 +234,14 @@ pub fn render_frame(
             pulse * fa,
         );
     }
+
+    let name_upper = name.to_uppercase();
+    draw_text(buffer, width, height, &name_upper, fa);
 }
 
 fn draw_spinner(buffer: &mut [u32], w: u32, h: u32, cx: f32, cy: f32, time: f64, fade_alpha: f32) {
     let radius = w.min(h) as f32 * 0.55;
-    let angle = time as f32 * std::f32::consts::TAU / 2.0;
+    let angle = (time * std::f64::consts::TAU / SPIN_PERIOD_S) as f32;
     let sx = cx + radius * angle.cos();
     let sy = cy + radius * angle.sin();
     let dot_r = 2i32;
@@ -307,6 +313,114 @@ fn draw_glyph(
     }
 }
 
+/// Compact 3x5 pixel font covering `A`-`Z`, `0`-`9`, and `-`. Returns a
+/// blank (all-`false`) glyph for any other character. Rows are top-to-
+/// bottom, columns left-to-right.
+fn glyph_3x5(c: char) -> [[bool; 3]; 5] {
+    fn row(bits: u8) -> [bool; 3] {
+        [(bits >> 2) & 1 == 1, (bits >> 1) & 1 == 1, bits & 1 == 1]
+    }
+    match c.to_ascii_uppercase() {
+        'A' => [row(0b010), row(0b101), row(0b111), row(0b101), row(0b101)],
+        'B' => [row(0b110), row(0b101), row(0b110), row(0b101), row(0b110)],
+        'C' => [row(0b011), row(0b100), row(0b100), row(0b100), row(0b011)],
+        'D' => [row(0b110), row(0b101), row(0b101), row(0b101), row(0b110)],
+        'E' => [row(0b111), row(0b100), row(0b110), row(0b100), row(0b111)],
+        'F' => [row(0b111), row(0b100), row(0b110), row(0b100), row(0b100)],
+        'G' => [row(0b011), row(0b100), row(0b101), row(0b101), row(0b011)],
+        'H' => [row(0b101), row(0b101), row(0b111), row(0b101), row(0b101)],
+        'I' => [row(0b111), row(0b010), row(0b010), row(0b010), row(0b111)],
+        'J' => [row(0b001), row(0b001), row(0b001), row(0b101), row(0b010)],
+        'K' => [row(0b101), row(0b101), row(0b110), row(0b101), row(0b101)],
+        'L' => [row(0b100), row(0b100), row(0b100), row(0b100), row(0b111)],
+        'M' => [row(0b111), row(0b101), row(0b101), row(0b101), row(0b101)],
+        'N' => [row(0b101), row(0b110), row(0b101), row(0b011), row(0b101)],
+        'O' => [row(0b111), row(0b101), row(0b101), row(0b101), row(0b111)],
+        'P' => [row(0b110), row(0b101), row(0b110), row(0b100), row(0b100)],
+        'Q' => [row(0b111), row(0b101), row(0b101), row(0b111), row(0b001)],
+        'R' => [row(0b110), row(0b101), row(0b110), row(0b101), row(0b101)],
+        'S' => [row(0b011), row(0b100), row(0b010), row(0b001), row(0b110)],
+        'T' => [row(0b111), row(0b010), row(0b010), row(0b010), row(0b010)],
+        'U' => [row(0b101), row(0b101), row(0b101), row(0b101), row(0b111)],
+        'V' => [row(0b101), row(0b101), row(0b101), row(0b101), row(0b010)],
+        'W' => [row(0b101), row(0b101), row(0b101), row(0b111), row(0b101)],
+        'X' => [row(0b101), row(0b101), row(0b010), row(0b101), row(0b101)],
+        'Y' => [row(0b101), row(0b101), row(0b010), row(0b010), row(0b010)],
+        'Z' => [row(0b111), row(0b001), row(0b010), row(0b100), row(0b111)],
+        '0' => [row(0b111), row(0b101), row(0b101), row(0b101), row(0b111)],
+        '1' => [row(0b010), row(0b110), row(0b010), row(0b010), row(0b111)],
+        '2' => [row(0b111), row(0b001), row(0b111), row(0b100), row(0b111)],
+        '3' => [row(0b111), row(0b001), row(0b111), row(0b001), row(0b111)],
+        '4' => [row(0b101), row(0b101), row(0b111), row(0b001), row(0b001)],
+        '5' => [row(0b111), row(0b100), row(0b111), row(0b001), row(0b111)],
+        '6' => [row(0b111), row(0b100), row(0b111), row(0b101), row(0b111)],
+        '7' => [row(0b111), row(0b001), row(0b001), row(0b001), row(0b001)],
+        '8' => [row(0b111), row(0b101), row(0b111), row(0b101), row(0b111)],
+        '9' => [row(0b111), row(0b101), row(0b111), row(0b001), row(0b111)],
+        '-' => [row(0b000), row(0b000), row(0b111), row(0b000), row(0b000)],
+        _ => [[false; 3]; 5],
+    }
+}
+
+/// Draws `text` in the compact 3x5 bitmap font (scaled 2x), centered
+/// horizontally and anchored near the bottom of the window, in dim teal.
+/// If the rendered text would overflow the buffer width it is skipped
+/// entirely rather than clipped mid-glyph.
+fn draw_text(buffer: &mut [u32], w: u32, h: u32, text: &str, alpha: f32) {
+    const SCALE: u32 = 2;
+    const GLYPH_W: u32 = 3 * SCALE;
+    const GLYPH_H: u32 = 5 * SCALE;
+    const SPACING: u32 = SCALE;
+    const ADVANCE: u32 = GLYPH_W + SPACING;
+    const MARGIN_BOTTOM: u32 = 6;
+
+    if text.is_empty() || GLYPH_H + MARGIN_BOTTOM > h {
+        return;
+    }
+
+    let char_count = text.chars().count() as u32;
+    let total_w = char_count * ADVANCE - SPACING;
+    if total_w > w {
+        // Would overflow the window width — skip rather than clip.
+        return;
+    }
+
+    let x0 = (w - total_w) / 2;
+    let y0 = h - GLYPH_H - MARGIN_BOTTOM;
+    let a = (255.0 * alpha.clamp(0.0, 1.0)) as u8;
+    let (cr, cg, cb) = NAME_COLOR;
+
+    for (i, ch) in text.chars().enumerate() {
+        let glyph = glyph_3x5(ch);
+        let gx0 = x0 + i as u32 * ADVANCE;
+        for (row_idx, cols) in glyph.iter().enumerate() {
+            for (col_idx, &on) in cols.iter().enumerate() {
+                if !on {
+                    continue;
+                }
+                let base_x = gx0 + col_idx as u32 * SCALE;
+                let base_y = y0 + row_idx as u32 * SCALE;
+                for dy in 0..SCALE {
+                    let py = base_y + dy;
+                    if py >= h {
+                        continue;
+                    }
+                    for dx in 0..SCALE {
+                        let px = base_x + dx;
+                        if px >= w {
+                            continue;
+                        }
+                        let idx = (py * w + px) as usize;
+                        if idx < buffer.len() {
+                            buffer[idx] = pack_bgra(cb, cg, cr, a);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn smooth_falloff(dist: f32) -> f32 {
     if dist < 0.6 {
         1.0
@@ -371,5 +485,34 @@ mod tests {
         anim.tick(0.15);
         anim.tick(0.15);
         assert!((anim.glow.0 - TEAL.0 as f32).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_glyph_3x5_known_char_is_nonempty() {
+        let g = glyph_3x5('A');
+        assert!(g.iter().flatten().any(|&on| on));
+    }
+
+    #[test]
+    fn test_glyph_3x5_unknown_char_is_blank() {
+        let g = glyph_3x5('!');
+        assert!(g.iter().flatten().all(|&on| !on));
+    }
+
+    #[test]
+    fn test_draw_text_full_width_string_no_panic() {
+        // "QUIET-LYNX" is a representative 10-char codename; must fit and
+        // actually draw something into a 180x180 buffer without panicking.
+        let mut buffer = vec![0u32; 180 * 180];
+        draw_text(&mut buffer, 180, 180, "QUIET-LYNX", 1.0);
+        assert!(buffer.iter().any(|&px| px != 0));
+    }
+
+    #[test]
+    fn test_draw_text_overflow_is_skipped_without_panic() {
+        let mut buffer = vec![0u32; 20 * 20];
+        draw_text(&mut buffer, 20, 20, "THIS-NAME-IS-WAY-TOO-LONG", 1.0);
+        // Overflowing text is skipped entirely — buffer stays untouched.
+        assert!(buffer.iter().all(|&px| px == 0));
     }
 }
