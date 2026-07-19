@@ -10,6 +10,20 @@
 
 ---
 
+> ## Execution status (2026-07-19) — engine DONE, wiring PAUSED
+>
+> **Tasks 0–7 complete and reviewed** (two-stage: spec + code-quality), each committed to `main`:
+> - Task 0 `12588b7`/`97838e5` · Task 1 `9f9600f`/`527dc7f`/`fb02bc4` · Task 2 `93dc3ae`/`cb31d9b` · Task 3 `b087b1c`/`aa445ba` · Task 4 `855b899` · Task 5 `05059ad`/`392501a` · Task 6 `0d1e2fe` · Task 7 `ad543e4`.
+> - The store (sqlite-vec ANN + FTS5 + migration + transactional tri-store sync), `recall.rs` (RRF **normalized to [0,1]** + recency/confidence), config (on-by-default + weights), and the **one-shot** bin path are done and green in isolation.
+>
+> **Tasks 8–10 PAUSED** pending the concurrent fan-out/workers session, which is mid-flight on the *same* files. Resume only once `main` compiles again.
+>
+> **Task 10 signature drift — MUST adapt on resume:** the fan-out session changed `run_fanout` to take a `WorkerPool`: it is now `run_fanout(config, root, task, events, pool)` (pool = `entheai_orchestrator::WorkerPool::new(cfg.router.max_parallel.max(1))`). Task 10's plan text assumes `run_fanout(config, root, task, events, memory)`. On resume, Task 10 becomes **`run_fanout(config, root, task, events, pool, memory: Option<SharedMemory>)`** — add `memory` as an *additional* trailing arg, do not remove `pool`; update the call sites in `bin/entheai/src/main.rs` (fanout branch) and `crates/tui/src/lib.rs` accordingly, and thread `memory` down through `run_fanout_readonly`/`run_coder`/`run_subagent` per the plan. Coordinate with whoever owns the orchestrator so the arg order is agreed.
+>
+> **Also on resume:** the TUI call site `crates/tui/src/lib.rs` and `bin/main.rs`'s fanout branch may already be fixed by the fan-out session — re-read both before editing. Task 9 (TUI memory) additionally threads `Option<Arc<MemoryRuntime>>` + `MemoryScope` into `tui::run`.
+
+---
+
 ## Scope
 
 **In:** `crates/memory` (store: `vec0` + FTS5 + migration/backfill; new `recall.rs`; `store_inner`/`search_hybrid` seams), `crates/config` (`[memory]` on-by-default + recall weights + path), `bin/entheai` (construct + wire the store, one-shot path, `--memory` mode), `crates/tui` (thread memory into the run loop), `crates/orchestrator` (fan-out sub-agents build a `MemoryRuntime` from the shared store).
