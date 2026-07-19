@@ -2,6 +2,7 @@
 //! docs/superpowers/specs/2026-07-19-entheai-obsidian-wiki-sync-design.md.
 
 pub mod generators;
+pub mod nudge;
 pub mod render;
 pub mod resolve;
 pub mod scan;
