@@ -1,0 +1,12 @@
+[package]
+name = "entheai-mapper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["fs"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs"] }
+tempfile = "3"
