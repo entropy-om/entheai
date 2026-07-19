@@ -45,19 +45,34 @@ impl VaultWriter {
 
         let mut desired: BTreeMap<String, u64> = BTreeMap::new();
 
-        // Notes.
+        // Notes — per-item resilient (§8): a single unwritable note (locked file,
+        // or an escaping rel_path from a render bug) is logged and skipped, never
+        // aborting the pass. A failed write is NOT recorded as current (so it
+        // retries next tick); any prior manifest entry is carried forward so a
+        // transient failure doesn't orphan-GC the previous good copy.
         for note in &out.notes {
             let key = rel_key(&note.rel_path);
             let hash = fnv1a(note.markdown.as_bytes());
-            desired.insert(key.clone(), hash);
-            if self.manifest.get(&key) != Some(&hash) {
-                let body = stamp_updated(&note.markdown);
-                self.write_confined(&note.rel_path, body.as_bytes())?;
-                self.last_changed.push(note.rel_path.clone());
+            if self.manifest.get(&key) == Some(&hash) {
+                desired.insert(key, hash);
+                continue;
+            }
+            let body = stamp_updated(&note.markdown);
+            match self.write_confined(&note.rel_path, body.as_bytes()) {
+                Ok(()) => {
+                    desired.insert(key, hash);
+                    self.last_changed.push(note.rel_path.clone());
+                }
+                Err(e) => {
+                    log::warn!("obsidian: skipping note '{}': {e}", note.rel_path.display());
+                    if let Some(&prev) = self.manifest.get(&key) {
+                        desired.insert(key, prev);
+                    }
+                }
             }
         }
 
-        // Assets (copy bytes from the repo; hash the file contents).
+        // Assets — copy the file contents from the repo; per-item resilient.
         for asset in &out.assets {
             let key = rel_key(&asset.vault_rel);
             let src = repo_root.join(&asset.repo_rel);
@@ -66,10 +81,24 @@ impl VaultWriter {
                 Err(_) => continue, // missing source asset: skip, not fatal
             };
             let hash = fnv1a(&bytes);
-            desired.insert(key.clone(), hash);
-            if self.manifest.get(&key) != Some(&hash) {
-                self.write_confined(&asset.vault_rel, &bytes)?;
-                self.last_changed.push(asset.vault_rel.clone());
+            if self.manifest.get(&key) == Some(&hash) {
+                desired.insert(key, hash);
+                continue;
+            }
+            match self.write_confined(&asset.vault_rel, &bytes) {
+                Ok(()) => {
+                    desired.insert(key, hash);
+                    self.last_changed.push(asset.vault_rel.clone());
+                }
+                Err(e) => {
+                    log::warn!(
+                        "obsidian: skipping asset '{}': {e}",
+                        asset.vault_rel.display()
+                    );
+                    if let Some(&prev) = self.manifest.get(&key) {
+                        desired.insert(key, prev);
+                    }
+                }
             }
         }
 
@@ -261,11 +290,39 @@ mod tests {
             notes: vec![note("../escape.md", "nope")],
             assets: vec![],
         };
-        let err = w.apply(&out, vault.path()).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        // Confinement holds: the escaping note is skipped (logged), never written
+        // outside the subtree; apply does NOT abort (resilient per-item, §8).
+        w.apply(&out, vault.path()).unwrap();
         assert!(
             !vault.path().join("escape.md").exists(),
             "nothing written outside subtree"
+        );
+        assert!(!subtree.join("escape.md").exists());
+    }
+
+    #[test]
+    fn one_bad_note_does_not_abort_the_pass() {
+        let vault = tempfile::tempdir().unwrap();
+        let subtree = vault.path().join("entheai-sync");
+        let mut w = VaultWriter::new(subtree.clone());
+        // A bad (escaping) note must be skipped while the good note is still
+        // written and the manifest still persisted.
+        let out = RenderOutput {
+            notes: vec![note("../escape.md", "nope"), note("Good.md", "ok")],
+            assets: vec![],
+        };
+        w.apply(&out, vault.path()).unwrap();
+        assert!(
+            subtree.join("Good.md").is_file(),
+            "good note written despite the bad one"
+        );
+        assert!(
+            !vault.path().join("escape.md").exists(),
+            "confinement still holds"
+        );
+        assert!(
+            subtree.join(".entheai-sync-manifest.json").is_file(),
+            "manifest persisted"
         );
     }
 
