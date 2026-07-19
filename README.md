@@ -115,6 +115,24 @@ Versioning follows strict [SemVer](VERSIONING.md); see [`CHANGELOG.md`](CHANGELO
 
 [Osaurus](https://github.com/osaurus-ai/osaurus) · [CodeWhale](https://github.com/Hmbown/CodeWhale) · [Crush](https://github.com/charmbracelet/crush) · [Ruflo](https://github.com/ruvnet/ruflo) · [jcode](https://jcode.sh) · [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) · [OpenCode Zen](https://opencode.ai) · [Honcho](https://github.com/plastic-labs/honcho) · [Tailscale](https://tailscale.com). Performance practices follow David Lattimore's [*Wild performance tricks*](https://davidlattimore.github.io/posts/2025/09/02/rustforge-wild-performance-tricks.html).
 
+## Hugging Face
+
+Published models, datasets, and Spaces under [`PeetPedro`](https://huggingface.co/PeetPedro) — the artifacts behind entheai's `compaction`, `dogfeed`, and tool-calling work.
+
+**Models**
+- [Qwen3-30B-A3B-Agentic-ToolCaller](https://hf.co/PeetPedro/Qwen3-30B-A3B-Agentic-ToolCaller) — Qwen3-MoE LoRA tuned for agentic tool / function-calling.
+- [kompress-superpower-orchestrator](https://hf.co/PeetPedro/kompress-superpower-orchestrator) — Qwen2.5-7B LoRA for loop-engineering / orchestration function-calling.
+- **kompress context-compression series** — ONNX token-classification models for context pruning (latest [kompress-v17](https://hf.co/PeetPedro/kompress-v17); full [v3–v33 series](https://huggingface.co/PeetPedro?search=kompress)).
+- [anonymus-1bit-gpt](https://hf.co/PeetPedro/anonymus-1bit-gpt) — 1-bit ternary (BitNet) byte-level GPT.
+
+**Datasets**
+- [ultrawhale-dogfood](https://hf.co/datasets/PeetPedro/ultrawhale-dogfood) — self-hosted, silver-label Q&A corpus from the `dogfeed` self-improvement loop *(gated)*.
+- [kompress-v4-traindata](https://hf.co/datasets/PeetPedro/kompress-v4-traindata) — self-labeled context-compression training data.
+
+**Spaces**
+- [1bit-llm-mesh](https://hf.co/spaces/PeetPedro/1bit-llm-mesh) — interactive 1-bit / BitNet LLM visualization (Gradio).
+- [headroom-eval](https://hf.co/spaces/PeetPedro/headroom-eval) — compression "headroom" evaluation harness (Docker).
+
 # Image Prompts (Midjourney)
 
 ```
