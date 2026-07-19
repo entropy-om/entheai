@@ -2,6 +2,13 @@
 
 > Multi-agent synthesis of `docs/research/deepresearch.md` (viz layer, 162 sources, $15 run). Generated 2026-07-19. Feeds the Slice 2 spec.
 
+> **Decisions settled by the user (2026-07-19), resolving §6 open decisions:**
+> 1. **Shader ownership → `entheai doctor` writes/merges** the `.glsl` path + tuning into `~/.config/ghostty/config` (idempotent). ⇒ Slice 2b builds a doctor/setup command.
+> 2. **Off-Ghostty fallback → build Path C** (ANSI Perlin + HalfBlock ambient). ⇒ Slice 2c is in scope.
+> 5. **Animation mode → `custom-shader-animation = true`** (animate when focused; honors idle-frugal), NOT `always`.
+> 3. **Min Ghostty → require ≥ 1.2.0** (recommended default; version-gate with a friendly message).
+> 4. **Graph-glyph distortion under the shader → resolve empirically in the Slice 2a spike** (accept the ambient warp if legible; the shader can't toggle live, a known Path-A limitation).
+
 ---
 
 # entheai Slice 2 — Ambient Raindrop Shader: Actionable Plan
