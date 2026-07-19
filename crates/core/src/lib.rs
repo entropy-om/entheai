@@ -450,10 +450,7 @@ mod tests {
         );
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(EchoTool));
-        let policy = Policy {
-            yolo: true,
-            allowlist: vec![],
-        };
+        let policy = Policy::new(true, vec![]);
         let mut prompter = AllowAll;
 
         let answer = agent
@@ -508,10 +505,7 @@ mod tests {
         let agent = Agent::new(AlwaysToolProvider, "m".into());
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(EchoTool));
-        let policy = Policy {
-            yolo: true,
-            allowlist: vec![],
-        };
+        let policy = Policy::new(true, vec![]);
         let mut prompter = AllowAll;
         let result = agent
             .run_task(
@@ -536,10 +530,7 @@ mod tests {
         );
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(EchoTool));
-        let policy = Policy {
-            yolo: true,
-            allowlist: vec![],
-        };
+        let policy = Policy::new(true, vec![]);
         let mut prompter = AllowAll;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -643,10 +634,7 @@ mod tests {
         registry.register(Box::new(EchoTool));
         // Non-yolo policy with no allowlist -> `decide` asks the prompter, which
         // denies everything.
-        let policy = Policy {
-            yolo: false,
-            allowlist: vec![],
-        };
+        let policy = Policy::new(false, vec![]);
         let mut prompter = DenyAll;
 
         let answer = agent
@@ -685,10 +673,7 @@ mod tests {
         let agent = Agent::new(provider, "m".into());
         // Registry has no tools registered at all.
         let registry = ToolRegistry::new();
-        let policy = Policy {
-            yolo: true,
-            allowlist: vec![],
-        };
+        let policy = Policy::new(true, vec![]);
         let mut prompter = AllowAll;
 
         let answer = agent
@@ -725,10 +710,7 @@ mod tests {
         let agent = Agent::new(provider, "m".into());
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(EchoTool));
-        let policy = Policy {
-            yolo: true,
-            allowlist: vec![],
-        };
+        let policy = Policy::new(true, vec![]);
         let mut prompter = AllowAll;
 
         let answer = agent

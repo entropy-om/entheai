@@ -77,16 +77,13 @@ pub struct SubResult {
 struct AutoAllow;
 #[async_trait::async_trait]
 impl entheai_permission::Prompter for AutoAllow {
-    async fn confirm(&mut self, _tool: &str, _args: &str) -> bool {
-        true
+    async fn confirm(&mut self, _tool: &str, _args: &str) -> entheai_permission::Grant {
+        entheai_permission::Grant::Allow
     }
 }
 
 fn yolo() -> entheai_permission::Policy {
-    entheai_permission::Policy {
-        yolo: true,
-        allowlist: vec![],
-    }
+    entheai_permission::Policy::new(true, vec![])
 }
 
 /// Read-only tool set for sub-agents (no writes/shell → safe to run in parallel

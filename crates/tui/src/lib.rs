@@ -31,7 +31,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use entheai_companion::state::StateChange;
 use entheai_core::{Agent, AgentEvent};
-use entheai_permission::{Policy, Prompter};
+use entheai_permission::{Grant, Policy, Prompter};
 use entheai_providers::{ChatMessage, Provider};
 use entheai_radio::{Command as RadioCommand, Event as RadioEvent, Radio};
 use entheai_tools::ToolRegistry;
@@ -105,18 +105,18 @@ enum Status {
 struct PermissionRequest {
     tool: String,
     args: String,
-    respond: oneshot::Sender<bool>,
+    respond: oneshot::Sender<Grant>,
 }
 
 /// `Prompter` impl used inside spawned run tasks: forwards each `confirm` to the
-/// UI thread and awaits the user's yes/no over a oneshot.
+/// UI thread and awaits the user's grant over a oneshot.
 struct TuiPrompter {
     tx: mpsc::Sender<PermissionRequest>,
 }
 
 #[async_trait]
 impl Prompter for TuiPrompter {
-    async fn confirm(&mut self, tool_name: &str, args_summary: &str) -> bool {
+    async fn confirm(&mut self, tool_name: &str, args_summary: &str) -> Grant {
         let (respond, rx) = oneshot::channel();
         let req = PermissionRequest {
             tool: tool_name.to_string(),
@@ -124,9 +124,9 @@ impl Prompter for TuiPrompter {
             respond,
         };
         if self.tx.send(req).await.is_err() {
-            return false; // UI gone -> deny
+            return Grant::Deny; // UI gone -> deny
         }
-        rx.await.unwrap_or(false) // UI dropped the responder -> deny
+        rx.await.unwrap_or(Grant::Deny) // UI dropped the responder -> deny
     }
 }
 
@@ -141,7 +141,7 @@ struct App {
     follow: bool,
     model_label: String,
     /// The responder for the modal currently on screen, if any.
-    pending_permission: Option<oneshot::Sender<bool>>,
+    pending_permission: Option<oneshot::Sender<Grant>>,
     /// When the current run started; `None` while idle. Drives the elapsed-time
     /// display in the live progress line.
     run_started: Option<Instant>,
@@ -519,13 +519,13 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 if let Some(tx) = app.pending_permission.take() {
-                    let _ = tx.send(true);
+                    let _ = tx.send(Grant::Allow);
                 }
                 app.status = Status::Working;
             }
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                 if let Some(tx) = app.pending_permission.take() {
-                    let _ = tx.send(false);
+                    let _ = tx.send(Grant::Deny);
                 }
                 app.status = Status::Working;
             }

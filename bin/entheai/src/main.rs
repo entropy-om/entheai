@@ -50,10 +50,7 @@ async fn main() -> anyhow::Result<()> {
         .or(cfg.default_model.clone())
         .context("no model: pass --model or set default_model in config")?;
     let agent = entheai_router::build_agent(&model_id, &cfg)?;
-    let policy = entheai_permission::Policy {
-        yolo: cli.yolo,
-        allowlist: vec![],
-    };
+    let policy = entheai_permission::Policy::new(cli.yolo, vec![]);
 
     let companion = setup_companion(&cfg, &root, cli.no_companion)?;
     if let Some(ref c) = companion {
