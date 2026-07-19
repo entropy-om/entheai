@@ -1,6 +1,7 @@
 pub mod fs;
 pub mod search;
 pub mod shell;
+pub mod todo;
 
 use async_trait::async_trait;
 use std::collections::HashMap;
