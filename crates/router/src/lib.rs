@@ -2,16 +2,38 @@ use entheai_config::Config;
 use entheai_core::Agent;
 use entheai_providers::OpenAiCompatProvider;
 
-/// Orchestrator model id: `[router].orchestrator`, else `default_model`.
+/// The built-in strong orchestrator when none is configured — the current
+/// strongest cheap MoE. Overridable via `[router].orchestrator` / `default_model`.
+pub const DEFAULT_ORCHESTRATOR: &str = "deepseek/deepseek-chat";
+
+/// The default orchestrator system prompt (identity + decomposition behavior).
+/// Override with `[router].orchestrator_prompt`, extend with `..._append`.
+pub const DEFAULT_ORCHESTRATOR_PROMPT: &str = "You are the orchestrator of entheai — a hybrid, fan-out coding agent. You are the strongest model in the swarm; your job is to plan, decompose, and synthesize, not to write code yourself.\n\nGiven a task and repository context you:\n1. Understand the goal and the provided codebase context.\n2. Decompose the work into the smallest set of independent, parallelizable sub-tasks, each matched to a role (explore, coder, test, docs, review). Prefer few well-scoped sub-tasks over many tiny ones, and only decompose when parallelism genuinely helps — a small task is a single sub-task.\n3. Give each sub-agent a precise, self-contained instruction; it sees only its own instruction, not the others'.\n4. After the sub-agents run in isolated git worktrees, synthesize their results into a coherent outcome, resolving conflicts and stating what was done.\n\nPrinciples: correctness first; minimal, focused changes; respect the repository's existing patterns; never fabricate file contents or results; if the task is ambiguous, make the most reasonable assumption and state it. Be decisive and concise.";
+
+/// Orchestrator model id: `[router].orchestrator`, else `default_model`, else
+/// the built-in [`DEFAULT_ORCHESTRATOR`].
 pub fn orchestrator_model(config: &Config) -> anyhow::Result<String> {
-    config
+    Ok(config
         .router
         .orchestrator
         .clone()
         .or_else(|| config.default_model.clone())
-        .ok_or_else(|| {
-            anyhow::anyhow!("no orchestrator: set [router].orchestrator or default_model")
-        })
+        .unwrap_or_else(|| DEFAULT_ORCHESTRATOR.to_string()))
+}
+
+/// The orchestrator's system prompt: the config override or the built-in
+/// default, plus an optional append.
+pub fn orchestrator_system_prompt(config: &Config) -> String {
+    let mut base = config
+        .router
+        .orchestrator_prompt
+        .clone()
+        .unwrap_or_else(|| DEFAULT_ORCHESTRATOR_PROMPT.to_string());
+    if let Some(extra) = &config.router.orchestrator_prompt_append {
+        base.push_str("\n\n");
+        base.push_str(extra);
+    }
+    base
 }
 
 /// Model id for a role: first entry of `[agents.<role>].model`, else the orchestrator/default.
@@ -38,8 +60,15 @@ pub fn build_agent(model_id: &str, config: &Config) -> anyhow::Result<Agent<Open
         .api_key_env
         .as_ref()
         .and_then(|e| std::env::var(e).ok());
-    let provider = OpenAiCompatProvider::new(pcfg.base_url.clone(), api_key);
-    Ok(Agent::new(provider, model.to_string()))
+    let provider = OpenAiCompatProvider::new(pcfg.base_url.clone(), api_key).with_inference(
+        entheai_providers::InferenceSettings {
+            request_timeout: std::time::Duration::from_secs(config.inference.request_timeout_secs),
+            max_tokens: config.inference.max_tokens,
+            temperature: config.inference.temperature,
+            retries: config.inference.retries,
+        },
+    );
+    Ok(Agent::new(provider, model.to_string()).with_max_turns(config.router.max_turns))
 }
 
 #[cfg(test)]
@@ -87,9 +116,31 @@ mod tests {
     }
 
     #[test]
-    fn orchestrator_model_errors_when_nothing_set() {
+    fn orchestrator_model_defaults_to_strong_when_nothing_set() {
         let cfg = Config::from_toml_str("").unwrap();
-        assert!(orchestrator_model(&cfg).is_err());
+        assert_eq!(orchestrator_model(&cfg).unwrap(), DEFAULT_ORCHESTRATOR);
+        assert_eq!(orchestrator_model(&cfg).unwrap(), "deepseek/deepseek-chat");
+    }
+
+    #[test]
+    fn orchestrator_system_prompt_default_and_override_and_append() {
+        let base = Config::from_toml_str("").unwrap();
+        assert_eq!(
+            orchestrator_system_prompt(&base),
+            DEFAULT_ORCHESTRATOR_PROMPT
+        );
+
+        let overridden =
+            Config::from_toml_str("[router]\norchestrator_prompt = \"custom brain\"\n").unwrap();
+        assert_eq!(orchestrator_system_prompt(&overridden), "custom brain");
+
+        let appended = Config::from_toml_str(
+            "[router]\norchestrator_prompt_append = \"Also: prefer Rust.\"\n",
+        )
+        .unwrap();
+        let p = orchestrator_system_prompt(&appended);
+        assert!(p.starts_with(DEFAULT_ORCHESTRATOR_PROMPT));
+        assert!(p.ends_with("Also: prefer Rust."));
     }
 
     #[test]
