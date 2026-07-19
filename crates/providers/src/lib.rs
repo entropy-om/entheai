@@ -143,6 +143,18 @@ pub struct OpenAiCompatProvider {
     client: reqwest::Client,
     base_url: String,
     api_key: Option<String>,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+    retries: u32,
+}
+
+/// Provider request settings (mapped from `entheai_config::InferenceConfig` by the router).
+#[derive(Debug, Clone)]
+pub struct InferenceSettings {
+    pub request_timeout: std::time::Duration,
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f32>,
+    pub retries: u32,
 }
 
 impl OpenAiCompatProvider {
@@ -151,34 +163,86 @@ impl OpenAiCompatProvider {
             client: reqwest::Client::new(),
             base_url: base_url.into(),
             api_key,
+            max_tokens: None,
+            temperature: None,
+            retries: 0,
         }
     }
 
-    /// Build, send, and status-check a POST to `/chat/completions`.
-    /// Callers consume the returned response (streaming vs. JSON) as needed.
-    async fn post_chat(&self, body: serde_json::Value) -> Result<reqwest::Response, ProviderError> {
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let mut req = self.client.post(&url).json(&body);
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key);
-        }
-        let resp = req
-            .send()
-            .await
-            .map_err(|source| ProviderError::Unreachable {
-                url: url.clone(),
-                source,
-            })?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::Status {
-                status: status.as_u16(),
-                body,
-            });
-        }
-        Ok(resp)
+    /// Apply provider request settings: rebuilds the client with a request
+    /// timeout and records sampling + retry policy. Non-breaking (opt-in).
+    pub fn with_inference(mut self, s: InferenceSettings) -> Self {
+        self.client = reqwest::Client::builder()
+            .timeout(s.request_timeout)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        self.max_tokens = s.max_tokens;
+        self.temperature = s.temperature;
+        self.retries = s.retries;
+        self
     }
+
+    /// Build, send, and status-check a POST to `/chat/completions`.
+    /// Injects configured sampling params and retries transient failures.
+    /// Callers consume the returned response (streaming vs. JSON) as needed.
+    async fn post_chat(
+        &self,
+        mut body: serde_json::Value,
+    ) -> Result<reqwest::Response, ProviderError> {
+        if let Some(mt) = self.max_tokens {
+            body["max_tokens"] = serde_json::json!(mt);
+        }
+        if let Some(t) = self.temperature {
+            // Round-trip the f32 through its shortest decimal string so a
+            // configured value like 0.1 serializes as 0.1 rather than the
+            // widened f64 0.10000000149… that `t as f64` would produce.
+            let t = format!("{t}").parse::<f64>().unwrap_or(t as f64);
+            body["temperature"] = serde_json::json!(t);
+        }
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let mut attempt = 0;
+        loop {
+            let mut req = self.client.post(&url).json(&body);
+            if let Some(key) = &self.api_key {
+                req = req.bearer_auth(key);
+            }
+            let result = async {
+                let resp = req
+                    .send()
+                    .await
+                    .map_err(|source| ProviderError::Unreachable {
+                        url: url.clone(),
+                        source,
+                    })?;
+                let status = resp.status();
+                if !status.is_success() {
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(ProviderError::Status {
+                        status: status.as_u16(),
+                        body,
+                    });
+                }
+                Ok(resp)
+            }
+            .await;
+            match result {
+                Ok(resp) => return Ok(resp),
+                Err(e) if attempt < self.retries && is_retryable(&e) => {
+                    attempt += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        200 * (1 << (attempt - 1)),
+                    ))
+                    .await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
+
+fn is_retryable(e: &ProviderError) -> bool {
+    matches!(e, ProviderError::Unreachable { .. })
+        || matches!(e, ProviderError::Status { status, .. } if *status >= 500)
 }
 
 #[async_trait]
@@ -602,5 +666,64 @@ mod complete_tests {
             msg.contains("bad model"),
             "error should include body, got: {msg}"
         );
+    }
+}
+
+#[cfg(test)]
+mod inference_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn request_timeout_fires() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(2)))
+            .mount(&server)
+            .await;
+        let provider =
+            OpenAiCompatProvider::new(server.uri(), None).with_inference(InferenceSettings {
+                request_timeout: std::time::Duration::from_millis(200),
+                max_tokens: None,
+                temperature: None,
+                retries: 0,
+            });
+        let err = provider
+            .complete("m", vec![ChatMessage::user("hi")], vec![])
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ProviderError::Unreachable { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sampling_params_sent_when_set() {
+        use wiremock::matchers::{body_partial_json, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                serde_json::json!({"max_tokens": 512, "temperature": 0.1}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "ok"}}]
+            })))
+            .mount(&server)
+            .await;
+        let provider =
+            OpenAiCompatProvider::new(server.uri(), None).with_inference(InferenceSettings {
+                request_timeout: std::time::Duration::from_secs(30),
+                max_tokens: Some(512),
+                temperature: Some(0.1),
+                retries: 0,
+            });
+        let resp = provider
+            .complete("m", vec![ChatMessage::user("hi")], vec![])
+            .await
+            .unwrap();
+        assert_eq!(resp.content, "ok");
     }
 }
