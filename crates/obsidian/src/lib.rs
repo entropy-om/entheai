@@ -5,6 +5,7 @@ pub mod generators;
 pub mod render;
 pub mod resolve;
 pub mod scan;
+pub mod writer;
 
 pub use render::{
     render_all, AssetRef, CrateInfo, RenderOptions, RenderOutput, RepoContext, SourceDoc, VaultNote,
