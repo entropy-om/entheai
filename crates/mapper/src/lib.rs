@@ -1,6 +1,7 @@
 //! Structures large prompts/tasks/files into sectioned, chunked input for the
 //! orchestrator's fan-out decompose step. Never decides fan-out itself.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 mod files;
@@ -51,7 +52,9 @@ impl MappedInput {
         let mut out = String::new();
         for section in &self.sections {
             match &section.heading {
-                Some(h) => out.push_str(&format!("## Section: {h}\n")),
+                Some(h) => {
+                    let _ = writeln!(out, "## Section: {h}");
+                }
                 None => out.push_str("## Section (untitled)\n"),
             }
             out.push_str(&section.body);
@@ -61,12 +64,13 @@ impl MappedInput {
             out.push('\n');
         }
         for chunk in &self.file_chunks {
-            out.push_str(&format!(
-                "### File: {} (chunk {}/{})\n",
+            let _ = writeln!(
+                out,
+                "### File: {} (chunk {}/{})",
                 chunk.path.display(),
                 chunk.chunk_index + 1,
                 chunk.total_chunks
-            ));
+            );
             out.push_str(&chunk.content);
             if !chunk.content.ends_with('\n') {
                 out.push('\n');
@@ -134,5 +138,37 @@ mod tests {
         assert!(rendered.contains("### File: "));
         assert!(rendered.contains("a.txt (chunk 1/1)"));
         assert!(rendered.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn map_picks_up_bare_path_fallback() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("crates/foo")).unwrap();
+        std::fs::write(dir.path().join("crates/foo/bar.rs"), "fn bar() {}\n").unwrap();
+
+        let mapped = Mapper::map(dir.path(), "fix crates/foo/bar.rs please", &[]).await;
+
+        assert_eq!(mapped.file_chunks.len(), 1);
+        assert_eq!(mapped.file_chunks[0].content, "fn bar() {}");
+    }
+
+    #[tokio::test]
+    async fn map_and_render_handle_multiple_files_and_sections() {
+        let dir = tempdir().unwrap();
+        let big_lines: Vec<String> = (0..250).map(|i| format!("line{i}")).collect();
+        std::fs::write(dir.path().join("big.txt"), big_lines.join("\n") + "\n").unwrap();
+        std::fs::write(dir.path().join("small.txt"), "tiny\n").unwrap();
+
+        let task = "# Requirements\ncheck @{big.txt}\n\n## Constraints\nalso check @{small.txt}\n";
+        let mapped = Mapper::map(dir.path(), task, &[]).await;
+        let rendered = mapped.render();
+
+        assert_eq!(mapped.sections.len(), 2);
+        assert_eq!(mapped.file_chunks.len(), 3); // big.txt -> 2 chunks, small.txt -> 1 chunk
+        assert!(rendered.contains("## Section: Requirements"));
+        assert!(rendered.contains("## Section: Constraints"));
+        assert!(rendered.contains("big.txt (chunk 1/2)"));
+        assert!(rendered.contains("big.txt (chunk 2/2)"));
+        assert!(rendered.contains("small.txt (chunk 1/1)"));
     }
 }
