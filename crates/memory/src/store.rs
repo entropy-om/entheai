@@ -260,8 +260,6 @@ fn fts_match_query(query: &str) -> Option<String> {
 
 impl SqliteStore {
     /// Namespace-scoped BM25 keyword search → entry ids, best match first.
-    // Temporary — Task 5's `search_hybrid` consumes it and removes the attribute.
-    #[allow(dead_code)]
     async fn fts_ids(
         &self,
         namespace: Namespace,
@@ -295,8 +293,6 @@ impl SqliteStore {
 impl SqliteStore {
     /// Namespace-scoped ANN KNN → entry ids, nearest first. Empty if no vec
     /// table exists yet (no embeddings written).
-    // Temporary — Task 5's `search_hybrid` consumes it and removes the attribute.
-    #[allow(dead_code)]
     async fn vec_ids(
         &self,
         namespace: Namespace,
@@ -330,6 +326,140 @@ impl SqliteStore {
         .await
         .map_err(|e| MemoryError::Internal(format!("spawn_blocking panicked: {e}")))??;
         Ok(ids)
+    }
+
+    /// Hybrid recall: vector KNN (if a query embedding is given) + FTS5 keyword,
+    /// fused with RRF and scored by recency + confidence. Over-fetches each arm
+    /// by `recall.overfetch` before fusing.
+    async fn search_hybrid(
+        &self,
+        namespace: Namespace,
+        query_embedding: Option<&[f32]>,
+        query_text: &str,
+        limit: usize,
+    ) -> Result<Vec<ScoredEntry>, MemoryError> {
+        let over = (limit * self.recall.overfetch).max(limit).max(1);
+
+        let vec_list = match query_embedding {
+            Some(q) => self.vec_ids(namespace, q, over).await?,
+            None => Vec::new(),
+        };
+        let fts_list = self.fts_ids(namespace, query_text, over).await?;
+
+        if vec_list.is_empty() && fts_list.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let fused = crate::recall::rrf(&[&vec_list, &fts_list], self.recall.rrf_k);
+
+        // Load candidate rows (content/metadata/created_at) in one pass.
+        let ids: Vec<i64> = fused.keys().copied().collect();
+        let rows = self.load_entries(namespace, &ids).await?;
+
+        let now = timestamp_ms();
+        let weights = crate::recall::ScoreWeights {
+            w_recency: self.recall.w_recency,
+            w_conf: self.recall.w_conf,
+            half_life_days: self.recall.half_life_days,
+            rrf_k: self.recall.rrf_k,
+        };
+
+        let mut scored: Vec<ScoredEntry> = rows
+            .into_iter()
+            .map(|(id, entry)| {
+                let confidence = entry
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("confidence"))
+                    .and_then(|c| c.as_f64())
+                    .unwrap_or(0.5);
+                let recency =
+                    crate::recall::recency_decay(entry.created_at, now, weights.half_life_days);
+                let rrf_score = fused.get(&id).copied().unwrap_or(0.0);
+                let final_s = crate::recall::final_score(rrf_score, recency, confidence, &weights);
+                ScoredEntry {
+                    entry,
+                    score: final_s as f32,
+                }
+            })
+            .collect();
+
+        scored.sort_unstable_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        scored.truncate(limit);
+        Ok(scored)
+    }
+
+    /// Load entries by id within a namespace, returning `(id, Entry)`.
+    async fn load_entries(
+        &self,
+        namespace: Namespace,
+        ids: &[i64],
+    ) -> Result<Vec<(i64, Entry)>, MemoryError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ns = namespace.as_str().to_string();
+        let ids: Vec<i64> = ids.to_vec();
+        let db = Arc::clone(&self.db);
+        #[allow(clippy::type_complexity)]
+        let rows = tokio::task::spawn_blocking(
+            move || -> rusqlite::Result<Vec<(i64, String, String, Option<String>, i64, i64)>> {
+                let conn = Self::lock_db(&db);
+                let placeholders = std::iter::repeat("?")
+                    .take(ids.len())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = format!(
+                    "SELECT id, key, content, metadata, created_at, updated_at FROM entries
+                     WHERE namespace = ? AND id IN ({placeholders})"
+                );
+                let mut stmt = conn.prepare(&sql)?;
+                let mut binds: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 1);
+                binds.push(&ns);
+                for id in &ids {
+                    binds.push(id);
+                }
+                let out = stmt
+                    .query_map(binds.as_slice(), |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, Option<String>>(3)?,
+                            r.get::<_, i64>(4)?,
+                            r.get::<_, i64>(5)?,
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(out)
+            },
+        )
+        .await
+        .map_err(|e| MemoryError::Internal(format!("spawn_blocking panicked: {e}")))??;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for (id, key, content, metadata_json, created_at, updated_at) in rows {
+            let metadata = metadata_json
+                .map(|m| serde_json::from_str(&m))
+                .transpose()
+                .map_err(|e| MemoryError::Embedding(e.into()))?;
+            out.push((
+                id,
+                Entry {
+                    namespace,
+                    key,
+                    content,
+                    metadata,
+                    created_at,
+                    updated_at,
+                },
+            ));
+        }
+        Ok(out)
     }
 
     /// Test-only helper: the integer id for a namespace+key, if present.
@@ -420,73 +550,16 @@ impl Memory for SqliteStore {
         query: &str,
         limit: usize,
     ) -> Result<Vec<ScoredEntry>, MemoryError> {
-        let embedder = self
-            .embedder
-            .as_ref()
-            .ok_or_else(|| MemoryError::Embedding(anyhow::anyhow!("no embedder configured")))?;
-
-        let query_vec = embedder.embed(query).await?;
-        let ns = namespace.as_str().to_string();
-        let db = Arc::clone(&self.db);
-
-        let rows = tokio::task::spawn_blocking(move || {
-            let conn = Self::lock_db(&db);
-            let mut stmt = conn.prepare(
-                "SELECT key, content, metadata, embedding, created_at, updated_at
-                 FROM entries
-                 WHERE namespace = ?1 AND embedding IS NOT NULL",
-            )?;
-            let mut rows = Vec::new();
-            let mut q = stmt.query(params![ns])?;
-            while let Some(row) = q.next()? {
-                let emb: Vec<u8> = row.get(3)?;
-                rows.push((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    emb,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                ));
-            }
-            Ok::<_, rusqlite::Error>(rows)
-        })
-        .await
-        .map_err(|e| MemoryError::Internal(format!("spawn_blocking panicked: {e}")))??;
-
-        let mut scored: Vec<ScoredEntry> = Vec::with_capacity(rows.len());
-        for (key, content, metadata_json, emb_blob, created_at, updated_at) in rows {
-            let emb = blob_to_f32_vec(&emb_blob);
-            if emb.len() != query_vec.len() {
-                // Dimension mismatch — embedding model changed. Skip this entry
-                // rather than failing the entire search (v0.1 best-effort).
-                continue;
-            }
-            let score = cosine_similarity(&query_vec, &emb);
-            let metadata = metadata_json
-                .map(|m| serde_json::from_str(&m))
-                .transpose()
-                .map_err(|e| MemoryError::Embedding(e.into()))?;
-            scored.push(ScoredEntry {
-                entry: Entry {
-                    namespace,
-                    key,
-                    content,
-                    metadata,
-                    created_at,
-                    updated_at,
-                },
-                score,
-            });
+        if query.trim().is_empty() {
+            return Ok(Vec::new());
         }
-
-        scored.sort_unstable_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        scored.truncate(limit);
-        Ok(scored)
+        // Embed the query only if an embedder is configured; otherwise keyword-only.
+        let query_vec = match &self.embedder {
+            Some(emb) => Some(emb.embed(query).await?),
+            None => None,
+        };
+        self.search_hybrid(namespace, query_vec.as_deref(), query, limit)
+            .await
     }
 
     async fn delete(&self, namespace: Namespace, key: &str) -> Result<(), MemoryError> {
@@ -691,32 +764,9 @@ fn timestamp_ms() -> i64 {
         .as_millis() as i64
 }
 
-/// Cosine similarity between two equal-length f32 vectors.
-#[inline]
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    debug_assert_eq!(a.len(), b.len());
-    let (dot, na, nb) = a
-        .iter()
-        .zip(b.iter())
-        .fold((0.0f32, 0.0f32, 0.0f32), |(d, na, nb), (&x, &y)| {
-            (x.mul_add(y, d), x.mul_add(x, na), y.mul_add(y, nb))
-        });
-    if na == 0.0 || nb == 0.0 {
-        return 0.0;
-    }
-    dot / (na.sqrt() * nb.sqrt())
-}
-
 /// Serialize `&[f32]` to a blob of little-endian bytes.
 fn f32_slice_to_blob(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_le_bytes()).collect()
-}
-
-/// Deserialize a blob back to `Vec<f32>`.
-fn blob_to_f32_vec(blob: &[u8]) -> Vec<f32> {
-    blob.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect()
 }
 
 /// Extension trait: map `QueryReturnedNoRows` to `Ok(None)`.
@@ -741,41 +791,6 @@ impl<T> QueryRowExt<T> for Result<T, rusqlite::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn cosine_identical_is_one() {
-        let v = vec![1.0, 2.0, 3.0];
-        let s = cosine_similarity(&v, &v);
-        assert!((s - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn cosine_orthogonal_is_zero() {
-        let a = vec![1.0, 0.0];
-        let b = vec![0.0, 1.0];
-        let s = cosine_similarity(&a, &b);
-        assert!(s.abs() < 1e-6);
-    }
-
-    #[test]
-    fn cosine_opposite_is_minus_one() {
-        let a = vec![1.0, 0.0];
-        let b = vec![-1.0, 0.0];
-        let s = cosine_similarity(&a, &b);
-        assert!((s + 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn blob_roundtrip() {
-        let v = vec![1.0f32, -2.5, 0.0, 7.77];
-        let blob = f32_slice_to_blob(&v);
-        assert_eq!(blob.len(), 16);
-        let back = blob_to_f32_vec(&blob);
-        assert_eq!(v.len(), back.len());
-        for (a, b) in v.iter().zip(back.iter()) {
-            assert!((a - b).abs() < 1e-6);
-        }
-    }
 
     #[tokio::test]
     async fn store_and_get() {
@@ -989,17 +1004,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_without_embedder_returns_error() {
+    async fn hybrid_search_surfaces_vector_and_keyword_hits() {
         let store = SqliteStore::open_memory(None).unwrap();
+        // "vecmatch" has an embedding near the query but no query keyword.
         store
-            .store(Namespace::Learnings, "x", "data", None)
+            .store_inner(
+                Namespace::Learnings,
+                "vec",
+                "vecmatch semantically near",
+                None,
+                Some(vec![1.0, 0.0, 0.0, 0.0]),
+            )
             .await
             .unwrap();
-        let err = store
-            .search(Namespace::Learnings, "query", 3)
+        // "kwmatch" contains the literal query token but a far embedding.
+        store
+            .store_inner(
+                Namespace::Learnings,
+                "kw",
+                "kwmatch contains cargo token",
+                None,
+                Some(vec![0.0, 0.0, 1.0, 0.0]),
+            )
             .await
-            .unwrap_err();
-        assert!(matches!(err, MemoryError::Embedding(_)));
+            .unwrap();
+        // Unrelated filler.
+        store
+            .store_inner(
+                Namespace::Learnings,
+                "z",
+                "unrelated filler text",
+                None,
+                Some(vec![0.0, 1.0, 0.0, 0.0]),
+            )
+            .await
+            .unwrap();
+
+        let results = store
+            .search_hybrid(
+                Namespace::Learnings,
+                Some(&[0.95, 0.05, 0.0, 0.0]),
+                "cargo",
+                3,
+            )
+            .await
+            .unwrap();
+        let keys: Vec<&str> = results.iter().map(|s| s.entry.key.as_str()).collect();
+        assert!(keys.contains(&"vec"), "vector arm surfaces 'vec'");
+        assert!(keys.contains(&"kw"), "keyword arm surfaces 'kw'");
+    }
+
+    #[tokio::test]
+    async fn search_keyword_only_without_embedder() {
+        let store = SqliteStore::open_memory(None).unwrap();
+        store
+            .store(
+                Namespace::Learnings,
+                "k",
+                "the retry helper lives here",
+                None,
+            )
+            .await
+            .unwrap();
+        // No embedder → public search must still return keyword results (no error).
+        let results = store
+            .search(Namespace::Learnings, "retry", 5)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
     }
 
     #[tokio::test]

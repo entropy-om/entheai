@@ -90,7 +90,7 @@ pub struct Entry {
 #[derive(Debug, Clone)]
 pub struct ScoredEntry {
     pub entry: Entry,
-    /// Cosine similarity in `[-1, 1]`. Higher = more relevant.
+    /// Blended relevance score (RRF + recency + confidence). Higher = more relevant.
     pub score: f32,
 }
 
