@@ -68,6 +68,72 @@ impl SwarmModel {
     pub fn is_active(&self) -> bool {
         matches!(self.phase, Phase::Fanning | Phase::Integrating)
     }
+
+    /// Mark node `index` as running. If it wasn't seeded (a `CoderStarted`
+    /// without a preceding `Decomposed`), add it — the swarm should never drop
+    /// an agent that actually ran.
+    pub fn coder_started(&mut self, index: usize, role: &str, task: &str) {
+        match self.nodes.iter_mut().find(|n| n.index == index) {
+            Some(node) => node.status = NodeStatus::Running,
+            None => self.nodes.push(SwarmNode {
+                index,
+                role: role.to_string(),
+                task: task.to_string(),
+                status: NodeStatus::Running,
+                committed: false,
+            }),
+        }
+        if self.phase == Phase::Idle {
+            self.phase = Phase::Fanning;
+        }
+    }
+
+    /// Mark node `index` finished. `status` is the fan-out's human summary
+    /// (e.g. "verified", "verify failed", "no changes"); a summary containing
+    /// "fail" → `Failed`, otherwise `Done`.
+    pub fn coder_finished(&mut self, index: usize, committed: bool, status: &str) {
+        if let Some(node) = self.nodes.iter_mut().find(|n| n.index == index) {
+            node.committed = committed;
+            node.status = if status.to_ascii_lowercase().contains("fail") {
+                NodeStatus::Failed
+            } else {
+                NodeStatus::Done
+            };
+        }
+    }
+
+    /// Enter the integrate phase.
+    pub fn integrating(&mut self, branches: usize) {
+        self.integrating_branches = branches;
+        self.phase = Phase::Integrating;
+    }
+
+    /// Fan-out finished — record the integration outcome.
+    pub fn done(&mut self, integration_branch: Option<String>, merged: usize, conflicted: usize) {
+        self.phase = Phase::Done;
+        self.integration_branch = integration_branch;
+        self.merged = merged;
+        self.conflicted = conflicted;
+    }
+
+    pub fn running(&self) -> usize {
+        self.nodes
+            .iter()
+            .filter(|n| n.status == NodeStatus::Running)
+            .count()
+    }
+    pub fn done_count(&self) -> usize {
+        self.nodes
+            .iter()
+            .filter(|n| n.status == NodeStatus::Done)
+            .count()
+    }
+    pub fn failed_count(&self) -> usize {
+        self.nodes
+            .iter()
+            .filter(|n| n.status == NodeStatus::Failed)
+            .count()
+    }
 }
 
 #[cfg(test)]
@@ -86,5 +152,50 @@ mod tests {
         assert_eq!(m.nodes[0].role, "coder");
         assert_eq!(m.nodes[1].index, 1);
         assert!(m.is_active(), "fan-out is active after decompose");
+    }
+
+    #[test]
+    fn coder_started_marks_running() {
+        let mut m = SwarmModel::new();
+        m.decompose(&[("coder".into(), "t".into())]);
+        m.coder_started(0, "coder", "t");
+        assert_eq!(m.nodes[0].status, NodeStatus::Running);
+        assert_eq!(m.running(), 1);
+    }
+
+    #[test]
+    fn coder_finished_marks_done_or_failed_from_status() {
+        let mut m = SwarmModel::new();
+        m.decompose(&[("a".into(), "t".into()), ("b".into(), "t".into())]);
+        m.coder_finished(0, true, "verified");
+        m.coder_finished(1, false, "verify failed");
+        assert_eq!(m.nodes[0].status, NodeStatus::Done);
+        assert!(m.nodes[0].committed);
+        assert_eq!(m.nodes[1].status, NodeStatus::Failed);
+        assert_eq!(m.done_count(), 1);
+        assert_eq!(m.failed_count(), 1);
+    }
+
+    #[test]
+    fn started_for_unknown_index_adds_a_node() {
+        let mut m = SwarmModel::new();
+        m.coder_started(3, "coder", "t");
+        assert_eq!(m.nodes.len(), 1);
+        assert_eq!(m.nodes[0].index, 3);
+        assert_eq!(m.nodes[0].status, NodeStatus::Running);
+    }
+
+    #[test]
+    fn integrating_then_done_sets_phase_and_totals() {
+        let mut m = SwarmModel::new();
+        m.decompose(&[("a".into(), "t".into())]);
+        m.integrating(1);
+        assert_eq!(m.phase, Phase::Integrating);
+        assert!(m.is_active());
+        m.done(Some("entheai/fanout-x".into()), 1, 0);
+        assert_eq!(m.phase, Phase::Done);
+        assert!(!m.is_active(), "done runs are no longer active");
+        assert_eq!(m.merged, 1);
+        assert_eq!(m.integration_branch.as_deref(), Some("entheai/fanout-x"));
     }
 }
