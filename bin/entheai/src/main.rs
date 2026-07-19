@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::Parser;
@@ -32,147 +32,30 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
-
-    let dsn = std::env::var("SENTRY_DSN").unwrap_or_else(|_| {
-        "https://ea8a1a1d46d9c33b709aae544ff24a79@o4511756214075392.ingest.de.sentry.io/4511756233474128".to_string()
-    });
-    let _sentry = sentry::init((
-        dsn,
-        sentry::ClientOptions {
-            release: sentry::release_name!(),
-            send_default_pii: false,
-            ..Default::default()
-        },
-    ));
-
+    let _sentry = init_telemetry();
     let cli = Cli::parse();
 
     let cfg_text = std::fs::read_to_string(&cli.config)
         .with_context(|| format!("reading config {}", cli.config))?;
     let cfg = Config::from_toml_str(&cfg_text)?;
-
     let root = std::env::current_dir()?.canonicalize()?;
-    let mut registry = entheai_tools::ToolRegistry::new();
-    registry.register(Box::new(entheai_tools::fs::ReadFile::new(root.clone())));
-    registry.register(Box::new(entheai_tools::fs::WriteFile::new(root.clone())));
-    registry.register(Box::new(entheai_tools::fs::EditFile::new(root.clone())));
-    registry.register(Box::new(entheai_tools::shell::RunShell::new(root.clone())));
-    registry.register(Box::new(entheai_tools::search::Search::new(root.clone())));
 
-    // Skills: discover, advertise via a system prompt, expose the `skill` tool.
-    let skill_dirs: Vec<std::path::PathBuf> =
-        cfg.skills.dirs.iter().map(|d| root.join(d)).collect();
-    let skills = std::sync::Arc::new(entheai_skills::SkillRegistry::discover(&skill_dirs));
-    let system_prompt: Option<String> = if skills.is_empty() {
-        None
-    } else {
-        Some(skills.advertisement())
-    };
-    if !skills.is_empty() {
-        registry.register(Box::new(entheai_skills::SkillTool::new(
-            std::sync::Arc::clone(&skills),
-        )));
-        eprintln!(
-            "skills: loaded {} ({})",
-            skills.list().len(),
-            skills
-                .list()
-                .iter()
-                .map(|s| s.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
+    // Tool registry (built-ins + skills + MCP servers) + the skills system prompt.
+    // `_mcp_guards` keeps the spawned MCP child processes alive for the session.
+    let (registry, system_prompt, _mcp_guards) = build_tools(&root, &cfg).await?;
 
     let model_id = cli
         .model
+        .clone()
         .or(cfg.default_model.clone())
         .context("no model: pass --model or set default_model in config")?;
     let agent = entheai_router::build_agent(&model_id, &cfg)?;
-
-    // MCP servers: spawn each configured server, register its tools. A server
-    // that fails or hangs is skipped with a warning (never blocks startup).
-    // Guards are held for the whole session so the child processes stay alive.
-    let mut _mcp_guards = Vec::new();
-    for (name, mcp_cfg) in &cfg.mcp {
-        let load = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            let (client, guard) =
-                entheai_mcp::McpClient::spawn(&mcp_cfg.command, &mcp_cfg.args, name).await?;
-            let tools = entheai_mcp::load_tools(client).await?;
-            Ok::<_, entheai_mcp::McpError>((guard, tools))
-        })
-        .await;
-        match load {
-            Ok(Ok((guard, tools))) => {
-                let n = tools.len();
-                for tool in tools {
-                    registry.register(Box::new(tool));
-                }
-                eprintln!("mcp: '{name}' connected ({n} tool(s))");
-                _mcp_guards.push(guard);
-            }
-            Ok(Err(e)) => eprintln!("mcp: '{name}' failed: {e}"),
-            Err(_) => eprintln!("mcp: '{name}' timed out after 10s — skipping"),
-        }
-    }
-
     let policy = entheai_permission::Policy {
         yolo: cli.yolo,
         allowlist: vec![],
     };
 
-    let session_id = uuid::Uuid::new_v4().to_string();
-    let companion = if cfg.companion.enabled && !cli.no_companion {
-        let socket_path = std::env::temp_dir().join(format!("entheai-{}.sock", session_id));
-        let _ = std::fs::remove_file(&socket_path);
-        let listener = UnixListener::bind(&socket_path)?;
-        let (state_tx, mut state_rx) = tokio::sync::mpsc::unbounded_channel::<StateChange>();
-
-        // Spawn a task that accepts the companion connection and forwards events.
-        tokio::spawn(async move {
-            if let Ok((mut stream, _)) = listener.accept().await {
-                while let Some(change) = state_rx.recv().await {
-                    let json = serde_json::to_string(&change).unwrap();
-                    if stream.write_all(json.as_bytes()).await.is_err() {
-                        break;
-                    }
-                    if stream.write_all(b"\n").await.is_err() {
-                        break;
-                    }
-                }
-            }
-        });
-
-        let mut args = vec![
-            "--session-id".to_string(),
-            session_id.clone(),
-            "--host".to_string(),
-            hostname(),
-            "--port".to_string(),
-            "9876".to_string(),
-            "--cwd".to_string(),
-            root.display().to_string(),
-            "--socket".to_string(),
-            socket_path.display().to_string(),
-        ];
-        if !cfg.companion.always_on_top {
-            args.push("--no-always-on-top".to_string());
-        }
-
-        let (bin, _) = find_companion_binary();
-        let child = std::process::Command::new(&bin).args(&args).spawn().ok();
-
-        Some(CompanionHandle {
-            child,
-            state_tx,
-            socket_path,
-        })
-    } else {
-        None
-    };
-
-    // Send initial state.
+    let companion = setup_companion(&cfg, &root, cli.no_companion)?;
     if let Some(ref c) = companion {
         let _ = c.state_tx.send(StateChange::working());
     }
@@ -214,6 +97,163 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Load `.env` and initialize Sentry crash reporting (PII disabled). The
+/// returned guard flushes events on drop, so `main` must hold it.
+fn init_telemetry() -> sentry::ClientInitGuard {
+    dotenvy::dotenv().ok();
+    let dsn = std::env::var("SENTRY_DSN").unwrap_or_else(|_| {
+        "https://ea8a1a1d46d9c33b709aae544ff24a79@o4511756214075392.ingest.de.sentry.io/4511756233474128".to_string()
+    });
+    sentry::init((
+        dsn,
+        sentry::ClientOptions {
+            release: sentry::release_name!(),
+            send_default_pii: false,
+            ..Default::default()
+        },
+    ))
+}
+
+/// Build the tool registry (built-in fs/shell/search tools + discovered skills +
+/// configured MCP servers) and the skills system prompt. Returns the registry,
+/// the system prompt (if any skills were found), and the MCP child-process
+/// guards (which the caller must keep alive for the session).
+async fn build_tools(
+    root: &Path,
+    cfg: &Config,
+) -> anyhow::Result<(
+    entheai_tools::ToolRegistry,
+    Option<String>,
+    Vec<entheai_mcp::ChildGuard>,
+)> {
+    let mut registry = entheai_tools::ToolRegistry::new();
+    registry.register(Box::new(entheai_tools::fs::ReadFile::new(
+        root.to_path_buf(),
+    )));
+    registry.register(Box::new(entheai_tools::fs::WriteFile::new(
+        root.to_path_buf(),
+    )));
+    registry.register(Box::new(entheai_tools::fs::EditFile::new(
+        root.to_path_buf(),
+    )));
+    registry.register(Box::new(entheai_tools::shell::RunShell::new(
+        root.to_path_buf(),
+    )));
+    registry.register(Box::new(entheai_tools::search::Search::new(
+        root.to_path_buf(),
+    )));
+
+    // Skills: discover, advertise via a system prompt, expose the `skill` tool.
+    let skill_dirs: Vec<PathBuf> = cfg.skills.dirs.iter().map(|d| root.join(d)).collect();
+    let skills = std::sync::Arc::new(entheai_skills::SkillRegistry::discover(&skill_dirs));
+    let system_prompt = if skills.is_empty() {
+        None
+    } else {
+        registry.register(Box::new(entheai_skills::SkillTool::new(
+            std::sync::Arc::clone(&skills),
+        )));
+        eprintln!(
+            "skills: loaded {} ({})",
+            skills.list().len(),
+            skills
+                .list()
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        Some(skills.advertisement())
+    };
+
+    // MCP servers: spawn each configured server, register its tools. A server
+    // that fails or hangs is skipped with a warning (never blocks startup).
+    let mut guards = Vec::new();
+    for (name, mcp_cfg) in &cfg.mcp {
+        let load = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let (client, guard) =
+                entheai_mcp::McpClient::spawn(&mcp_cfg.command, &mcp_cfg.args, name).await?;
+            let tools = entheai_mcp::load_tools(client).await?;
+            Ok::<_, entheai_mcp::McpError>((guard, tools))
+        })
+        .await;
+        match load {
+            Ok(Ok((guard, tools))) => {
+                let n = tools.len();
+                for tool in tools {
+                    registry.register(Box::new(tool));
+                }
+                eprintln!("mcp: '{name}' connected ({n} tool(s))");
+                guards.push(guard);
+            }
+            Ok(Err(e)) => eprintln!("mcp: '{name}' failed: {e}"),
+            Err(_) => eprintln!("mcp: '{name}' timed out after 10s — skipping"),
+        }
+    }
+
+    Ok((registry, system_prompt, guards))
+}
+
+/// Spawn the companion beacon window (if enabled): bind a session Unix socket,
+/// forward `StateChange` events to it over a background task, and launch the
+/// companion child process. Returns a handle that kills the child + removes the
+/// socket on drop. `None` when the companion is disabled.
+fn setup_companion(
+    cfg: &Config,
+    root: &Path,
+    no_companion: bool,
+) -> anyhow::Result<Option<CompanionHandle>> {
+    if !cfg.companion.enabled || no_companion {
+        return Ok(None);
+    }
+
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let socket_path = std::env::temp_dir().join(format!("entheai-{session_id}.sock"));
+    let _ = std::fs::remove_file(&socket_path);
+    let listener = UnixListener::bind(&socket_path)?;
+    let (state_tx, mut state_rx) = tokio::sync::mpsc::unbounded_channel::<StateChange>();
+
+    // Accept the companion connection and stream newline-delimited events to it.
+    tokio::spawn(async move {
+        if let Ok((mut stream, _)) = listener.accept().await {
+            while let Some(change) = state_rx.recv().await {
+                let json = serde_json::to_string(&change).unwrap_or_default();
+                if stream.write_all(json.as_bytes()).await.is_err()
+                    || stream.write_all(b"\n").await.is_err()
+                {
+                    break;
+                }
+            }
+        }
+    });
+
+    let mut args = vec![
+        "--session-id".to_string(),
+        session_id,
+        "--host".to_string(),
+        hostname(),
+        "--port".to_string(),
+        "9876".to_string(),
+        "--cwd".to_string(),
+        root.display().to_string(),
+        "--socket".to_string(),
+        socket_path.display().to_string(),
+    ];
+    if !cfg.companion.always_on_top {
+        args.push("--no-always-on-top".to_string());
+    }
+
+    let (bin, _) = find_companion_binary();
+    let child = std::process::Command::new(&bin).args(&args).spawn().ok();
+
+    Ok(Some(CompanionHandle {
+        child,
+        state_tx,
+        socket_path,
+    }))
+}
+
+/// Resolve a hostname for the companion QR: Tailscale MagicDNS if available,
+/// else the local hostname.
 fn hostname() -> String {
     if let Ok(out) = std::process::Command::new("tailscale")
         .args(["status", "--json"])
@@ -235,6 +275,8 @@ fn hostname() -> String {
         .unwrap_or_else(|| "localhost".to_string())
 }
 
+/// Locate the `entheai-companion` binary next to the current executable, else
+/// fall back to the name on `PATH`.
 fn find_companion_binary() -> (String, Vec<String>) {
     let bin_name = "entheai-companion";
     if let Ok(exe) = std::env::current_exe() {
@@ -248,17 +290,11 @@ fn find_companion_binary() -> (String, Vec<String>) {
     (bin_name.to_string(), vec![])
 }
 
+/// Owns the companion child process + its session socket; cleans both up on drop.
 struct CompanionHandle {
     child: Option<std::process::Child>,
     state_tx: tokio::sync::mpsc::UnboundedSender<StateChange>,
     socket_path: PathBuf,
-}
-
-impl CompanionHandle {
-    #[allow(dead_code)]
-    fn send_state(&self, change: StateChange) {
-        let _ = self.state_tx.send(change);
-    }
 }
 
 impl Drop for CompanionHandle {
