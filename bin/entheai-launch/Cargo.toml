@@ -1,0 +1,13 @@
+[package]
+name = "entheai-launch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "entheai-launch"
+path = "src/main.rs"
+
+[dependencies]
+entheai-launcher = { path = "../../crates/launcher" }
+anyhow = { workspace = true }

@@ -68,6 +68,35 @@ pub fn resolve_ghostty() -> Option<PathBuf> {
         .find(|p| p.exists())
 }
 
+/// Resolve the entheai CLI to run in the window: prefer a sibling of the current
+/// executable (the `.app` MacOS layout / same dir), else `entheai` on PATH.
+pub fn resolve_entheai() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let sib = dir.join("entheai");
+            if sib.exists() {
+                return sib;
+            }
+        }
+    }
+    PathBuf::from("entheai")
+}
+
+/// Materialize assets, find Ghostty, and open one branded window running entheai.
+/// Errors clearly if Ghostty isn't installed.
+pub fn launch() -> anyhow::Result<()> {
+    let home = entheai_config_dir();
+    let (config_path, _shader) = materialize_assets(&home)?;
+    let ghostty = resolve_ghostty().ok_or_else(|| {
+        anyhow::anyhow!("Ghostty is required. Install it: brew install --cask ghostty")
+    })?;
+    let entheai = resolve_entheai();
+    let args = build_args(&config_path, &entheai);
+    // Spawn detached — Ghostty runs as its own window; the launcher can exit.
+    std::process::Command::new(&ghostty).args(&args).spawn()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

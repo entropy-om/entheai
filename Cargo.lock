@@ -1179,6 +1179,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "entheai-launch"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "entheai-launcher",
+]
+
+[[package]]
 name = "entheai-launcher"
 version = "0.1.0"
 dependencies = [
