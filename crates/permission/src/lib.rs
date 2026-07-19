@@ -25,6 +25,10 @@ impl Policy {
             session: Arc::new(Mutex::new(HashSet::new())),
         }
     }
+    /// Whether this policy auto-approves everything (yolo mode).
+    pub fn is_yolo(&self) -> bool {
+        self.yolo
+    }
     /// Grant a tool for the rest of the session; subsequent `decide` calls Allow it.
     pub fn grant_session(&self, tool_name: &str) {
         self.session

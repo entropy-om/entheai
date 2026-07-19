@@ -87,8 +87,14 @@ impl entheai_permission::Prompter for AutoAllow {
     }
 }
 
-fn yolo() -> entheai_permission::Policy {
-    entheai_permission::Policy::new(true, vec![])
+/// Build the fan-out sub-agent/coder permission policy from config. Fan-out
+/// runs are unattended, so approval is driven by `[permission].fanout_auto_approve`
+/// (default true) plus the shared `[permission].allowlist`.
+fn fanout_policy(config: &Config) -> entheai_permission::Policy {
+    entheai_permission::Policy::new(
+        config.permission.fanout_auto_approve,
+        config.permission.allowlist.clone(),
+    )
 }
 
 /// Read-only tool set for sub-agents (no writes/shell → safe to run in parallel
@@ -180,9 +186,21 @@ async fn orchestrate_once(
     model_id: &str,
     messages: Vec<ChatMessage>,
 ) -> anyhow::Result<String> {
+    // Prepend the orchestrator identity prompt unless the caller already set one.
+    let mut messages = messages;
+    if !messages
+        .first()
+        .map(|m| m.role == "system")
+        .unwrap_or(false)
+    {
+        messages.insert(
+            0,
+            ChatMessage::system(entheai_router::orchestrator_system_prompt(config)),
+        );
+    }
     let agent = entheai_router::build_agent(model_id, config)?;
     let registry = entheai_tools::ToolRegistry::new();
-    let policy = yolo();
+    let policy = fanout_policy(config);
     let mut prompter = AutoAllow;
     let out = agent
         .run_task(messages, &registry, &policy, &mut prompter, None)
@@ -197,7 +215,7 @@ async fn run_subagent(config: &Config, root: &Path, st: SubTask) -> SubResult {
         let model_id = entheai_router::model_for_role(config, &st.role)?;
         let agent = entheai_router::build_agent(&model_id, config)?;
         let registry = read_only_registry(root);
-        let policy = yolo();
+        let policy = fanout_policy(config);
         let mut prompter = AutoAllow;
         let out = agent
             .run_task(
@@ -305,7 +323,7 @@ pub async fn run_coder_once(
         let model_id = entheai_router::model_for_role(config, role)?;
         let agent = entheai_router::build_agent(&model_id, config)?;
         let registry = write_registry(worktree_path);
-        let policy = yolo();
+        let policy = fanout_policy(config);
         let mut prompter = AutoAllow;
         let out = agent
             .run_task(
@@ -678,6 +696,14 @@ pub fn format_v2_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fanout_policy_follows_config() {
+        let yolo = Config::from_toml_str("").unwrap(); // fanout_auto_approve defaults true
+        assert!(fanout_policy(&yolo).is_yolo());
+        let strict = Config::from_toml_str("[permission]\nfanout_auto_approve = false\n").unwrap();
+        assert!(!fanout_policy(&strict).is_yolo());
+    }
 
     #[test]
     fn decomposed_carries_tasks() {

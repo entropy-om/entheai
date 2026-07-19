@@ -50,7 +50,10 @@ async fn main() -> anyhow::Result<()> {
         .or(cfg.default_model.clone())
         .context("no model: pass --model or set default_model in config")?;
     let agent = entheai_router::build_agent(&model_id, &cfg)?;
-    let policy = entheai_permission::Policy::new(cli.yolo, vec![]);
+    let policy = entheai_permission::Policy::new(
+        cli.yolo || cfg.permission.yolo,
+        cfg.permission.allowlist.clone(),
+    );
 
     // Shared memory store (open before any agent run so the DB + parent dir exist
     // even when the model call fails) + a session id for scoping.
