@@ -5,7 +5,9 @@ use crate::state::State;
 /// spinner flag, flash alpha.
 struct GlowParams((f32, f32, f32), f64, (f32, f32), bool, f32);
 
-const FPS: f64 = 24.0;
+/// Default target frame rate, used as the companion binary's `--fps`
+/// fallback when the caller doesn't pass one explicitly.
+pub const FPS: f64 = 24.0;
 const TRANSITION_S: f64 = 0.3;
 const FLASH_S: f64 = 0.2;
 const SPIN_PERIOD_S: f64 = 6.0; // seconds per full revolution of the working-state orbit dot
@@ -432,8 +434,11 @@ fn smooth_falloff(dist: f32) -> f32 {
     }
 }
 
-pub fn frame_interval() -> std::time::Duration {
-    std::time::Duration::from_secs_f64(1.0 / FPS)
+/// Frame interval for the given target frame rate. `fps` is clamped to a
+/// minimum of 1.0 to guard against a divide-by-zero / busy-loop if a config
+/// value of `0.0` (or negative) ever reaches this call.
+pub fn frame_interval(fps: f64) -> std::time::Duration {
+    std::time::Duration::from_secs_f64(1.0 / fps.max(1.0))
 }
 
 #[cfg(test)]

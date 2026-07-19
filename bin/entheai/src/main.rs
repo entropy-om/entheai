@@ -324,11 +324,13 @@ fn setup_companion(
         "--host".to_string(),
         hostname(),
         "--port".to_string(),
-        "9876".to_string(),
+        cfg.companion.port.to_string(),
         "--cwd".to_string(),
         root.display().to_string(),
         "--socket".to_string(),
         socket_path.display().to_string(),
+        "--fps".to_string(),
+        cfg.companion.fps.to_string(),
     ];
     if !cfg.companion.always_on_top {
         args.push("--no-always-on-top".to_string());

@@ -50,6 +50,10 @@ struct Cli {
     /// Path to the Unix domain socket for state events.
     #[arg(long)]
     socket: Option<PathBuf>,
+
+    /// Target render frame rate.
+    #[arg(long, default_value_t = render::FPS)]
+    fps: f64,
 }
 
 const ADJECTIVES: [&str; 16] = [
@@ -78,6 +82,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let name = codename(&cli.session_id);
     eprintln!("companion '{name}' (session {})", cli.session_id);
+    let fps = cli.fps;
 
     let cwd = cli.cwd.unwrap_or_else(|| {
         std::env::current_dir()
@@ -318,7 +323,7 @@ fn main() -> anyhow::Result<()> {
 
                 // Cap redraws to the render module's frame budget instead of
                 // polling flat-out; sleep until the next frame is due.
-                let interval = render::frame_interval();
+                let interval = render::frame_interval(fps);
                 if last_frame.elapsed() >= interval {
                     window.request_redraw();
                     last_frame = Instant::now();
