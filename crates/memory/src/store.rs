@@ -166,8 +166,9 @@ impl SqliteStore {
         let (ns2, k2, c2) = (ns.clone(), k.clone(), c.clone());
 
         let created_at = tokio::task::spawn_blocking(move || -> rusqlite::Result<i64> {
-            let conn = Self::lock_db(&db);
-            let (id, created_at): (i64, i64) = conn.query_row(
+            let mut conn = Self::lock_db(&db);
+            let tx = conn.transaction()?;
+            let (id, created_at): (i64, i64) = tx.query_row(
                 "INSERT INTO entries (namespace, key, content, metadata, embedding, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT (namespace, key) DO UPDATE SET
@@ -177,13 +178,15 @@ impl SqliteStore {
                 params![ns2, k2, c2, meta_json, embedding_blob, now, now],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
-            // --- SYNC POINT: Task 2 adds FTS, Task 3 adds vec, keyed by `id`. ---
+            // --- SYNC POINT: FTS now, Task 3 will add vec sync here, inside the SAME tx. ---
             // FTS: delete-then-insert keeps the keyword row in sync on upsert.
-            conn.execute("DELETE FROM entries_fts WHERE rowid = ?1", params![id])?;
-            conn.execute(
+            // The whole upsert + FTS sync commits atomically (RAII rollback on any `?`).
+            tx.execute("DELETE FROM entries_fts WHERE rowid = ?1", params![id])?;
+            tx.execute(
                 "INSERT INTO entries_fts(rowid, content) VALUES (?1, ?2)",
                 params![id, c2],
             )?;
+            tx.commit()?;
             Ok(created_at)
         })
         .await
@@ -203,9 +206,12 @@ impl SqliteStore {
 /// Build an FTS5 MATCH query from free text: quote each alphanumeric token and
 /// OR-join. Returns None when the query has no usable tokens.
 fn fts_match_query(query: &str) -> Option<String> {
+    let mut seen = std::collections::HashSet::new();
     let terms: Vec<String> = query
         .split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
+        .filter(|t| seen.insert(t.to_lowercase())) // dedup, case-insensitive
+        .take(32) // cap OR-chain length
         .map(|t| format!("\"{t}\""))
         .collect();
     if terms.is_empty() {
@@ -390,8 +396,9 @@ impl Memory for SqliteStore {
         let k = key.to_string();
         let db = Arc::clone(&self.db);
         tokio::task::spawn_blocking(move || -> rusqlite::Result<()> {
-            let conn = Self::lock_db(&db);
-            let id: Option<i64> = conn
+            let mut conn = Self::lock_db(&db);
+            let tx = conn.transaction()?;
+            let id: Option<i64> = tx
                 .query_row(
                     "SELECT id FROM entries WHERE namespace = ?1 AND key = ?2",
                     params![ns, k],
@@ -399,10 +406,11 @@ impl Memory for SqliteStore {
                 )
                 .optional()?;
             if let Some(id) = id {
-                conn.execute("DELETE FROM entries_fts WHERE rowid = ?1", params![id])?;
+                tx.execute("DELETE FROM entries_fts WHERE rowid = ?1", params![id])?;
                 // Task 3 adds: DELETE FROM vec_entries WHERE rowid = ?1
-                conn.execute("DELETE FROM entries WHERE id = ?1", params![id])?;
+                tx.execute("DELETE FROM entries WHERE id = ?1", params![id])?;
             }
+            tx.commit()?;
             Ok(())
         })
         .await
@@ -729,6 +737,58 @@ mod tests {
             .await
             .unwrap();
         assert!(ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fts_upsert_resyncs_content() {
+        let store = SqliteStore::open_memory(None).unwrap();
+        store
+            .store(Namespace::Learnings, "k", "alphatoken original", None)
+            .await
+            .unwrap();
+        store
+            .store(Namespace::Learnings, "k", "betatoken replacement", None)
+            .await
+            .unwrap();
+        assert!(
+            store
+                .fts_ids(Namespace::Learnings, "alphatoken", 10)
+                .await
+                .unwrap()
+                .is_empty(),
+            "old content no longer matches after upsert"
+        );
+        assert_eq!(
+            store
+                .fts_ids(Namespace::Learnings, "betatoken", 10)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "new content matches"
+        );
+    }
+
+    #[tokio::test]
+    async fn fts_ids_is_namespace_scoped() {
+        let store = SqliteStore::open_memory(None).unwrap();
+        store
+            .store(Namespace::Learnings, "k", "sharedterm here", None)
+            .await
+            .unwrap();
+        store
+            .store(Namespace::Tools, "k", "sharedterm here", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .fts_ids(Namespace::Learnings, "sharedterm", 10)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "only the learnings row is returned"
+        );
     }
 
     #[tokio::test]
