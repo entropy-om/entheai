@@ -362,7 +362,11 @@ async fn event_loop<P: Provider + 'static>(
     };
 
     // Background music player (yt-dlp + rodio); one per TUI session.
-    let mut radio = Radio::spawn(Radio::default_cache_dir()).expect("spawn radio thread");
+    let mut radio = Radio::spawn(
+        Radio::default_cache_dir(),
+        config.radio.download_timeout_secs,
+    )
+    .expect("spawn radio thread");
 
     let mut events = EventStream::new();
     // Floor the tick at 16ms (~60fps) so a `tick_ms = 0` config can't spin a

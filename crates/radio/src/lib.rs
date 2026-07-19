@@ -84,14 +84,18 @@ enum Msg {
 impl Radio {
     /// Start the player thread. `cache_dir` is where yt-dlp keeps audio files
     /// (created on demand; downloads are keyed by video id, so repeats are
-    /// served from cache by yt-dlp itself).
-    pub fn spawn(cache_dir: PathBuf) -> Result<Radio, std::io::Error> {
+    /// served from cache by yt-dlp itself). `download_timeout_secs` bounds a
+    /// single `yt-dlp` invocation (see [`download_timeout`]); values below 1
+    /// are floored to 1 second.
+    pub fn spawn(cache_dir: PathBuf, download_timeout_secs: u64) -> Result<Radio, std::io::Error> {
         let (cmd_tx, cmd_rx) = std_mpsc::channel::<Msg>();
         let (event_tx, events) = tokio_mpsc::unbounded_channel::<Event>();
         let dl_tx = cmd_tx.clone();
         std::thread::Builder::new()
             .name("entheai-radio".into())
-            .spawn(move || player_thread(cmd_rx, dl_tx, event_tx, cache_dir))?;
+            .spawn(move || {
+                player_thread(cmd_rx, dl_tx, event_tx, cache_dir, download_timeout_secs)
+            })?;
         Ok(Radio { cmd_tx, events })
     }
 
@@ -128,6 +132,8 @@ struct Player {
     queue: VecDeque<Track>,
     current: Option<Track>,
     events: tokio_mpsc::UnboundedSender<Event>,
+    /// Hard ceiling on a single `yt-dlp` invocation, from config.
+    download_timeout: Duration,
 }
 
 impl Player {
@@ -194,10 +200,11 @@ impl Player {
                 self.emit(Event::Fetching { url: url.clone() });
                 let tx = dl_tx.clone();
                 let dir = cache_dir.to_path_buf();
+                let timeout = self.download_timeout;
                 std::thread::Builder::new()
                     .name("entheai-radio-dl".into())
                     .spawn(move || {
-                        let _ = tx.send(Msg::Downloaded(download(&url, &dir)));
+                        let _ = tx.send(Msg::Downloaded(download(&url, &dir, timeout)));
                     })
                     .ok();
             }
@@ -238,12 +245,14 @@ fn player_thread(
     dl_tx: std_mpsc::Sender<Msg>,
     events: tokio_mpsc::UnboundedSender<Event>,
     cache_dir: PathBuf,
+    download_timeout_secs: u64,
 ) {
     let mut p = Player {
         audio: None,
         queue: VecDeque::new(),
         current: None,
         events,
+        download_timeout: download_timeout(download_timeout_secs),
     };
     loop {
         // Tick at 200ms so track-end (sink drained) is noticed promptly.
@@ -267,15 +276,19 @@ fn player_thread(
     }
 }
 
-/// Hard ceiling on a single `yt-dlp` invocation. Without this, a hung/slow
-/// process blocks the downloader thread (and keeps a live child process)
-/// forever — repeated `/radio add`s would pile both up with no way to cancel.
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+/// Clamp a configured download timeout to a sane minimum. Without a ceiling,
+/// a hung/slow `yt-dlp` process blocks the downloader thread (and keeps a
+/// live child process) forever — repeated `/radio add`s would pile both up
+/// with no way to cancel. A `0` (or misconfigured) value would disable the
+/// timeout outright, so floor it at 1 second instead.
+fn download_timeout(secs: u64) -> Duration {
+    Duration::from_secs(secs.max(1))
+}
 
 /// Run `yt-dlp`, extracting audio as m4a into `cache_dir`. Returns the track
 /// title + final file path. Blocking; runs on a downloader thread. Bounded by
-/// [`DOWNLOAD_TIMEOUT`]: past that, the child is killed and reaped.
-fn download(url: &str, cache_dir: &Path) -> Result<Track, String> {
+/// `timeout`: past that, the child is killed and reaped.
+fn download(url: &str, cache_dir: &Path, timeout: Duration) -> Result<Track, String> {
     // Security: `url` is handed to yt-dlp's argv parser. Reject anything that
     // isn't a plain http(s) URL — a `-`-prefixed value is parsed as a FLAG
     // (e.g. `--exec=…` runs an arbitrary command). This is the single choke
@@ -311,7 +324,7 @@ fn download(url: &str, cache_dir: &Path) -> Result<Track, String> {
         .map_err(|e| format!("yt-dlp not runnable ({e}); install with `brew install yt-dlp`"))?;
 
     let status = match child
-        .wait_timeout(DOWNLOAD_TIMEOUT)
+        .wait_timeout(timeout)
         .map_err(|e| format!("yt-dlp wait failed: {e}"))?
     {
         Some(status) => status,
@@ -320,10 +333,7 @@ fn download(url: &str, cache_dir: &Path) -> Result<Track, String> {
             // download, so kill and reap it rather than leaving it running.
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!(
-                "yt-dlp timed out after {}s",
-                DOWNLOAD_TIMEOUT.as_secs()
-            ));
+            return Err(format!("yt-dlp timed out after {}s", timeout.as_secs()));
         }
     };
 
@@ -406,8 +416,14 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_stop_emits_stopped_and_shuts_down() {
-        let mut radio = Radio::spawn(std::env::temp_dir().join("entheai-radio-test")).unwrap();
+        let mut radio = Radio::spawn(std::env::temp_dir().join("entheai-radio-test"), 300).unwrap();
         radio.send(Command::Stop);
         assert_eq!(radio.next_event().await, Some(Event::Stopped));
+    }
+
+    #[test]
+    fn download_timeout_floors_at_one_second() {
+        assert_eq!(download_timeout(300), Duration::from_secs(300));
+        assert_eq!(download_timeout(0), Duration::from_secs(1));
     }
 }
