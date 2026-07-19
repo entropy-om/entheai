@@ -229,10 +229,8 @@ impl OpenAiCompatProvider {
                 Ok(resp) => return Ok(resp),
                 Err(e) if attempt < self.retries && is_retryable(&e) => {
                     attempt += 1;
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        200 * (1 << (attempt - 1)),
-                    ))
-                    .await;
+                    let backoff_ms = 200u64.saturating_mul(1u64 << (attempt - 1).min(10));
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                 }
                 Err(e) => return Err(e),
             }
@@ -725,5 +723,37 @@ mod inference_tests {
             .await
             .unwrap();
         assert_eq!(resp.content, "ok");
+    }
+
+    #[tokio::test]
+    async fn retry_recovers_from_transient_5xx() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(2)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "recovered"}}]
+            })))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        let provider =
+            OpenAiCompatProvider::new(server.uri(), None).with_inference(InferenceSettings {
+                request_timeout: std::time::Duration::from_secs(30),
+                max_tokens: None,
+                temperature: None,
+                retries: 2,
+            });
+        let resp = provider
+            .complete("m", vec![ChatMessage::user("hi")], vec![])
+            .await
+            .unwrap();
+        assert_eq!(resp.content, "recovered");
     }
 }
