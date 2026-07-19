@@ -243,8 +243,9 @@ async fn run_subagent(config: &Config, root: &Path, st: SubTask) -> SubResult {
 async fn run_fanout_readonly(config: &Config, root: &Path, task: &str) -> anyhow::Result<String> {
     let orch_model = entheai_router::orchestrator_model(config)?;
 
-    // 1. Decompose.
-    let raw = orchestrate_once(config, &orch_model, decompose_messages(task)).await?;
+    // 1. Map + decompose.
+    let mapped = entheai_mapper::Mapper::map(root, task, &[]).await;
+    let raw = orchestrate_once(config, &orch_model, decompose_messages(&mapped.render())).await?;
     let max_par = config.router.max_parallel.max(1);
     let subtasks = parse_decomposition(&raw, max_par);
 
@@ -456,8 +457,9 @@ pub async fn run_fanout(
     let orch_model = entheai_router::orchestrator_model(config)?;
     let max_par = config.router.max_parallel.max(1);
 
-    // 1. Decompose.
-    let raw = orchestrate_once(config, &orch_model, decompose_messages(task)).await?;
+    // 1. Map + decompose.
+    let mapped = entheai_mapper::Mapper::map(root, task, &[]).await;
+    let raw = orchestrate_once(config, &orch_model, decompose_messages(&mapped.render())).await?;
     let subtasks = parse_decomposition(&raw, max_par);
 
     // Fallback: couldn't decompose → just run the task once on the orchestrator.
@@ -715,6 +717,28 @@ mod tests {
         } else {
             panic!()
         }
+    }
+
+    #[tokio::test]
+    async fn decompose_input_is_mapped_not_raw_task() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("notes.txt"), "line one\nline two\n")
+            .await
+            .unwrap();
+        let task = "# Fix bug\nlook at @{notes.txt}";
+
+        let mapped = entheai_mapper::Mapper::map(dir.path(), task, &[]).await;
+        let messages = decompose_messages(&mapped.render());
+
+        let user_msg = messages
+            .iter()
+            .find(|m| m.role == "user")
+            .expect("user message");
+        assert!(user_msg.content.contains("## Section: Fix bug"));
+        assert!(user_msg.content.contains("[file: notes.txt]"));
+        assert!(user_msg.content.contains("### File: "));
+        assert!(user_msg.content.contains("line one"));
+        assert_ne!(user_msg.content, task);
     }
 
     fn sub_task(role: &str, task: &str) -> SubTask {

@@ -11,6 +11,7 @@ entheai-providers = { path = "../providers" }
 entheai-router = { path = "../router" }
 entheai-tools = { path = "../tools" }
 entheai-permission = { path = "../permission" }
+entheai-mapper = { path = "../mapper" }
 tokio = { workspace = true, features = ["process", "fs", "sync", "time"] }
 futures.workspace = true
 serde.workspace = true
