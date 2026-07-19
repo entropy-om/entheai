@@ -13,6 +13,7 @@ entheai-radio = { path = "../radio" }
 entheai-config = { path = "../config" }
 entheai-orchestrator = { path = "../orchestrator" }
 entheai-companion = { path = "../companion" }
+entheai-viz = { path = "../viz" }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

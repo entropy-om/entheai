@@ -226,6 +226,19 @@ struct App {
     /// seeded/updated by fan-out lifecycle events. Empty -> the plan pane
     /// collapses to zero height.
     plan: Vec<entheai_tools::todo::TodoItem>,
+    /// Live fan-out swarm model (fed from the same FanoutEvent stream as `plan`).
+    swarm: entheai_viz::SwarmModel,
+    /// Which main view is showing (chat vs full-screen swarm).
+    view: ViewMode,
+    /// Whether the swarm viz is enabled (from `[viz] swarm`).
+    viz_swarm: bool,
+}
+
+/// Which main view the TUI is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ViewMode {
+    Chat,
+    Swarm,
 }
 
 /// What a key press asked the loop to do.
@@ -237,6 +250,8 @@ enum Action {
     RadioToggle,
     /// Ctrl-N: skip to the next radio track.
     RadioNext,
+    /// Ctrl-V: toggle between the chat and full-screen swarm views.
+    ViewToggle,
 }
 
 /// Run the interactive TUI. Sets up the terminal, runs the event loop, and
@@ -341,6 +356,9 @@ async fn event_loop<P: Provider + 'static>(
         out_tokens: 0,
         verb_idx: 0,
         plan: Vec::new(),
+        swarm: entheai_viz::SwarmModel::new(),
+        view: ViewMode::Chat,
+        viz_swarm: config.viz.swarm,
     };
 
     // Background music player (yt-dlp + rodio); one per TUI session.
@@ -358,9 +376,14 @@ async fn event_loop<P: Provider + 'static>(
             // Clamp scroll against the current terminal size before drawing.
             let size = terminal.size()?;
             let plan_rows = plan_rows_for(app.plan.len());
+            let swarm_rows = if app.view == ViewMode::Chat {
+                swarm_rows_for(app.viz_swarm, &app.swarm)
+            } else {
+                0
+            };
             let history_height = size
                 .height
-                .saturating_sub(STATUS_ROWS + PROGRESS_ROWS + INPUT_ROWS + plan_rows);
+                .saturating_sub(STATUS_ROWS + PROGRESS_ROWS + INPUT_ROWS + plan_rows + swarm_rows);
             let lines = line_cache.get_or_build(&app.messages, size.width);
             let max_scroll = (lines.len() as u16).saturating_sub(history_height);
             if app.follow {
@@ -373,7 +396,7 @@ async fn event_loop<P: Provider + 'static>(
             }
             let scroll = app.scroll;
             let lines = lines.to_vec();
-            terminal.draw(|frame| render(frame, &app, lines, scroll, plan_rows))?;
+            terminal.draw(|frame| render(frame, &app, lines, scroll, plan_rows, swarm_rows))?;
             dirty = false;
         }
 
@@ -393,11 +416,21 @@ async fn event_loop<P: Provider + 'static>(
                         Action::None => {}
                         Action::RadioToggle => radio.send(RadioCommand::TogglePause),
                         Action::RadioNext => radio.send(RadioCommand::Next),
+                        Action::ViewToggle => {
+                            app.view = if app.view == ViewMode::Chat {
+                                ViewMode::Swarm
+                            } else {
+                                ViewMode::Chat
+                            };
+                        }
                         Action::Submit(text) if is_radio_command(&text) => {
                             handle_radio_command(&mut app, &radio, &text);
                         }
                         Action::Submit(text) if is_workers_command(&text) => {
                             handle_workers_command(&mut app, &text);
+                        }
+                        Action::Submit(text) if is_viz_command(&text) => {
+                            handle_viz_command(&mut app, &text);
                         }
                         Action::Submit(text) => {
                             app.messages.push(Msg { role: Role::User, text: text.clone() });
@@ -556,6 +589,7 @@ async fn event_loop<P: Provider + 'static>(
                         });
                     }
                     Some(entheai_orchestrator::FanoutEvent::Decomposed { tasks }) => {
+                        app.swarm.decompose(&tasks);
                         let count = tasks.len();
                         app.plan = tasks
                             .iter()
@@ -571,6 +605,7 @@ async fn event_loop<P: Provider + 'static>(
                         app.current_action = "fanning out".to_string();
                     }
                     Some(entheai_orchestrator::FanoutEvent::CoderStarted { index, role, task }) => {
+                        app.swarm.coder_started(index, &role, &task);
                         if let Some(item) = app.plan.get_mut(index) {
                             item.status = entheai_tools::todo::TodoStatus::InProgress;
                         }
@@ -580,7 +615,8 @@ async fn event_loop<P: Provider + 'static>(
                         });
                         app.current_action = "running coders".to_string();
                     }
-                    Some(entheai_orchestrator::FanoutEvent::CoderFinished { index, committed: _, status }) => {
+                    Some(entheai_orchestrator::FanoutEvent::CoderFinished { index, committed, status }) => {
+                        app.swarm.coder_finished(index, committed, &status);
                         if let Some(item) = app.plan.get_mut(index) {
                             item.status = if status.contains("fail") {
                                 entheai_tools::todo::TodoStatus::Failed
@@ -594,6 +630,7 @@ async fn event_loop<P: Provider + 'static>(
                         });
                     }
                     Some(entheai_orchestrator::FanoutEvent::Integrating { branches }) => {
+                        app.swarm.integrating(branches);
                         app.messages.push(Msg {
                             role: Role::Tool,
                             text: format!("⧉ integrating {branches} branch(es)…"),
@@ -601,6 +638,7 @@ async fn event_loop<P: Provider + 'static>(
                         app.current_action = "integrating".to_string();
                     }
                     Some(entheai_orchestrator::FanoutEvent::Done { integration_branch, merged, conflicted }) => {
+                        app.swarm.done(integration_branch.clone(), merged, conflicted);
                         app.messages.push(Msg {
                             role: Role::Tool,
                             text: format!(
@@ -651,6 +689,19 @@ fn plan_rows_for(plan_len: usize) -> u16 {
     }
 }
 
+/// Cap on the inline swarm pane's height in rows.
+const SWARM_PANE_CAP: u16 = 8;
+
+/// Inline swarm-pane height: 0 unless enabled AND a fan-out is active; otherwise
+/// `min(nodes + 2 border, SWARM_PANE_CAP)`. Zero → the pane collapses.
+fn swarm_rows_for(enabled: bool, model: &entheai_viz::SwarmModel) -> u16 {
+    if !enabled || !model.is_active() || model.nodes.is_empty() {
+        0
+    } else {
+        ((model.nodes.len() as u16) + 2).min(SWARM_PANE_CAP)
+    }
+}
+
 /// Map a key press to an [`Action`], mutating input/scroll/modal state as needed.
 fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     if key.kind != KeyEventKind::Press {
@@ -693,6 +744,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             return Action::RadioNext;
         }
+        // Ctrl-V toggles the full-screen swarm view, idle or mid-run.
+        KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return Action::ViewToggle;
+        }
         // Ctrl-C / Esc quit only when idle (never mid-run or mid-modal).
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             if idle {
@@ -705,7 +760,8 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Char('q') if idle && app.input.is_empty() => return Action::Quit,
         KeyCode::Enter => {
             let trimmed = app.input.trim();
-            let is_local_command = is_radio_command(trimmed) || is_workers_command(trimmed);
+            let is_local_command =
+                is_radio_command(trimmed) || is_workers_command(trimmed) || is_viz_command(trimmed);
             if !trimmed.is_empty() && (idle || is_local_command) {
                 return Action::Submit(std::mem::take(&mut app.input));
             }
@@ -865,6 +921,35 @@ fn handle_workers_command(app: &mut App, text: &str) {
     app.follow = true;
 }
 
+/// True when the submitted input is the local `/viz` command (never sent to the
+/// agent) — toggles the full-screen swarm view.
+fn is_viz_command(text: &str) -> bool {
+    text.trim() == "/viz"
+}
+
+/// Toggle between the chat and full-screen swarm views in response to `/viz`,
+/// echoing the switch into history (mirrors the other local commands).
+fn handle_viz_command(app: &mut App, text: &str) {
+    app.messages.push(Msg {
+        role: Role::User,
+        text: text.to_string(),
+    });
+    app.view = if app.view == ViewMode::Chat {
+        ViewMode::Swarm
+    } else {
+        ViewMode::Chat
+    };
+    let where_now = match app.view {
+        ViewMode::Chat => "chat view",
+        ViewMode::Swarm => "swarm view",
+    };
+    app.messages.push(Msg {
+        role: Role::Tool,
+        text: format!("◈ switched to {where_now} (Ctrl-V to toggle)"),
+    });
+    app.follow = true;
+}
+
 /// Fold a player event into UI state, echoing noteworthy ones into history.
 fn handle_radio_event(app: &mut App, ev: RadioEvent) {
     match ev {
@@ -985,43 +1070,56 @@ impl LineCache {
     }
 }
 
-fn render(frame: &mut Frame, app: &App, lines: Vec<Line<'static>>, scroll: u16, plan_rows: u16) {
+fn render(
+    frame: &mut Frame,
+    app: &App,
+    lines: Vec<Line<'static>>,
+    scroll: u16,
+    plan_rows: u16,
+    swarm_rows: u16,
+) {
     let area = frame.area();
-    let [status_area, plan_area, history_area, progress_area, input_area] = Layout::vertical([
-        Constraint::Length(STATUS_ROWS),
-        Constraint::Length(plan_rows),
-        Constraint::Min(1),
-        Constraint::Length(PROGRESS_ROWS),
-        Constraint::Length(INPUT_ROWS),
-    ])
-    .areas(area);
+
+    // Full-screen swarm view (Ctrl-V / /viz): status bar on top, the swarm
+    // canvas filling the content area, and the input box at the bottom. Returns
+    // before the normal chat layout.
+    if app.view == ViewMode::Swarm {
+        let [status_area, main_area, input_area] = Layout::vertical([
+            Constraint::Length(STATUS_ROWS),
+            Constraint::Min(1),
+            Constraint::Length(INPUT_ROWS),
+        ])
+        .areas(area);
+        frame.render_widget(Paragraph::new(status_line(app)), status_area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" swarm — Ctrl-V to exit ");
+        let inner = block.inner(main_area);
+        frame.render_widget(block, main_area);
+        entheai_viz::swarm::render(
+            &app.swarm,
+            inner,
+            frame.buffer_mut(),
+            ratatui::symbols::Marker::HalfBlock,
+            app.spinner_frame as u64,
+        );
+        render_input(frame, app, input_area);
+        return;
+    }
+
+    let [status_area, plan_area, swarm_area, history_area, progress_area, input_area] =
+        Layout::vertical([
+            Constraint::Length(STATUS_ROWS),
+            Constraint::Length(plan_rows),
+            Constraint::Length(swarm_rows),
+            Constraint::Min(1),
+            Constraint::Length(PROGRESS_ROWS),
+            Constraint::Length(INPUT_ROWS),
+        ])
+        .areas(area);
 
     // Status bar: entheai · <model> · <state>
-    let state = match &app.status {
-        Status::Idle => "idle",
-        Status::Working => "working…",
-        Status::AwaitingPermission { .. } => "awaiting permission",
-    };
-    let mut status_spans: Vec<Span> = vec![
-        Span::styled("entheai", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(" · "),
-        Span::raw(app.model_label.clone()),
-    ];
-    if app.fanout {
-        status_spans.push(Span::raw(" · "));
-        status_spans.push(Span::styled("fan-out", Style::default().fg(Color::Magenta)));
-    }
-    status_spans.push(Span::raw(" · "));
-    status_spans.push(Span::styled(state, Style::default().fg(Color::Yellow)));
-    if let Some(title) = &app.now_playing {
-        status_spans.push(Span::raw(" · "));
-        status_spans.push(Span::styled(
-            format!("♪ {}", truncate(title, 40)),
-            Style::default().fg(Color::Magenta),
-        ));
-    }
-    let status = Line::from(status_spans);
-    frame.render_widget(Paragraph::new(status), status_area);
+    frame.render_widget(Paragraph::new(status_line(app)), status_area);
 
     // Plan pane: boxless, dim-prefixed rows (one per todo item); collapses to
     // zero height (via `plan_rows`) when there's no live plan.
@@ -1032,6 +1130,21 @@ fn render(frame: &mut Frame, app: &App, lines: Vec<Line<'static>>, scroll: u16, 
 
     // History (pre-wrapped, so scroll offset is exact).
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), history_area);
+
+    // Inline swarm pane during a fan-out (collapses to zero height when idle,
+    // disabled, or in the full-screen swarm view — see `swarm_rows`).
+    if swarm_rows > 0 {
+        let block = Block::default().borders(Borders::ALL).title(" swarm ");
+        let inner = block.inner(swarm_area);
+        frame.render_widget(block, swarm_area);
+        entheai_viz::swarm::render(
+            &app.swarm,
+            inner,
+            frame.buffer_mut(),
+            ratatui::symbols::Marker::Braille,
+            app.spinner_frame as u64,
+        );
+    }
 
     // Charm-style live progress line: spinner + current action + elapsed time.
     // Blank when idle so the input box never jumps; the permission modal covers
@@ -1069,18 +1182,8 @@ fn render(frame: &mut Frame, app: &App, lines: Vec<Line<'static>>, scroll: u16, 
     };
     frame.render_widget(Paragraph::new(progress), progress_area);
 
-    // Input box.
-    let input = Paragraph::new(app.input.as_str())
-        .block(Block::default().borders(Borders::ALL).title("message"))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(input, input_area);
-
-    // Cursor at the end of the input (only when the user can type).
-    if !matches!(app.status, Status::AwaitingPermission { .. }) {
-        let inner_w = input_area.width.saturating_sub(2);
-        let cx = (app.input.chars().count() as u16).min(inner_w.saturating_sub(1));
-        frame.set_cursor_position(Position::new(input_area.x + 1 + cx, input_area.y + 1));
-    }
+    // Input box + cursor.
+    render_input(frame, app, input_area);
 
     // Permission modal, centered over history.
     if let Status::AwaitingPermission { tool, args } = &app.status {
@@ -1098,6 +1201,50 @@ fn render(frame: &mut Frame, app: &App, lines: Vec<Line<'static>>, scroll: u16, 
             )
             .wrap(Wrap { trim: false });
         frame.render_widget(modal, modal_area);
+    }
+}
+
+/// Build the top status bar line: `entheai · <model> · [fan-out ·] <state>
+/// [· ♪ track]`. Shared by the chat and full-screen swarm views.
+fn status_line(app: &App) -> Line<'static> {
+    let state = match &app.status {
+        Status::Idle => "idle",
+        Status::Working => "working…",
+        Status::AwaitingPermission { .. } => "awaiting permission",
+    };
+    let mut status_spans: Vec<Span<'static>> = vec![
+        Span::styled("entheai", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" · "),
+        Span::raw(app.model_label.clone()),
+    ];
+    if app.fanout {
+        status_spans.push(Span::raw(" · "));
+        status_spans.push(Span::styled("fan-out", Style::default().fg(Color::Magenta)));
+    }
+    status_spans.push(Span::raw(" · "));
+    status_spans.push(Span::styled(state, Style::default().fg(Color::Yellow)));
+    if let Some(title) = &app.now_playing {
+        status_spans.push(Span::raw(" · "));
+        status_spans.push(Span::styled(
+            format!("♪ {}", truncate(title, 40)),
+            Style::default().fg(Color::Magenta),
+        ));
+    }
+    Line::from(status_spans)
+}
+
+/// Draw the bordered input box and place the cursor (cursor hidden while the
+/// permission modal is up). Shared by the chat and full-screen swarm views.
+fn render_input(frame: &mut Frame, app: &App, input_area: Rect) {
+    let input = Paragraph::new(app.input.as_str())
+        .block(Block::default().borders(Borders::ALL).title("message"))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(input, input_area);
+
+    if !matches!(app.status, Status::AwaitingPermission { .. }) {
+        let inner_w = input_area.width.saturating_sub(2);
+        let cx = (app.input.chars().count() as u16).min(inner_w.saturating_sub(1));
+        frame.set_cursor_position(Position::new(input_area.x + 1 + cx, input_area.y + 1));
     }
 }
 
@@ -1318,6 +1465,9 @@ mod tests {
             out_tokens: 0,
             verb_idx: 0,
             plan: Vec::new(),
+            swarm: entheai_viz::SwarmModel::new(),
+            view: ViewMode::Chat,
+            viz_swarm: false,
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -1348,6 +1498,9 @@ mod tests {
             out_tokens: 0,
             verb_idx: 0,
             plan: Vec::new(),
+            swarm: entheai_viz::SwarmModel::new(),
+            view: ViewMode::Chat,
+            viz_swarm: false,
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -1366,6 +1519,16 @@ mod tests {
         assert_eq!(format_status(&WorkerStatus::Done), "done");
         assert_eq!(format_status(&WorkerStatus::TimedOut), "timed out");
         assert_eq!(format_status(&WorkerStatus::Killed), "killed");
+    }
+
+    #[test]
+    fn swarm_pane_collapses_when_idle() {
+        let m = entheai_viz::SwarmModel::new(); // Idle, empty
+        assert_eq!(swarm_rows_for(true, &m), 0);
+        let mut active = entheai_viz::SwarmModel::new();
+        active.decompose(&[("a".into(), "t".into())]);
+        assert_eq!(swarm_rows_for(true, &active), 3); // 1 node + 2 border
+        assert_eq!(swarm_rows_for(false, &active), 0); // disabled → collapsed
     }
 
     #[test]
@@ -1389,6 +1552,9 @@ mod tests {
             out_tokens: 0,
             verb_idx: 0,
             plan: Vec::new(),
+            swarm: entheai_viz::SwarmModel::new(),
+            view: ViewMode::Chat,
+            viz_swarm: false,
         };
         handle_workers_command(&mut app, "/workers list");
         assert!(app
@@ -1420,6 +1586,9 @@ mod tests {
             out_tokens: 0,
             verb_idx: 0,
             plan: Vec::new(),
+            swarm: entheai_viz::SwarmModel::new(),
+            view: ViewMode::Chat,
+            viz_swarm: false,
         };
         handle_radio_event(
             &mut app,
