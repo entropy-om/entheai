@@ -628,6 +628,12 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 }
                 app.status = Status::Working;
             }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                if let Some(tx) = app.pending_permission.take() {
+                    let _ = tx.send(Grant::AllowSession);
+                }
+                app.status = Status::Working;
+            }
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                 if let Some(tx) = app.pending_permission.take() {
                     let _ = tx.send(Grant::Deny);
@@ -924,7 +930,7 @@ fn render(frame: &mut Frame, app: &App, lines: Vec<Line<'static>>, scroll: u16, 
     // Permission modal, centered over history.
     if let Status::AwaitingPermission { tool, args } = &app.status {
         let args = truncate(args, 80);
-        let text = format!("allow {tool}({args})?  [y]es / [n]o");
+        let text = format!("allow {tool}({args})?  [y]es · [n]o · [a]llow for session");
         let modal_w = (text.chars().count() as u16 + 4).min(area.width.saturating_sub(2));
         let modal_area = centered_rect(modal_w, 3, area);
         frame.render_widget(Clear, modal_area);
