@@ -5,21 +5,35 @@ use rusqlite::{params, Connection, OpenFlags};
 
 use super::{Embedder, Entry, Memory, MemoryError, Namespace, ScoredEntry};
 
-/// Register the `sqlite-vec` loadable extension for every SQLite connection
-/// opened in this process. Idempotent (guarded by `Once`) — safe to call from
-/// each `SqliteStore` constructor. Uses the FFI `sqlite3_auto_extension`
-/// (canonical sqlite-vec/rusqlite wiring) so no per-connection load is needed.
+/// Register the `sqlite-vec` loadable extension **process-globally** via the
+/// FFI `sqlite3_auto_extension`. Idempotent (guarded by `Once`).
+///
+/// Contract and caveats — read before relying on this:
+/// - `sqlite3_auto_extension` registers `sqlite3_vec_init` as an auto-extension
+///   for the entire process. It only affects connections opened *after* it
+///   runs; a `Connection` opened earlier will not have `vec0` available.
+/// - It is **not** synchronized against a concurrent `Connection::open` on
+///   another thread. `Once` guarantees the registration body runs at most once —
+///   it does *not* establish a happens-before against opens elsewhere. Callers
+///   that need `vec0` must call this before opening their own connection (each
+///   `SqliteStore` constructor is expected to do exactly that, before its
+///   `open`) and must not race a first registration against an open on another
+///   thread.
 // Currently exercised only by the gate test; the store constructors wire it in
 // once the vec0 tables land (memory-v1 Task 1+).
 #[allow(dead_code)]
 fn ensure_vec_extension() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
-        // SAFETY: `sqlite3_vec_init` has the sqlite3 extension-entry ABI; the
-        // transmute reconciles sqlite-vec's own bindgen `sqlite3`/
-        // `sqlite3_api_routines` types with rusqlite's ABI-identical ones,
-        // matching the `sqlite3_auto_extension` argument type exactly. Called
-        // exactly once, before any connection in this process is opened.
+        // SAFETY: the transmute reinterprets `sqlite_vec::sqlite3_vec_init`
+        // (a function pointer, hence pointer-sized) as the exact SQLite
+        // extension-entry ABI that `sqlite3_auto_extension` expects:
+        // `unsafe extern "C" fn(*mut sqlite3, *mut *mut c_char,
+        // *const sqlite3_api_routines) -> c_int`. sqlite-vec's own bindgen
+        // `sqlite3`/`sqlite3_api_routines` types are ABI-identical to rusqlite's,
+        // so the reinterpretation is sound; source and target are both
+        // pointer-sized, satisfying `transmute`'s size requirement. This says
+        // nothing about *when* it runs — see the fn-level ordering caveats.
         unsafe {
             rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
                 *const (),
@@ -652,8 +666,12 @@ mod tests {
 
     #[test]
     fn vec0_knn_roundtrip_gate() {
-        // Registers sqlite-vec, then proves a vec0 KNN query returns the nearest
-        // neighbour — using the little-endian f32 BLOB representation production uses.
+        // Registers sqlite-vec, then proves the vec0 KNN query is a *real*
+        // nearest-neighbour search over the little-endian f32 BLOB representation
+        // production uses. The fixture is built to be hostile to two silent
+        // failure modes:
+        //   (a) a broken vec0 that returns rows in rowid / insertion order, and
+        //   (b) a `namespace` partition filter that is silently a no-op.
         ensure_vec_extension();
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -663,10 +681,17 @@ mod tests {
         )
         .unwrap();
 
-        let rows: [(i64, &str, [f32; 4]); 3] = [
-            (1, "learnings", [1.0, 0.0, 0.0, 0.0]),
-            (2, "learnings", [0.0, 1.0, 0.0, 0.0]),
-            (3, "learnings", [0.0, 0.0, 1.0, 0.0]),
+        // Query lies on the z-axis. Within `learnings`, row 3 is nearest and
+        // row 1 second — note row 3 is NOT the first-inserted rowid, so an
+        // insertion-order fallback would give the wrong answer. Row 4 is the
+        // global nearest (identical to the query) but lives in `tools`, so only
+        // a correctly-applied partition filter keeps it out of `learnings`
+        // results.
+        let rows: [(i64, &str, [f32; 4]); 4] = [
+            (1, "learnings", [0.0, 0.0, 0.5, 1.0]), // 2nd-nearest in learnings
+            (2, "learnings", [0.0, 1.0, 0.0, 0.0]), // farthest in learnings
+            (3, "learnings", [0.0, 0.1, 1.0, 0.0]), // nearest in learnings
+            (4, "tools", [0.0, 0.0, 1.0, 0.0]),     // global nearest, wrong namespace
         ];
         for (id, ns, vec) in rows {
             conn.execute(
@@ -676,16 +701,61 @@ mod tests {
             .unwrap();
         }
 
-        let query = f32_slice_to_blob(&[0.9, 0.1, 0.0, 0.0]);
+        let query = f32_slice_to_blob(&[0.0, 0.0, 1.0, 0.0]);
+
+        // (1) Nearest within `learnings` is row 3 — a non-first rowid, and NOT
+        // the geometrically-closer row 4 that sits in the `tools` partition.
         let nearest: i64 = conn
             .query_row(
                 "SELECT rowid FROM v
                  WHERE namespace = ?1 AND embedding MATCH ?2 AND k = ?3
                  ORDER BY distance",
-                rusqlite::params!["learnings", query, 1_i64],
+                rusqlite::params!["learnings", &query, 1_i64],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(nearest, 1, "row 1 is closest to the query vector");
+        assert_eq!(
+            nearest, 3,
+            "learnings nearest must be row 3 (non-first rowid), not insertion-order \
+             row 1 nor the cross-namespace row 4"
+        );
+
+        // (2) Top-2 within `learnings`, ordered by distance, is [3, 1] — distance
+        // actually drives the ordering (rowid order would yield [1, 2]).
+        let mut stmt = conn
+            .prepare(
+                "SELECT rowid FROM v
+                 WHERE namespace = ?1 AND embedding MATCH ?2 AND k = ?3
+                 ORDER BY distance",
+            )
+            .unwrap();
+        let top2: Vec<i64> = stmt
+            .query_map(rusqlite::params!["learnings", &query, 2_i64], |row| {
+                row.get(0)
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            top2,
+            vec![3, 1],
+            "distance ordering must yield [3, 1], not rowid order [1, 2]"
+        );
+
+        // (3) The same query in the `tools` partition returns row 4 — proving the
+        // `namespace` filter is a genuine discriminator, not a no-op.
+        let tools_nearest: i64 = conn
+            .query_row(
+                "SELECT rowid FROM v
+                 WHERE namespace = ?1 AND embedding MATCH ?2 AND k = ?3
+                 ORDER BY distance",
+                rusqlite::params!["tools", &query, 1_i64],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            tools_nearest, 4,
+            "tools partition must select row 4, confirming the namespace filter discriminates"
+        );
     }
 }
