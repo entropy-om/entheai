@@ -87,6 +87,17 @@ api_key_env = "OPENCODE_API_KEY"
 
 Run the checks: `./scripts/check.sh` (fmt + clippy `-D warnings` + tests).
 
+### Native app (minimalist Ghostty window)
+
+Prefer a dedicated, branded window? Install the app (it uses Ghostty):
+
+```bash
+brew install --cask ghostty
+brew install --cask peterlodri-sec/entheai/entheai
+```
+
+Launch `entheai.app` (first time: right-click -> Open — it's ad-hoc signed), or from a terminal run `entheai --app`. It opens one minimalist Ghostty window — hidden titlebar, entheai's theme, and an ambient raindrop shader behind the text — running the agent. Your own Ghostty config is untouched.
+
 ## Architecture
 
 A Rust workspace of small, focused crates.
