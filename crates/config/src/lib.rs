@@ -29,6 +29,18 @@ pub struct Config {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub viz: VizConfig,
+    #[serde(default)]
+    pub inference: InferenceConfig,
+    #[serde(default)]
+    pub tools: ToolsConfig,
+    #[serde(default)]
+    pub permission: PermissionConfig,
+    #[serde(default)]
+    pub mcp_defaults: McpDefaultsConfig,
+    #[serde(default)]
+    pub radio: RadioConfig,
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -47,6 +59,15 @@ pub struct RouterConfig {
     /// Max number of sub-agents that may run concurrently during fan-out.
     #[serde(default = "default_max_parallel")]
     pub max_parallel: usize,
+    /// Max number of turns the orchestrator may take before it's cut off.
+    #[serde(default = "default_max_turns")]
+    pub max_turns: usize,
+    /// Override for the orchestrator's system prompt.
+    #[serde(default)]
+    pub orchestrator_prompt: Option<String>,
+    /// Text appended to the orchestrator's system prompt.
+    #[serde(default)]
+    pub orchestrator_prompt_append: Option<String>,
 }
 
 impl Default for RouterConfig {
@@ -54,12 +75,19 @@ impl Default for RouterConfig {
         Self {
             orchestrator: None,
             max_parallel: default_max_parallel(),
+            max_turns: default_max_turns(),
+            orchestrator_prompt: None,
+            orchestrator_prompt_append: None,
         }
     }
 }
 
 fn default_max_parallel() -> usize {
     8
+}
+
+fn default_max_turns() -> usize {
+    25
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -111,10 +139,24 @@ pub struct CompanionConfig {
     /// Whether the companion floats above other windows. Default: true.
     #[serde(default = "default_true")]
     pub always_on_top: bool,
+    /// TCP port the companion server listens on. Default: 9876.
+    #[serde(default = "default_companion_port")]
+    pub port: u16,
+    /// Target render frame rate for the companion window. Default: 24.0.
+    #[serde(default = "default_companion_fps")]
+    pub fps: f64,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_companion_port() -> u16 {
+    9876
+}
+
+fn default_companion_fps() -> f64 {
+    24.0
 }
 
 impl Default for CompanionConfig {
@@ -122,6 +164,8 @@ impl Default for CompanionConfig {
         Self {
             enabled: true,
             always_on_top: true,
+            port: default_companion_port(),
+            fps: default_companion_fps(),
         }
     }
 }
@@ -151,18 +195,164 @@ pub struct VizConfig {
     /// Show the live fan-out swarm (inline pane + Ctrl-V full view).
     #[serde(default = "default_viz_swarm")]
     pub swarm: bool,
+    /// Viz render tick interval in milliseconds. Default: 90.
+    #[serde(default = "default_viz_tick_ms")]
+    pub tick_ms: u64,
+    /// Max rows shown in the plan pane. Default: 8.
+    #[serde(default = "default_viz_plan_rows_cap")]
+    pub plan_rows_cap: u16,
+    /// Max rows shown in the swarm pane. Default: 8.
+    #[serde(default = "default_viz_swarm_rows_cap")]
+    pub swarm_rows_cap: u16,
 }
 
 fn default_viz_swarm() -> bool {
     true
 }
 
+fn default_viz_tick_ms() -> u64 {
+    90
+}
+
+fn default_viz_plan_rows_cap() -> u16 {
+    8
+}
+
+fn default_viz_swarm_rows_cap() -> u16 {
+    8
+}
+
 impl Default for VizConfig {
     fn default() -> Self {
         Self {
             swarm: default_viz_swarm(),
+            tick_ms: default_viz_tick_ms(),
+            plan_rows_cap: default_viz_plan_rows_cap(),
+            swarm_rows_cap: default_viz_swarm_rows_cap(),
         }
     }
+}
+
+/// Provider request defaults (applied to every LLM call).
+#[derive(Debug, Clone, Deserialize)]
+pub struct InferenceConfig {
+    #[serde(default = "default_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default = "default_retries")]
+    pub retries: u32,
+}
+fn default_request_timeout_secs() -> u64 {
+    120
+}
+fn default_retries() -> u32 {
+    2
+}
+impl Default for InferenceConfig {
+    fn default() -> Self {
+        Self {
+            request_timeout_secs: default_request_timeout_secs(),
+            max_tokens: None,
+            temperature: None,
+            retries: default_retries(),
+        }
+    }
+}
+
+/// Built-in tool caps.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolsConfig {
+    #[serde(default = "default_shell_timeout_secs")]
+    pub shell_timeout_secs: u64,
+    #[serde(default = "default_shell_output_cap")]
+    pub shell_output_cap: usize,
+    #[serde(default = "default_search_max_results")]
+    pub search_max_results: usize,
+}
+fn default_shell_timeout_secs() -> u64 {
+    120
+}
+fn default_shell_output_cap() -> usize {
+    100_000
+}
+fn default_search_max_results() -> usize {
+    200
+}
+impl Default for ToolsConfig {
+    fn default() -> Self {
+        Self {
+            shell_timeout_secs: default_shell_timeout_secs(),
+            shell_output_cap: default_shell_output_cap(),
+            search_max_results: default_search_max_results(),
+        }
+    }
+}
+
+/// Permission policy defaults.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PermissionConfig {
+    #[serde(default)]
+    pub yolo: bool,
+    #[serde(default)]
+    pub allowlist: Vec<String>,
+    #[serde(default = "default_fanout_auto_approve")]
+    pub fanout_auto_approve: bool,
+}
+fn default_fanout_auto_approve() -> bool {
+    true
+}
+impl Default for PermissionConfig {
+    fn default() -> Self {
+        Self {
+            yolo: false,
+            allowlist: Vec::new(),
+            fanout_auto_approve: default_fanout_auto_approve(),
+        }
+    }
+}
+
+/// Cross-cutting MCP settings (siblings of the per-server `[mcp.<name>]` map).
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpDefaultsConfig {
+    #[serde(default = "default_mcp_spawn_timeout_secs")]
+    pub spawn_timeout_secs: u64,
+}
+fn default_mcp_spawn_timeout_secs() -> u64 {
+    10
+}
+impl Default for McpDefaultsConfig {
+    fn default() -> Self {
+        Self {
+            spawn_timeout_secs: default_mcp_spawn_timeout_secs(),
+        }
+    }
+}
+
+/// Radio (background music) settings.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RadioConfig {
+    #[serde(default = "default_radio_download_timeout_secs")]
+    pub download_timeout_secs: u64,
+}
+fn default_radio_download_timeout_secs() -> u64 {
+    300
+}
+impl Default for RadioConfig {
+    fn default() -> Self {
+        Self {
+            download_timeout_secs: default_radio_download_timeout_secs(),
+        }
+    }
+}
+
+/// Telemetry / crash reporting.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct TelemetryConfig {
+    #[serde(default)]
+    pub sentry_dsn: Option<String>,
 }
 
 impl Config {
@@ -369,6 +559,47 @@ mod tests {
         let cfg = Config::from_toml_str("[viz]\nswarm = false\n").unwrap();
         assert!(!cfg.viz.swarm);
     }
+
+    #[test]
+    fn refactor_config_defaults() {
+        let cfg = Config::from_toml_str("").unwrap();
+        assert_eq!(cfg.router.max_turns, 25);
+        assert!(cfg.router.orchestrator_prompt.is_none());
+        assert!(cfg.router.orchestrator_prompt_append.is_none());
+        assert_eq!(cfg.inference.request_timeout_secs, 120);
+        assert!(cfg.inference.max_tokens.is_none());
+        assert!(cfg.inference.temperature.is_none());
+        assert_eq!(cfg.inference.retries, 2);
+        assert_eq!(cfg.tools.shell_timeout_secs, 120);
+        assert_eq!(cfg.tools.shell_output_cap, 100_000);
+        assert_eq!(cfg.tools.search_max_results, 200);
+        assert!(!cfg.permission.yolo);
+        assert!(cfg.permission.allowlist.is_empty());
+        assert!(cfg.permission.fanout_auto_approve);
+        assert_eq!(cfg.mcp_defaults.spawn_timeout_secs, 10);
+        assert_eq!(cfg.memory.embed_timeout_secs, 30);
+        assert_eq!(cfg.viz.tick_ms, 90);
+        assert_eq!(cfg.viz.plan_rows_cap, 8);
+        assert_eq!(cfg.viz.swarm_rows_cap, 8);
+        assert_eq!(cfg.companion.port, 9876);
+        assert_eq!(cfg.companion.fps, 24.0);
+        assert_eq!(cfg.radio.download_timeout_secs, 300);
+        assert!(cfg.telemetry.sentry_dsn.is_none());
+    }
+
+    #[test]
+    fn refactor_config_overrides_parse() {
+        let cfg = Config::from_toml_str(
+            "[router]\nmax_turns = 10\n[inference]\nrequest_timeout_secs = 5\nmax_tokens = 2048\ntemperature = 0.2\n[permission]\nfanout_auto_approve = false\n[viz]\ntick_ms = 33\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.router.max_turns, 10);
+        assert_eq!(cfg.inference.request_timeout_secs, 5);
+        assert_eq!(cfg.inference.max_tokens, Some(2048));
+        assert_eq!(cfg.inference.temperature, Some(0.2));
+        assert!(!cfg.permission.fanout_auto_approve);
+        assert_eq!(cfg.viz.tick_ms, 33);
+    }
 }
 
 /// Memory configuration per the SOTA memory design spec.
@@ -406,6 +637,8 @@ pub struct MemoryConfig {
     pub rrf_k: f64,
     #[serde(default = "default_recall_overfetch")]
     pub recall_overfetch: usize,
+    #[serde(default = "default_embed_timeout_secs")]
+    pub embed_timeout_secs: u64,
 }
 
 fn default_memory_enabled() -> bool {
@@ -447,6 +680,9 @@ fn default_rrf_k() -> f64 {
 fn default_recall_overfetch() -> usize {
     3
 }
+fn default_embed_timeout_secs() -> u64 {
+    30
+}
 
 impl Default for MemoryConfig {
     fn default() -> Self {
@@ -467,6 +703,7 @@ impl Default for MemoryConfig {
             half_life_days: default_half_life_days(),
             rrf_k: default_rrf_k(),
             recall_overfetch: default_recall_overfetch(),
+            embed_timeout_secs: default_embed_timeout_secs(),
         }
     }
 }
