@@ -167,7 +167,7 @@ impl SqliteStore {
 
         let created_at = tokio::task::spawn_blocking(move || -> rusqlite::Result<i64> {
             let conn = Self::lock_db(&db);
-            let (_id, created_at): (i64, i64) = conn.query_row(
+            let (id, created_at): (i64, i64) = conn.query_row(
                 "INSERT INTO entries (namespace, key, content, metadata, embedding, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT (namespace, key) DO UPDATE SET
@@ -177,7 +177,13 @@ impl SqliteStore {
                 params![ns2, k2, c2, meta_json, embedding_blob, now, now],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
-            // --- SYNC POINT: Task 2 adds FTS, Task 3 adds vec, keyed by `_id`. ---
+            // --- SYNC POINT: Task 2 adds FTS, Task 3 adds vec, keyed by `id`. ---
+            // FTS: delete-then-insert keeps the keyword row in sync on upsert.
+            conn.execute("DELETE FROM entries_fts WHERE rowid = ?1", params![id])?;
+            conn.execute(
+                "INSERT INTO entries_fts(rowid, content) VALUES (?1, ?2)",
+                params![id, c2],
+            )?;
             Ok(created_at)
         })
         .await
@@ -191,6 +197,55 @@ impl SqliteStore {
             created_at,
             updated_at: now,
         })
+    }
+}
+
+/// Build an FTS5 MATCH query from free text: quote each alphanumeric token and
+/// OR-join. Returns None when the query has no usable tokens.
+fn fts_match_query(query: &str) -> Option<String> {
+    let terms: Vec<String> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("\"{t}\""))
+        .collect();
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms.join(" OR "))
+    }
+}
+
+impl SqliteStore {
+    /// Namespace-scoped BM25 keyword search → entry ids, best match first.
+    // Temporary — Task 5's `search_hybrid` consumes it and removes the attribute.
+    #[allow(dead_code)]
+    async fn fts_ids(
+        &self,
+        namespace: Namespace,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<i64>, MemoryError> {
+        let Some(match_q) = fts_match_query(query) else {
+            return Ok(Vec::new());
+        };
+        let ns = namespace.as_str().to_string();
+        let db = Arc::clone(&self.db);
+        let ids = tokio::task::spawn_blocking(move || -> rusqlite::Result<Vec<i64>> {
+            let conn = Self::lock_db(&db);
+            let mut stmt = conn.prepare(
+                "SELECT e.id FROM entries_fts
+                 JOIN entries e ON e.id = entries_fts.rowid
+                 WHERE entries_fts MATCH ?1 AND e.namespace = ?2
+                 ORDER BY bm25(entries_fts) LIMIT ?3",
+            )?;
+            let ids = stmt
+                .query_map(params![match_q, ns, limit as i64], |r| r.get::<_, i64>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(ids)
+        })
+        .await
+        .map_err(|e| MemoryError::Internal(format!("spawn_blocking panicked: {e}")))??;
+        Ok(ids)
     }
 }
 
@@ -334,17 +389,24 @@ impl Memory for SqliteStore {
         let ns = namespace.as_str().to_string();
         let k = key.to_string();
         let db = Arc::clone(&self.db);
-
-        tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || -> rusqlite::Result<()> {
             let conn = Self::lock_db(&db);
-            conn.execute(
-                "DELETE FROM entries WHERE namespace = ?1 AND key = ?2",
-                params![ns, k],
-            )
+            let id: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM entries WHERE namespace = ?1 AND key = ?2",
+                    params![ns, k],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(id) = id {
+                conn.execute("DELETE FROM entries_fts WHERE rowid = ?1", params![id])?;
+                // Task 3 adds: DELETE FROM vec_entries WHERE rowid = ?1
+                conn.execute("DELETE FROM entries WHERE id = ?1", params![id])?;
+            }
+            Ok(())
         })
         .await
         .map_err(|e| MemoryError::Internal(format!("spawn_blocking panicked: {e}")))??;
-
         Ok(())
     }
 
@@ -462,6 +524,15 @@ fn ensure_schema(conn: &mut Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_ns_created ON entries(namespace, created_at DESC);
          CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);",
+    )?;
+    conn.execute_batch("CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(content);")?;
+    // Backfill any entries missing an FTS row (fresh table, or migrated DB).
+    conn.execute(
+        "INSERT INTO entries_fts(rowid, content)
+             SELECT e.id, e.content FROM entries e
+             LEFT JOIN entries_fts f ON f.rowid = e.id
+             WHERE f.rowid IS NULL",
+        [],
     )?;
     Ok(())
 }
@@ -615,6 +686,49 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn fts_keyword_search_finds_content() {
+        let store = SqliteStore::open_memory(None).unwrap();
+        store
+            .store(
+                Namespace::Learnings,
+                "k1",
+                "prefer Arc<str> over String for shared config",
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .store(
+                Namespace::Learnings,
+                "k2",
+                "the cargo test harness runs in parallel",
+                None,
+            )
+            .await
+            .unwrap();
+        let ids = store
+            .fts_ids(Namespace::Learnings, "cargo", 10)
+            .await
+            .unwrap();
+        assert_eq!(ids.len(), 1, "only k2 mentions cargo");
+    }
+
+    #[tokio::test]
+    async fn delete_removes_fts_row() {
+        let store = SqliteStore::open_memory(None).unwrap();
+        store
+            .store(Namespace::Learnings, "k1", "unique-token-xyz here", None)
+            .await
+            .unwrap();
+        store.delete(Namespace::Learnings, "k1").await.unwrap();
+        let ids = store
+            .fts_ids(Namespace::Learnings, "unique-token-xyz", 10)
+            .await
+            .unwrap();
+        assert!(ids.is_empty());
     }
 
     #[tokio::test]
