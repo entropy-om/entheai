@@ -1122,6 +1122,7 @@ dependencies = [
  "entheai-config",
  "entheai-core",
  "entheai-mcp",
+ "entheai-memory",
  "entheai-orchestrator",
  "entheai-permission",
  "entheai-providers",
@@ -1314,6 +1315,18 @@ dependencies = [
  "entheai-tools",
  "futures",
  "ratatui",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "entheai-worker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "entheai-config",
+ "entheai-orchestrator",
  "serde_json",
  "tokio",
 ]

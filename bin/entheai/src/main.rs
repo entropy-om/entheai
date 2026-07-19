@@ -52,6 +52,11 @@ async fn main() -> anyhow::Result<()> {
     let agent = entheai_router::build_agent(&model_id, &cfg)?;
     let policy = entheai_permission::Policy::new(cli.yolo, vec![]);
 
+    // Shared memory store (open before any agent run so the DB + parent dir exist
+    // even when the model call fails) + a session id for scoping.
+    let shared_memory = build_memory(&cfg)?;
+    let session_id = uuid::Uuid::new_v4().to_string();
+
     let companion = setup_companion(&cfg, &root, cli.no_companion)?;
     if let Some(ref c) = companion {
         let _ = c.state_tx.send(StateChange::working());
@@ -69,8 +74,25 @@ async fn main() -> anyhow::Result<()> {
                     messages.push(ChatMessage::system(sp.clone()));
                 }
                 messages.push(ChatMessage::user(prompt));
+                let runtime = shared_memory.clone().map(|m| {
+                    entheai_memory::MemoryRuntime::new(m, memory_runtime_config(&cfg.memory))
+                });
+                let scope = entheai_memory::MemoryScope {
+                    session_id: session_id.clone(),
+                    task_id: "oneshot".to_string(),
+                    cwd: root.clone(),
+                    role: None,
+                };
                 let answer = agent
-                    .run_task(messages, &registry, &policy, &mut prompter, None)
+                    .run_task_with_memory(
+                        messages,
+                        &registry,
+                        &policy,
+                        &mut prompter,
+                        None,
+                        runtime.as_ref(),
+                        scope,
+                    )
                     .await?;
                 println!("{answer}");
             }
@@ -109,6 +131,61 @@ fn init_telemetry() -> sentry::ClientInitGuard {
             ..Default::default()
         },
     ))
+}
+
+/// Expand a leading `~` to the user's home directory.
+fn expand_home(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(path)
+}
+
+/// Map the config's `[memory]` block to the runtime config.
+fn memory_runtime_config(m: &entheai_config::MemoryConfig) -> entheai_memory::MemoryRuntimeConfig {
+    entheai_memory::MemoryRuntimeConfig {
+        enabled: m.enabled,
+        strict: m.strict,
+        retrieve_codebase: m.retrieve_codebase,
+        retrieve_learnings: m.retrieve_learnings,
+        retrieve_trajectories: m.retrieve_trajectories,
+        max_context_chars: m.max_context_chars,
+        tool_spill_chars: m.tool_spill_chars,
+        evidence_tools: if m.evidence_tools.is_empty() {
+            vec!["run_shell".into(), "search".into()]
+        } else {
+            m.evidence_tools.clone()
+        },
+    }
+}
+
+/// Build the shared memory store from config: an optional embedder (only when
+/// `embed_provider` is configured — keeps on-by-default offline-safe) plus the
+/// recall params. Returns `None` when memory is disabled.
+fn build_memory(cfg: &Config) -> anyhow::Result<Option<entheai_memory::SharedMemory>> {
+    if !cfg.memory.enabled {
+        return Ok(None);
+    }
+    let embedder = cfg.memory.embed_provider.as_ref().and_then(|p| {
+        cfg.providers.get(p).map(|pc| {
+            entheai_memory::Embedder::new(pc.base_url.clone(), cfg.memory.embed_model.clone())
+        })
+    });
+    let path = expand_home(&cfg.memory.path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let mut store = entheai_memory::SqliteStore::open(&path, embedder)?;
+    store.set_recall_params(entheai_memory::RecallParams {
+        w_recency: cfg.memory.w_recency,
+        w_conf: cfg.memory.w_conf,
+        half_life_days: cfg.memory.half_life_days,
+        rrf_k: cfg.memory.rrf_k,
+        overfetch: cfg.memory.recall_overfetch,
+    });
+    Ok(Some(std::sync::Arc::new(store)))
 }
 
 /// Build the tool registry (built-in fs/shell/search tools + discovered skills +
