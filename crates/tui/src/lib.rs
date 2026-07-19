@@ -704,7 +704,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         // can still contain the letter q.
         KeyCode::Char('q') if idle && app.input.is_empty() => return Action::Quit,
         KeyCode::Enter => {
-            if idle && !app.input.trim().is_empty() {
+            let trimmed = app.input.trim();
+            let is_local_command = is_radio_command(trimmed) || is_workers_command(trimmed);
+            if !trimmed.is_empty() && (idle || is_local_command) {
                 return Action::Submit(std::mem::take(&mut app.input));
             }
         }
@@ -1293,6 +1295,64 @@ mod tests {
         assert!(is_workers_command("  /workers stop 0"));
         assert!(!is_workers_command("/workersomething"));
         assert!(!is_workers_command("list workers"));
+    }
+
+    #[test]
+    fn workers_command_submits_even_while_working() {
+        let mut app = App {
+            messages: Vec::new(),
+            input: "/workers list".to_string(),
+            status: Status::Working,
+            scroll: 0,
+            follow: true,
+            model_label: "m".into(),
+            pending_permission: None,
+            run_started: None,
+            spinner_frame: 0,
+            current_action: String::new(),
+            now_playing: None,
+            fanout: true,
+            worker_pool: None,
+            system_prompt: None,
+            streaming_idx: None,
+            out_tokens: 0,
+            verb_idx: 0,
+            plan: Vec::new(),
+        };
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let action = handle_key(&mut app, key);
+        match action {
+            Action::Submit(text) => assert_eq!(text, "/workers list"),
+            _ => panic!("expected Action::Submit while Working for a /workers command"),
+        }
+    }
+
+    #[test]
+    fn plain_message_does_not_submit_while_working() {
+        let mut app = App {
+            messages: Vec::new(),
+            input: "hello agent".to_string(),
+            status: Status::Working,
+            scroll: 0,
+            follow: true,
+            model_label: "m".into(),
+            pending_permission: None,
+            run_started: None,
+            spinner_frame: 0,
+            current_action: String::new(),
+            now_playing: None,
+            fanout: false,
+            worker_pool: None,
+            system_prompt: None,
+            streaming_idx: None,
+            out_tokens: 0,
+            verb_idx: 0,
+            plan: Vec::new(),
+        };
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let action = handle_key(&mut app, key);
+        assert!(matches!(action, Action::None));
+        assert_eq!(app.input, "hello agent"); // untouched — not submitted, not cleared
     }
 
     #[test]
