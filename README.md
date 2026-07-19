@@ -34,6 +34,14 @@ Built fresh in **Rust**, taking the best ideas from [Crush](https://github.com/c
   <em>one orchestrator, fanning out into a swarm of model-matched sub-agents</em>
 </p>
 
+## Gallery
+
+<p align="center">
+  <img src="docs/images/brain.png" alt="a circuit-board brain, the hybrid tiered mind behind entheai" width="32%">
+  <img src="docs/images/threshold.png" alt="light through a narrow stone crevice" width="32%">
+  <img src="docs/images/pulse.png" alt="a single pulse radiating outward in concentric arcs" width="32%">
+</p>
+
 ## Quick start
 
 **Install via Homebrew** (macOS / Apple Silicon):
