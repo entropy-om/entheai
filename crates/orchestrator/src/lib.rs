@@ -295,7 +295,12 @@ struct CoderRun {
 /// is captured as `"error: coder failed: {e}"` text so one bad coder never
 /// aborts its caller. Standalone entry point for `entheai-worker`; also used
 /// by [`run_coder`] (the in-process, `WorkerPool`-tracked dispatch path).
-pub async fn run_coder_once(config: &Config, role: &str, task: &str, worktree_path: &Path) -> String {
+pub async fn run_coder_once(
+    config: &Config,
+    role: &str,
+    task: &str,
+    worktree_path: &Path,
+) -> String {
     async {
         let model_id = entheai_router::model_for_role(config, role)?;
         let agent = entheai_router::build_agent(&model_id, config)?;
@@ -420,6 +425,7 @@ pub async fn run_fanout(
     root: &Path,
     task: &str,
     events: Option<tokio::sync::mpsc::UnboundedSender<FanoutEvent>>,
+    pool: Arc<WorkerPool>,
 ) -> anyhow::Result<String> {
     if !worktree::is_git_repo(root).await {
         if let Some(tx) = &events {
@@ -451,26 +457,59 @@ pub async fn run_fanout(
 
     let session = uuid::Uuid::new_v4().simple().to_string();
     let base = worktree::resolve_base(root, "HEAD").await?;
-    let pool = worktree::WorktreePool::new(root, &session, &base).await?;
+    let wt_pool = worktree::WorktreePool::new(root, &session, &base).await?;
 
     // 2. Create one worktree per sub-task, sequentially (git worktree creation
     // isn't safe to parallelize against the same root repo).
     let mut wts: Vec<(worktree::Worktree, SubTask)> = Vec::with_capacity(subtasks.len());
     for (i, st) in subtasks.into_iter().enumerate() {
-        let wt = pool.create(i).await?;
+        let wt = wt_pool.create(i).await?;
         wts.push((wt, st));
     }
 
-    // 3. Run coders in parallel, bounded by max_parallel.
-    let mut runs: Vec<CoderRun> = stream::iter(wts.iter().cloned())
-        .map(|(wt, st)| {
-            let events = events.clone();
-            run_coder(config, wt, st, events)
-        })
-        .buffer_unordered(max_par)
-        .collect()
-        .await;
-    runs.sort_by_key(|r| r.index); // buffer_unordered finishes out of order
+    // 3. Dispatch coders through the WorkerPool (tracked, cancellable,
+    // timeout-bounded) and collect their outcomes in the same order they were
+    // spawned — no re-sort needed here, unlike the old buffer_unordered dispatch.
+    let coder_timeout = Duration::from_secs(config.fanout.coder_timeout_secs);
+    let config_arc = Arc::new(config.clone());
+    let mut worker_ids: Vec<(WorkerId, worktree::Worktree, SubTask)> =
+        Vec::with_capacity(wts.len());
+    for (wt, st) in wts.iter().cloned() {
+        let id = pool.spawn(
+            st.role.clone(),
+            st.task.clone(),
+            coder_timeout,
+            run_coder(
+                Arc::clone(&config_arc),
+                wt.clone(),
+                st.clone(),
+                events.clone(),
+            ),
+        );
+        worker_ids.push((id, wt, st));
+    }
+
+    let mut runs: Vec<CoderRun> = Vec::with_capacity(worker_ids.len());
+    for (id, wt, st) in worker_ids {
+        let run = match pool.join(id).await {
+            Some(run) => run,
+            None => {
+                let reason = match pool.status(id) {
+                    Some(WorkerStatus::Killed) => "coder killed (stopped via /workers)",
+                    _ => "coder timed out",
+                };
+                CoderRun {
+                    index: wt.index,
+                    role: st.role,
+                    task: st.task,
+                    branch: wt.branch,
+                    path: wt.path,
+                    output: format!("error: {reason}"),
+                }
+            }
+        };
+        runs.push(run);
+    }
 
     // 4. Commit + verify each worktree, sequentially (each is a separate git
     // invocation against a distinct worktree, but keeping this sequential keeps
@@ -554,7 +593,7 @@ pub async fn run_fanout(
 
     // 6. Cleanup worktrees (best-effort; keep the integration branch for review).
     for (wt, _) in &wts {
-        let _ = pool.remove(wt).await;
+        let _ = wt_pool.remove(wt).await;
     }
 
     if let Some(tx) = &events {

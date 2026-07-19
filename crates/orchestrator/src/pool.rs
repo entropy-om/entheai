@@ -77,6 +77,11 @@ impl WorkerPool {
     /// `Queued` -> `Running`), enforces `timeout` via `tokio::time::timeout`
     /// (flipping to `TimedOut` and dropping `fut` on expiry), and records the
     /// completed output for `output_snapshot` on normal completion.
+    ///
+    /// `CoderRun` is intentionally crate-private (see the module-level note);
+    /// the bound below is only ever satisfied by callers inside this crate,
+    /// so the private-in-public-interface lint is a false positive here.
+    #[allow(private_bounds)]
     pub fn spawn<F>(
         self: &Arc<Self>,
         role: impl Into<String>,
@@ -157,6 +162,7 @@ impl WorkerPool {
     /// missing outcome means for its own bookkeeping). Consumes the
     /// underlying join handle the first time it's called for a given `id`;
     /// subsequent calls return `None`.
+    #[allow(private_interfaces)]
     pub async fn join(&self, id: WorkerId) -> Option<crate::CoderRun> {
         let handle = self
             .workers
@@ -187,7 +193,11 @@ impl WorkerPool {
 
     /// Current status of `id`, or `None` if it's unknown.
     pub fn status(&self, id: WorkerId) -> Option<WorkerStatus> {
-        self.workers.lock().unwrap().get(&id).map(|h| h.status.clone())
+        self.workers
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|h| h.status.clone())
     }
 
     /// The captured output text of a *finished* worker (`Done`/`TimedOut` sets
@@ -306,7 +316,10 @@ mod tests {
         });
 
         tokio::time::sleep(Duration::from_millis(10)).await;
-        assert!(matches!(pool.status(id_a), Some(WorkerStatus::Running { .. })));
+        assert!(matches!(
+            pool.status(id_a),
+            Some(WorkerStatus::Running { .. })
+        ));
         assert!(matches!(pool.status(id_b), Some(WorkerStatus::Queued)));
 
         pool.join(id_a).await;
