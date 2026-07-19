@@ -37,7 +37,7 @@ A crate **decoupled from the TUI** (matches the master spec's crate list) so the
 | `viz::SwarmModel` | **Pure state machine** with semantic mutators — `decompose(tasks)`, `coder_started(index, role, task)`, `coder_finished(index, committed, status)`, `integrating()`, `done()` — folding into a graph: an orchestrator node + one node per sub-task `{ index, role, task, status, committed, tokens? }`; statuses `Pending / Running / Done / Failed`; aggregate counts + elapsed time (provided by the caller — the model calls no clock, so it stays deterministic for tests). **No rendering, no I/O, and no dependency on the orchestrator crate** — the TUI maps each `FanoutEvent` to the matching mutator, keeping `viz` a standalone, cheaply-testable crate. | std only |
 | `viz::swarm::render(model, area, buf, marker, frame)` | Draws the model onto a ratatui `Canvas`: nodes as Braille points, edges orchestrator→node as lines, status glyphs `◻ ◐ ✓ ✗`, labels truncated to width, a pulse on `Running` nodes derived from `frame`. **Same fn for inline (small `area`) and full (large `area`).** | `ratatui` |
 | `viz::term` | `graphics_capable() -> bool` — detects Kitty-graphics support from `$TERM_PROGRAM` (`ghostty`, `WezTerm`) and `$TERM` (`xterm-kitty`). | std env |
-| `viz::shader` *(Slice 2)* | wgpu offscreen render → RGBA frame → Kitty-graphics emit behind text; built-ins `Cyberpunk` + `Random`; the Kitty escape encoder; cell-gradient fallback surface. | `wgpu`, `viz::term` |
+| `viz::shader` *(Slice 2)* | wgpu offscreen render → RGBA frame → Kitty-graphics emit behind text; **first built-in `Raindrop`** — an ambient rain-on-glass effect (animated droplets + refraction/trails, inspired by [SardineFish/raindrop-fx](https://github.com/SardineFish/raindrop-fx)) — plus `Random`; the Kitty escape encoder; cell-gradient fallback surface. | `wgpu`, `viz::term` |
 
 `FanoutEvent` variants the TUI maps to `SwarmModel` mutators (all already emitted): `Decomposed { tasks: Vec<(role, task)> }` → `decompose` (seed `Pending`); `CoderStarted { index, role, task }` → `coder_started` (`Running`); `CoderFinished { index, committed, status }` → `coder_finished` (`Done`/`Failed`); `Integrating` → `integrating`; `Done` → `done`. No new events required; `viz` never imports `FanoutEvent`.
 
@@ -67,7 +67,7 @@ The TUI already forwards `FanoutEvent`s to the plan pane; the swarm feeds the **
 [viz]
 swarm = true               # slice 1: the fan-out swarm (inline + Ctrl-V full view)
 # slice 2:
-shader = "off"             # off | cyberpunk | random | <custom>
+shader = "off"             # off | raindrop | random | <custom>   (first shader: raindrop = rain-on-glass, raindrop-fx-inspired)
 shader_enabled = false     # opt-in; auto-disabled on a non-Kitty terminal regardless
 ```
 
@@ -93,7 +93,7 @@ Defaults keep the swarm on and the shader off (opt-in) so slice 1 changes nothin
 - Running `entheai --fanout "<task>"` shows a **live swarm**: an orchestrator node fanning out to model-matched sub-task nodes that transition `◻→◐→✓/✗` in real time, off the existing `FanoutEvent` stream — inline during the run.
 - `Ctrl-V` / `/viz` opens a **full-screen swarm** with per-agent detail and returns to chat without restarting; the inline pane collapses to zero rows when idle.
 - The swarm works in **any** terminal (pure ratatui) and the render loop stays **idle-frugal** (no busy-spin).
-- **Slice 2:** on Ghostty, a `Cyberpunk` shader animates **behind** the text with negligible idle cost; on a non-Kitty terminal it auto-disables with a clean fallback — proving the wgpu→Kitty path with one shader, exactly as the master spec's risk note prescribes.
+- **Slice 2:** on Ghostty, the **`Raindrop`** shader (rain-on-glass with refraction/trails, inspired by SardineFish/raindrop-fx) animates **behind** the text with negligible idle cost; on a non-Kitty terminal it auto-disables with a clean fallback — proving the wgpu→Kitty path with one shader, exactly as the master spec's risk note prescribes.
 
 ## 10. Non-goals (v1)
 
