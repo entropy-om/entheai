@@ -31,6 +31,10 @@ struct Cli {
     /// Open entheai in a dedicated minimalist Ghostty window (the native-app experience).
     #[arg(long)]
     app: bool,
+    /// Inspect memory then exit: `--memory stats`, `--memory list <namespace>`,
+    /// `--memory search <namespace> <query...>`.
+    #[arg(long = "memory", num_args = 1.., value_name = "ARGS")]
+    memory: Vec<String>,
 }
 
 #[tokio::main]
@@ -52,6 +56,12 @@ async fn main() -> anyhow::Result<()> {
     let cfg = Config::from_toml_str(&cfg_text)?;
     let _sentry = init_telemetry(cfg.telemetry.sentry_dsn.clone());
     let root = std::env::current_dir()?.canonicalize()?;
+
+    // Memory inspection short-circuits before the tool registry or companion are
+    // built — it needs neither, and must exit without running the agent.
+    if !cli.memory.is_empty() {
+        return run_memory_cmd(&cfg, &cli.memory).await;
+    }
 
     // Tool registry (built-ins + skills + MCP servers) + the skills system prompt.
     // `_mcp_guards` keeps the spawned MCP child processes alive for the session.
@@ -211,6 +221,70 @@ fn build_memory(cfg: &Config) -> anyhow::Result<Option<entheai_memory::SharedMem
         overfetch: cfg.memory.recall_overfetch,
     });
     Ok(Some(std::sync::Arc::new(store)))
+}
+
+/// Inspect the memory store and exit. Namespaces: codebase, learnings,
+/// trajectories, tools, subagents.
+async fn run_memory_cmd(cfg: &Config, args: &[String]) -> anyhow::Result<()> {
+    use entheai_memory::Namespace;
+    let store = build_memory(cfg)?
+        .ok_or_else(|| anyhow::anyhow!("memory is disabled ([memory] enabled = false)"))?;
+
+    let parse_ns = |s: &str| -> anyhow::Result<Namespace> {
+        s.parse::<Namespace>().map_err(|_| {
+            anyhow::anyhow!(
+                "unknown namespace '{s}' (codebase|learnings|trajectories|tools|subagents)"
+            )
+        })
+    };
+
+    match args.first().map(String::as_str) {
+        Some("stats") => {
+            let mut total = 0usize;
+            for ns in [
+                Namespace::Codebase,
+                Namespace::Learnings,
+                Namespace::Trajectories,
+                Namespace::Tools,
+                Namespace::Subagents,
+            ] {
+                let n = store.list(ns, usize::MAX, 0).await?.len();
+                total += n;
+                println!("{:<13} {n}", ns.as_str());
+            }
+            println!("{:<13} {total}", "total");
+        }
+        Some("list") => {
+            let ns = parse_ns(args.get(1).map(String::as_str).unwrap_or(""))?;
+            for e in store.list(ns, 20, 0).await? {
+                let preview: String = e.content.chars().take(80).collect();
+                println!(
+                    "{}  {}  {}",
+                    e.key,
+                    e.created_at,
+                    preview.replace('\n', " ")
+                );
+            }
+        }
+        Some("search") => {
+            let ns = parse_ns(args.get(1).map(String::as_str).unwrap_or(""))?;
+            let query = args.get(2..).map(|q| q.join(" ")).unwrap_or_default();
+            if query.trim().is_empty() {
+                anyhow::bail!("usage: --memory search <namespace> <query...>");
+            }
+            for s in store.search(ns, &query, 10).await? {
+                let preview: String = s.entry.content.chars().take(80).collect();
+                println!(
+                    "[{:.3}] {}  {}",
+                    s.score,
+                    s.entry.key,
+                    preview.replace('\n', " ")
+                );
+            }
+        }
+        _ => anyhow::bail!("usage: --memory <list <ns> | search <ns> <query...> | stats>"),
+    }
+    Ok(())
 }
 
 /// Build the tool registry (built-in fs/shell/search tools + discovered skills +
