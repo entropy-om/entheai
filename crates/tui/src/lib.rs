@@ -254,6 +254,12 @@ enum Action {
     ViewToggle,
 }
 
+// TODO(@rahulmranga): memory-v1 Task 9 — thread the shared memory into the
+// interactive run loop. Add `memory: Option<std::sync::Arc<entheai_memory::MemoryRuntime>>`
+// and `scope: entheai_memory::MemoryScope` params to `run` (and to `event_loop`),
+// add `entheai-memory = { path = "../memory" }` to crates/tui/Cargo.toml, then swap
+// the internal `.run_task(...)` call for `.run_task_with_memory(..., mem.as_deref(), sc)`
+// with a per-turn `task_id`. Verbatim recipe: docs/superpowers/plans/2026-07-19-entheai-memory-v1.md → "Task 9".
 /// Run the interactive TUI. Sets up the terminal, runs the event loop, and
 /// always restores the terminal on exit (raw mode + alternate screen), even on
 /// error, via [`TerminalGuard`].

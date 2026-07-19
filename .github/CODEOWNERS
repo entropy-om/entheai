@@ -1,2 +1,10 @@
 # Default owner for all files in this repository.
 * @peterlodri-sec
+
+# Memory / second-brain subsystem — owned by Rahul (@rahulmranga).
+# The engine + inspection CLI (memory-v1 Tasks 0–8) are landed and green; the
+# remaining "brain" wiring is Rahul's to complete:
+#   - Task 9  — TUI memory (seam: crates/tui/src/lib.rs `run`)
+#   - Task 10 — fan-out memory (seam: crates/orchestrator/src/lib.rs `run_fanout`)
+# Recipes: docs/superpowers/plans/2026-07-19-entheai-memory-v1.md
+/crates/memory/ @rahulmranga

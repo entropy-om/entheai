@@ -452,6 +452,14 @@ pub struct CoderOutcome {
 ///
 /// Falls back to the read-only v1 fan-out ([`run_fanout_readonly`]) when `root`
 /// isn't a git repo (isolated worktrees require one).
+// TODO(@rahulmranga): memory-v1 Task 10 — give fan-out leaves the shared memory.
+// Add a trailing `memory: Option<entheai_memory::SharedMemory>` param to `run_fanout`,
+// `run_fanout_readonly`, `run_subagent`, and `run_coder` (an ADDITIONAL arg *after*
+// `pool` — the signature drifted from the plan), add `entheai-memory = { path = "../memory" }`
+// to crates/orchestrator/Cargo.toml, build a per-leaf `MemoryRuntime`, and swap each
+// leaf's `run_task` → `run_task_with_memory`. The orchestrate_once decompose/synthesis
+// meta-calls stay on plain `run_task`. Verbatim recipe:
+// docs/superpowers/plans/2026-07-19-entheai-memory-v1.md → "Task 10".
 pub async fn run_fanout(
     config: &Config,
     root: &Path,
