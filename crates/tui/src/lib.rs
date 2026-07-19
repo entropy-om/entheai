@@ -40,6 +40,36 @@ use entheai_tools::ToolRegistry;
 /// braille spinner), advanced on each animation tick while a run is in flight.
 const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// Rotating verbs for the progress line when no tool is currently running, one
+/// picked per submitted turn (see `App.verb_idx`) so repeated runs don't always
+/// say "Thinking".
+const VERBS: [&str; 8] = [
+    "Thinking",
+    "Churning",
+    "Weaving",
+    "Reasoning",
+    "Wrangling",
+    "Cooking",
+    "Threading",
+    "Brewing",
+];
+
+/// The verb for turn index `idx`, wrapping around `VERBS`.
+fn verb_for(idx: usize) -> &'static str {
+    VERBS[idx % VERBS.len()]
+}
+
+/// Format a token count for the live progress line: `950`, `18.4k`, `1.2M`.
+fn fmt_tokens(n: usize) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
 type Backend = CrosstermBackend<Stdout>;
 
 /// Who authored a line of history.
@@ -162,6 +192,13 @@ struct App {
     /// Index into `messages` of the assistant bubble currently being streamed
     /// into by live `AgentEvent::Token`s, if any.
     streaming_idx: Option<usize>,
+    /// Running tally of output tokens for the current turn (reset on submit),
+    /// estimated from streamed token text. Drives the `↓N tokens` progress
+    /// readout.
+    out_tokens: usize,
+    /// Index into `VERBS`, advanced once per submitted turn so the progress
+    /// line's idle verb varies run to run.
+    verb_idx: usize,
 }
 
 /// What a key press asked the loop to do.
@@ -273,6 +310,8 @@ async fn event_loop<P: Provider + 'static>(
         fanout,
         system_prompt,
         streaming_idx: None,
+        out_tokens: 0,
+        verb_idx: 0,
     };
 
     // Background music player (yt-dlp + rodio); one per TUI session.
@@ -325,6 +364,8 @@ async fn event_loop<P: Provider + 'static>(
                             app.follow = true;
                             app.current_action = "thinking".to_string();
                             app.run_started = Some(Instant::now());
+                            app.out_tokens = 0;
+                            app.verb_idx = app.verb_idx.wrapping_add(1);
 
                             if fanout {
                                 let config = Arc::clone(&config);
@@ -417,6 +458,7 @@ async fn event_loop<P: Provider + 'static>(
                                 idx
                             }
                         };
+                        app.out_tokens += t.len() / 4;
                         app.messages[idx].text.push_str(&t);
                     }
                     Some(AgentEvent::ToolStarted { name, args }) => {
@@ -769,6 +811,11 @@ fn render(frame: &mut Frame, app: &App, lines: Vec<Line<'static>>, scroll: u16) 
     let progress = match &app.status {
         Status::Working => {
             let elapsed = app.run_started.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+            let label = if app.current_action.starts_with("running ") {
+                app.current_action.clone()
+            } else {
+                format!("{}…", verb_for(app.verb_idx))
+            };
             Line::from(vec![
                 Span::styled(
                     FRAMES[app.spinner_frame],
@@ -778,7 +825,7 @@ fn render(frame: &mut Frame, app: &App, lines: Vec<Line<'static>>, scroll: u16) 
                 ),
                 Span::raw(" "),
                 Span::styled(
-                    format!("{} · {elapsed}s", app.current_action),
+                    format!("{label} · {elapsed}s · ↓{} tokens", fmt_tokens(app.out_tokens)),
                     Style::default().add_modifier(Modifier::DIM),
                 ),
             ])
@@ -939,6 +986,20 @@ mod tests {
     }
 
     #[test]
+    fn fmt_tokens_scales() {
+        assert_eq!(fmt_tokens(950), "950");
+        assert_eq!(fmt_tokens(18_432), "18.4k");
+        assert_eq!(fmt_tokens(1_250_000), "1.2M");
+    }
+
+    #[test]
+    fn verb_rotates_deterministically() {
+        assert_eq!(verb_for(0), VERBS[0]);
+        assert_eq!(verb_for(VERBS.len()), VERBS[0]); // wraps
+        assert_ne!(verb_for(0), verb_for(1));
+    }
+
+    #[test]
     fn radio_command_detection() {
         assert!(is_radio_command("/radio"));
         assert!(is_radio_command("/radio https://youtu.be/x"));
@@ -964,6 +1025,8 @@ mod tests {
             fanout: false,
             system_prompt: None,
             streaming_idx: None,
+            out_tokens: 0,
+            verb_idx: 0,
         };
         handle_radio_event(
             &mut app,
