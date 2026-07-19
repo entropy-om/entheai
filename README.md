@@ -11,6 +11,7 @@
   <img src="https://img.shields.io/badge/platform-macOS%20·%20Apple%20Silicon-111" alt="platform">
   <img src="https://img.shields.io/badge/built%20in-Rust-orange" alt="Rust">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="license">
+  <a href="https://huggingface.co/datasets/PeetPedro/ultrawhale-dogfood"><img src="https://img.shields.io/badge/🤗%20dataset-ultrawhale--dogfood-ffbd45" alt="ultrawhale-dogfood dataset on Hugging Face"></a>
 </p>
 
 `entheai` is a coding-agent CLI for Apple Silicon Macs. A strong cloud orchestrator (DeepSeek V4 Pro) plans and decomposes work, then **fans out** to a swarm of sub-agents — each matched to the *best model for its task* — that run in parallel inside isolated git worktrees and merge back only after building and passing tests. It runs local models via [Osaurus](https://github.com/osaurus-ai/osaurus), understands your codebase through a built-in knowledge graph, personalizes to how *you* work, and gets better over time.
