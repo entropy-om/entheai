@@ -11,7 +11,7 @@ entheai-providers = { path = "../providers" }
 entheai-router = { path = "../router" }
 entheai-tools = { path = "../tools" }
 entheai-permission = { path = "../permission" }
-tokio = { workspace = true, features = ["process", "fs"] }
+tokio = { workspace = true, features = ["process", "fs", "sync", "time"] }
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -20,5 +20,5 @@ async-trait.workspace = true
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tempfile = "3"

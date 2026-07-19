@@ -23,7 +23,10 @@ use entheai_providers::ChatMessage;
 use futures::stream::{self, StreamExt};
 use serde::Deserialize;
 
+pub mod pool;
 pub mod worktree;
+
+pub use pool::{WorkerId, WorkerPool, WorkerStatus, WorkerSummary};
 
 /// Lifecycle progress events emitted by [`run_fanout`] as it decomposes,
 /// dispatches coders, and integrates their work. Consumers (e.g. the TUI) pass
