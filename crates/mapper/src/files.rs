@@ -71,26 +71,53 @@ pub fn scan_bare_paths(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Resolve `candidates` against `root`, keep only paths that exist as files,
-/// and dedupe (by resolved path).
+/// Resolve `candidates` against `root`, rejecting any that escape `root`
+/// (absolute paths, `..` traversal, or symlink redirection), keep only paths
+/// that exist as files, and dedupe by canonical identity (not the literal
+/// joined string, so `foo.rs` and `./foo.rs` collapse to one entry). Each
+/// candidate's existence/containment check runs concurrently.
 pub async fn resolve_and_dedupe(root: &std::path::Path, candidates: &[PathBuf]) -> Vec<PathBuf> {
+    let Ok(canonical_root) = tokio::fs::canonicalize(root).await else {
+        return Vec::new();
+    };
+
+    let handles: Vec<_> = candidates
+        .iter()
+        .cloned()
+        .map(|candidate| {
+            let root = root.to_path_buf();
+            tokio::spawn(async move {
+                let joined = if candidate.is_absolute() {
+                    candidate
+                } else {
+                    root.join(&candidate)
+                };
+                let canonical = tokio::fs::canonicalize(&joined).await.ok();
+                let is_file = tokio::fs::metadata(&joined)
+                    .await
+                    .map(|m| m.is_file())
+                    .unwrap_or(false);
+                (canonical, joined, is_file)
+            })
+        })
+        .collect();
+
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for candidate in candidates {
-        let resolved = if candidate.is_absolute() {
-            candidate.clone()
-        } else {
-            root.join(candidate)
+    for handle in handles {
+        // A panicked resolve task is treated like any other unresolvable
+        // candidate: skipped, never aborts the whole map.
+        let Ok((Some(canonical), joined, is_file)) = handle.await else {
+            continue;
         };
-        if !seen.insert(resolved.clone()) {
+        if !canonical.starts_with(&canonical_root) {
+            continue; // escapes root -- reject, same as every other read path in this codebase
+        }
+        if !seen.insert(canonical) {
             continue;
         }
-        if tokio::fs::metadata(&resolved)
-            .await
-            .map(|m| m.is_file())
-            .unwrap_or(false)
-        {
-            out.push(resolved);
+        if is_file {
+            out.push(joined);
         }
     }
     out
@@ -195,6 +222,61 @@ mod tests {
         ];
         let resolved = resolve_and_dedupe(dir.path(), &candidates).await;
         assert_eq!(resolved, vec![existing]);
+    }
+
+    #[tokio::test]
+    async fn resolve_and_dedupe_dedupes_equivalent_relative_forms() {
+        let dir = tempdir().unwrap();
+        let existing = dir.path().join("bar.rs");
+        std::fs::write(&existing, "fn bar() {}\n").unwrap();
+
+        let candidates = vec![PathBuf::from("bar.rs"), PathBuf::from("./bar.rs")];
+        let resolved = resolve_and_dedupe(dir.path(), &candidates).await;
+        assert_eq!(
+            resolved.len(),
+            1,
+            "same file via two spellings must dedupe to one entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_and_dedupe_rejects_paths_escaping_root() {
+        let base = tempdir().unwrap();
+        let root = base.path().join("root");
+        let secret_dir = base.path().join("secret");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&secret_dir).unwrap();
+        let secret_file = secret_dir.join("secret.txt");
+        std::fs::write(&secret_file, "top secret\n").unwrap();
+
+        let candidates = vec![
+            PathBuf::from("../secret/secret.txt"), // relative traversal escape
+            secret_file.clone(),                   // absolute path escape
+        ];
+        let resolved = resolve_and_dedupe(&root, &candidates).await;
+        assert!(
+            resolved.is_empty(),
+            "paths escaping root must never be resolved, even if they exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_and_dedupe_allows_in_root_files_alongside_rejections() {
+        let base = tempdir().unwrap();
+        let root = base.path().join("root");
+        let secret_dir = base.path().join("secret");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&secret_dir).unwrap();
+        let in_root = root.join("real.rs");
+        std::fs::write(&in_root, "fn main() {}\n").unwrap();
+        std::fs::write(secret_dir.join("secret.txt"), "top secret\n").unwrap();
+
+        let candidates = vec![
+            PathBuf::from("real.rs"),
+            PathBuf::from("../secret/secret.txt"),
+        ];
+        let resolved = resolve_and_dedupe(&root, &candidates).await;
+        assert_eq!(resolved, vec![in_root]);
     }
 
     #[tokio::test]

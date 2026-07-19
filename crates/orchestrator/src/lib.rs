@@ -250,8 +250,15 @@ async fn run_fanout_readonly(config: &Config, root: &Path, task: &str) -> anyhow
     let subtasks = parse_decomposition(&raw, max_par);
 
     // Fallback: couldn't decompose → just run the task once on the orchestrator.
+    // Uses `mapped.render()`, not raw `task`: `orchestrate_once` never registers any
+    // tools, so a raw `@{file}` marker here would be a dead end the model can't resolve.
     if subtasks.is_empty() {
-        return orchestrate_once(config, &orch_model, vec![ChatMessage::user(task)]).await;
+        return orchestrate_once(
+            config,
+            &orch_model,
+            vec![ChatMessage::user(mapped.render())],
+        )
+        .await;
     }
 
     // 2. Fan out, bounded by max_parallel.
@@ -261,8 +268,14 @@ async fn run_fanout_readonly(config: &Config, root: &Path, task: &str) -> anyhow
         .collect()
         .await;
 
-    // 3. Synthesize.
-    orchestrate_once(config, &orch_model, synthesis_messages(task, &results)).await
+    // 3. Synthesize. Same reasoning as the fallback above: the synthesis call has no
+    // tool access either, so it needs the resolved file content, not a raw marker.
+    orchestrate_once(
+        config,
+        &orch_model,
+        synthesis_messages(&mapped.render(), &results),
+    )
+    .await
 }
 
 /// Full (read/write/shell/search) tool set for a coder sub-agent, rooted at its
@@ -463,8 +476,15 @@ pub async fn run_fanout(
     let subtasks = parse_decomposition(&raw, max_par);
 
     // Fallback: couldn't decompose → just run the task once on the orchestrator.
+    // Uses `mapped.render()`, not raw `task`: `orchestrate_once` never registers any
+    // tools, so a raw `@{file}` marker here would be a dead end the model can't resolve.
     if subtasks.is_empty() {
-        return orchestrate_once(config, &orch_model, vec![ChatMessage::user(task)]).await;
+        return orchestrate_once(
+            config,
+            &orch_model,
+            vec![ChatMessage::user(mapped.render())],
+        )
+        .await;
     }
     if let Some(tx) = &events {
         let _ = tx.send(FanoutEvent::Decomposed {
@@ -739,6 +759,46 @@ mod tests {
         assert!(user_msg.content.contains("### File: "));
         assert!(user_msg.content.contains("line one"));
         assert_ne!(user_msg.content, task);
+    }
+
+    #[tokio::test]
+    async fn synthesis_and_fallback_inputs_are_mapped_not_raw_task() {
+        // orchestrate_once never registers any tools (see its empty ToolRegistry),
+        // so both the empty-decomposition fallback and the synthesis step must be
+        // fed mapped.render() -- a raw `@{file}` marker would be an unresolvable
+        // dead end for a model with no way to read the file itself.
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("spec.md"), "the actual spec content\n")
+            .await
+            .unwrap();
+        let task = "@{spec.md} implement per the spec";
+
+        let mapped = entheai_mapper::Mapper::map(dir.path(), task, &[]).await;
+
+        // Fallback path: a single-shot ChatMessage::user built from mapped content.
+        let fallback_msg = ChatMessage::user(mapped.render());
+        assert!(fallback_msg.content.contains("spec content"));
+        assert!(fallback_msg.content.contains("[file: spec.md]"));
+        assert_ne!(fallback_msg.content, task);
+
+        // Synthesis path: synthesis_messages built from mapped content, not raw task.
+        let results = vec![sub_task_result("coder", "did the work", "done")];
+        let synth_messages = synthesis_messages(&mapped.render(), &results);
+        let synth_user_msg = synth_messages
+            .iter()
+            .find(|m| m.role == "user")
+            .expect("user message");
+        assert!(synth_user_msg.content.contains("spec content"));
+        assert!(synth_user_msg.content.contains("[file: spec.md]"));
+        assert!(!synth_user_msg.content.contains(task));
+    }
+
+    fn sub_task_result(role: &str, task: &str, output: &str) -> SubResult {
+        SubResult {
+            role: role.to_string(),
+            task: task.to_string(),
+            output: output.to_string(),
+        }
     }
 
     fn sub_task(role: &str, task: &str) -> SubTask {
