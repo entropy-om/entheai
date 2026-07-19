@@ -42,10 +42,22 @@ fn normalize_rel(base_dir: &Path, target: &str) -> Option<PathBuf> {
     Some(out)
 }
 
-/// Rewrite a single doc's markdown: intra-set `.md` links → wikilinks; image
-/// links → `_assets/...` copies (queued in `assets`). `doc_dir` is the doc's
-/// repo-relative parent (e.g. `docs`).
-fn rewrite(md: &str, doc_dir: &Path, assets: &mut Vec<AssetRef>) -> String {
+/// If `target` is an intra-set doc link (`foo.md` or `foo.md#anchor`), split it
+/// into (path_without_anchor, anchor). Otherwise None.
+fn split_md_target(target: &str) -> Option<(&str, &str)> {
+    let (path, anchor) = match target.split_once('#') {
+        Some((p, a)) => (p, a),
+        None => (target, ""),
+    };
+    path.ends_with(".md").then_some((path, anchor))
+}
+
+/// Rewrite links/images in a text span (no code protection — the caller is
+/// responsible for only handing this unprotected text): intra-set `.md`
+/// links → wikilinks (with optional `#anchor`, alias sanitized against `|`);
+/// image links → `_assets/...` copies (queued in `assets`). `doc_dir` is the
+/// doc's repo-relative parent (e.g. `docs`).
+fn rewrite_text(md: &str, doc_dir: &Path, assets: &mut Vec<AssetRef>) -> String {
     let re = link_re();
     let mut result = String::with_capacity(md.len());
     let mut last = 0;
@@ -77,18 +89,95 @@ fn rewrite(md: &str, doc_dir: &Path, assets: &mut Vec<AssetRef>) -> String {
             } else {
                 result.push_str(m.as_str());
             }
-        } else if target.ends_with(".md") {
-            // Intra-set doc link → Obsidian wikilink by note stem.
-            let stem = Path::new(target)
+        } else if let Some((path, anchor)) = split_md_target(target) {
+            // Intra-set doc link → Obsidian wikilink by note stem, optionally
+            // pointing at a heading anchor; alias sanitized against `|`.
+            let stem = Path::new(path)
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| target.to_string());
-            result.push_str(&format!("[[{stem}|{text}]]"));
+                .unwrap_or_else(|| path.to_string());
+            let alias = text.replace('|', "/");
+            if anchor.is_empty() {
+                result.push_str(&format!("[[{stem}|{alias}]]"));
+            } else {
+                result.push_str(&format!("[[{stem}#{anchor}|{alias}]]"));
+            }
         } else {
             result.push_str(m.as_str());
         }
     }
     result.push_str(&md[last..]);
+    result
+}
+
+/// Rewrite a single non-fenced line, protecting inline `code` spans (runs of N
+/// backticks close on the next run of exactly N backticks) verbatim.
+fn rewrite_line(line: &str, doc_dir: &Path, assets: &mut Vec<AssetRef>) -> String {
+    let bytes = line.as_bytes();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < line.len() {
+        if bytes[i] == b'`' {
+            let start = i;
+            let mut n = 0;
+            while i < line.len() && bytes[i] == b'`' {
+                n += 1;
+                i += 1;
+            }
+            // find a closing run of exactly n backticks
+            let mut close = None;
+            let mut j = i;
+            while j < line.len() {
+                if bytes[j] == b'`' {
+                    let mut m = 0;
+                    while j < line.len() && bytes[j] == b'`' {
+                        m += 1;
+                        j += 1;
+                    }
+                    if m == n {
+                        close = Some(j);
+                        break;
+                    }
+                } else {
+                    j += 1;
+                }
+            }
+            match close {
+                Some(end) => {
+                    out.push_str(&line[start..end]);
+                    i = end;
+                }
+                None => out.push_str(&line[start..i]),
+            }
+        } else {
+            let tstart = i;
+            while i < line.len() && bytes[i] != b'`' {
+                i += 1;
+            }
+            out.push_str(&rewrite_text(&line[tstart..i], doc_dir, assets));
+        }
+    }
+    out
+}
+
+/// Rewrite one doc: protect fenced code blocks (``` / ~~~) and inline code
+/// spans (`...`) verbatim; rewrite links/images only in the remaining text.
+fn rewrite(md: &str, doc_dir: &Path, assets: &mut Vec<AssetRef>) -> String {
+    let mut result = String::with_capacity(md.len());
+    let mut in_fence = false;
+    for line in md.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            result.push_str(line);
+            continue;
+        }
+        if in_fence {
+            result.push_str(line);
+            continue;
+        }
+        result.push_str(&rewrite_line(line, doc_dir, assets));
+    }
     result
 }
 
@@ -205,5 +294,88 @@ mod tests {
         let mut out = RenderOutput::default();
         docs_mirror(&ctx, &mut out);
         assert!(out.is_empty(), "per-source conditional: no docs → nothing");
+    }
+
+    #[test]
+    fn code_fence_content_is_not_rewritten() {
+        let ctx = RepoContext {
+            repo_name: "e".into(),
+            docs: vec![doc(
+                "docs/x.md",
+                "```\n[the TUI](tui.md)\n![a](img.png)\n```\nreal [link](tui.md) here\n",
+            )],
+            ..Default::default()
+        };
+        let mut out = RenderOutput::default();
+        docs_mirror(&ctx, &mut out);
+        let n = &out.notes[0];
+        assert!(
+            n.markdown.contains("[the TUI](tui.md)"),
+            "fenced link left verbatim: {}",
+            n.markdown
+        );
+        assert!(
+            n.markdown.contains("[[tui|link]]"),
+            "real link outside fence rewritten: {}",
+            n.markdown
+        );
+        assert!(
+            out.assets.is_empty(),
+            "image inside a fence is NOT queued as an asset"
+        );
+    }
+
+    #[test]
+    fn inline_code_link_is_not_rewritten() {
+        let ctx = RepoContext {
+            repo_name: "e".into(),
+            docs: vec![doc("docs/x.md", "use `[x](y.md)` but [real](y.md) yes\n")],
+            ..Default::default()
+        };
+        let mut out = RenderOutput::default();
+        docs_mirror(&ctx, &mut out);
+        let n = &out.notes[0];
+        assert!(
+            n.markdown.contains("`[x](y.md)`"),
+            "inline-code link verbatim: {}",
+            n.markdown
+        );
+        assert!(
+            n.markdown.contains("[[y|real]]"),
+            "real link rewritten: {}",
+            n.markdown
+        );
+    }
+
+    #[test]
+    fn anchored_md_link_becomes_wikilink_with_heading() {
+        let ctx = RepoContext {
+            repo_name: "e".into(),
+            docs: vec![doc("docs/x.md", "[sec](tui.md#usage)\n")],
+            ..Default::default()
+        };
+        let mut out = RenderOutput::default();
+        docs_mirror(&ctx, &mut out);
+        assert!(
+            out.notes[0].markdown.contains("[[tui#usage|sec]]"),
+            "got: {}",
+            out.notes[0].markdown
+        );
+    }
+
+    #[test]
+    fn pipe_in_link_text_is_sanitized() {
+        let ctx = RepoContext {
+            repo_name: "e".into(),
+            docs: vec![doc("docs/x.md", "[a|b](tui.md)\n")],
+            ..Default::default()
+        };
+        let mut out = RenderOutput::default();
+        docs_mirror(&ctx, &mut out);
+        assert!(
+            out.notes[0].markdown.contains("[[tui|a/b]]"),
+            "got: {}",
+            out.notes[0].markdown
+        );
     }
 }
