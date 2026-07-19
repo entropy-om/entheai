@@ -5,6 +5,7 @@ pub mod generators;
 pub mod render;
 pub mod resolve;
 pub mod scan;
+pub mod watcher;
 pub mod writer;
 
 pub use render::{
