@@ -15,6 +15,8 @@
 //! extra synthesis LLM call.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
 use entheai_config::Config;
 use entheai_providers::ChatMessage;
@@ -284,11 +286,39 @@ struct CoderRun {
     output: String,
 }
 
+/// Run one coder sub-agent to completion against `worktree_path`: resolve its
+/// model via the router, build the write-capable tool registry rooted at the
+/// worktree, and run it under a yolo policy. Never returns `Err` — a failure
+/// is captured as `"error: coder failed: {e}"` text so one bad coder never
+/// aborts its caller. Standalone entry point for `entheai-worker`; also used
+/// by [`run_coder`] (the in-process, `WorkerPool`-tracked dispatch path).
+pub async fn run_coder_once(config: &Config, role: &str, task: &str, worktree_path: &Path) -> String {
+    async {
+        let model_id = entheai_router::model_for_role(config, role)?;
+        let agent = entheai_router::build_agent(&model_id, config)?;
+        let registry = write_registry(worktree_path);
+        let policy = yolo();
+        let mut prompter = AutoAllow;
+        let out = agent
+            .run_task(
+                coder_messages(role, task),
+                &registry,
+                &policy,
+                &mut prompter,
+                None,
+            )
+            .await?;
+        Ok::<String, anyhow::Error>(out)
+    }
+    .await
+    .unwrap_or_else(|e| format!("error: coder failed: {e}"))
+}
+
 /// Run one coder sub-agent to completion inside its own worktree. Never returns
 /// Err — a failure is captured as the run's `output`, mirroring [`run_subagent`],
 /// so one bad coder doesn't sink the whole fan-out.
 async fn run_coder(
-    config: &Config,
+    config: Arc<Config>,
     wt: worktree::Worktree,
     st: SubTask,
     events: Option<tokio::sync::mpsc::UnboundedSender<FanoutEvent>>,
@@ -300,25 +330,7 @@ async fn run_coder(
             task: st.task.clone(),
         });
     }
-    let output = async {
-        let model_id = entheai_router::model_for_role(config, &st.role)?;
-        let agent = entheai_router::build_agent(&model_id, config)?;
-        let registry = write_registry(&wt.path);
-        let policy = yolo();
-        let mut prompter = AutoAllow;
-        let out = agent
-            .run_task(
-                coder_messages(&st.role, &st.task),
-                &registry,
-                &policy,
-                &mut prompter,
-                None,
-            )
-            .await?;
-        Ok::<String, anyhow::Error>(out)
-    }
-    .await
-    .unwrap_or_else(|e| format!("error: coder failed: {e}"));
+    let output = run_coder_once(&config, &st.role, &st.task, &wt.path).await;
     CoderRun {
         index: wt.index,
         role: st.role,
