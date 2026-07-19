@@ -9,6 +9,9 @@ rust-version.workspace = true
 # files yt-dlp extracts; defaults add mp3/flac/vorbis/wav for local files.
 rodio = { version = "0.20", features = ["symphonia-aac", "symphonia-isomp4"] }
 tokio = { workspace = true, features = ["sync"] }
+# Hard timeout + kill for the blocking yt-dlp child (download() runs on a
+# dedicated std thread, not in async context — see lib.rs).
+wait-timeout = "0.2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }

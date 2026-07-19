@@ -14,13 +14,14 @@
 
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command as Process;
+use std::process::{Command as Process, Stdio};
 use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 
 use tokio::sync::mpsc as tokio_mpsc;
+use wait_timeout::ChildExt;
 
 /// A downloaded, ready-to-play track.
 #[derive(Debug, Clone)]
@@ -266,8 +267,14 @@ fn player_thread(
     }
 }
 
+/// Hard ceiling on a single `yt-dlp` invocation. Without this, a hung/slow
+/// process blocks the downloader thread (and keeps a live child process)
+/// forever — repeated `/radio add`s would pile both up with no way to cancel.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Run `yt-dlp`, extracting audio as m4a into `cache_dir`. Returns the track
-/// title + final file path. Blocking; runs on a downloader thread.
+/// title + final file path. Blocking; runs on a downloader thread. Bounded by
+/// [`DOWNLOAD_TIMEOUT`]: past that, the child is killed and reaped.
 fn download(url: &str, cache_dir: &Path) -> Result<Track, String> {
     // Security: `url` is handed to yt-dlp's argv parser. Reject anything that
     // isn't a plain http(s) URL — a `-`-prefixed value is parsed as a FLAG
@@ -277,7 +284,7 @@ fn download(url: &str, cache_dir: &Path) -> Result<Track, String> {
         return Err(format!("refusing non-http(s) URL: {url}"));
     }
     std::fs::create_dir_all(cache_dir).map_err(|e| format!("cache dir: {e}"))?;
-    let out = Process::new("yt-dlp")
+    let mut child = Process::new("yt-dlp")
         .args([
             "--no-playlist",
             "-f",
@@ -298,16 +305,46 @@ fn download(url: &str, cache_dir: &Path) -> Result<Track, String> {
         ])
         .arg("--")
         .arg(url)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("yt-dlp not runnable ({e}); install with `brew install yt-dlp`"))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
+
+    let status = match child
+        .wait_timeout(DOWNLOAD_TIMEOUT)
+        .map_err(|e| format!("yt-dlp wait failed: {e}"))?
+    {
+        Some(status) => status,
+        None => {
+            // Timed out: the process has already run long past a sane single
+            // download, so kill and reap it rather than leaving it running.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "yt-dlp timed out after {}s",
+                DOWNLOAD_TIMEOUT.as_secs()
+            ));
+        }
+    };
+
+    // The process has exited (wait_timeout returned Some), so its pipes are
+    // closed and draining them to completion here cannot deadlock.
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut out) = child.stdout.take() {
+        let _ = out.read_to_string(&mut stdout);
+    }
+    if let Some(mut err) = child.stderr.take() {
+        let _ = err.read_to_string(&mut stderr);
+    }
+
+    if !status.success() {
         return Err(format!(
             "yt-dlp failed: {}",
-            err.lines().last().unwrap_or("unknown error")
+            stderr.lines().last().unwrap_or("unknown error")
         ));
     }
-    parse_ytdlp_output(&String::from_utf8_lossy(&out.stdout))
+    parse_ytdlp_output(&stdout)
 }
 
 /// stdout carries one `title` line (pre-download) and one `after_move:filepath`
