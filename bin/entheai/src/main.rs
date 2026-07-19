@@ -65,7 +65,9 @@ async fn main() -> anyhow::Result<()> {
     match cli.prompt {
         Some(prompt) => {
             if cli.fanout {
-                let answer = entheai_orchestrator::run_fanout(&cfg, &root, &prompt, None).await?;
+                let pool = entheai_orchestrator::WorkerPool::new(cfg.router.max_parallel.max(1));
+                let answer =
+                    entheai_orchestrator::run_fanout(&cfg, &root, &prompt, None, pool).await?;
                 println!("{answer}");
             } else {
                 let mut prompter = entheai_permission::StdinPrompter;
