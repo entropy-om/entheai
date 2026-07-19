@@ -348,7 +348,7 @@ mod tests {
         let arch = out
             .notes
             .iter()
-            .find(|n| n.rel_path == PathBuf::from("docs/architecture.md"))
+            .find(|n| n.rel_path == *"docs/architecture.md")
             .expect("architecture note mirrored");
         assert!(arch.markdown.contains("generated_by: entheai"));
         assert!(
@@ -371,8 +371,8 @@ mod tests {
         assert!(
             out.assets
                 .iter()
-                .any(|a| a.repo_rel == PathBuf::from("docs/images/brain.png")
-                    && a.vault_rel == PathBuf::from("_assets/docs/images/brain.png")),
+                .any(|a| a.repo_rel == *"docs/images/brain.png"
+                    && a.vault_rel == *"_assets/docs/images/brain.png"),
             "referenced image queued for copy, assets: {:?}",
             out.assets
         );
@@ -394,10 +394,7 @@ mod tests {
         };
         let mut out = RenderOutput::default();
         docs_mirror(&ctx, &mut out);
-        assert!(out
-            .notes
-            .iter()
-            .any(|n| n.rel_path == PathBuf::from("README.md")));
+        assert!(out.notes.iter().any(|n| n.rel_path == *"README.md"));
     }
 
     #[test]
@@ -516,7 +513,7 @@ mod tests {
         let note = out
             .notes
             .iter()
-            .find(|n| n.rel_path == PathBuf::from("Architecture.md"))
+            .find(|n| n.rel_path == *"Architecture.md")
             .expect("architecture note present");
         assert!(note.markdown.contains("entheai-obsidian"));
         assert!(note.markdown.contains("wiki-sync layer"));
@@ -549,9 +546,11 @@ mod tests {
         };
         let mut out = RenderOutput::default();
         sessions(&ctx, &mut out);
-        assert!(out.notes.iter().any(|n| n.rel_path
-            == PathBuf::from("Sessions/today-2026-07-19.md")
-            && n.markdown.contains("did things")));
+        assert!(out
+            .notes
+            .iter()
+            .any(|n| n.rel_path == *"Sessions/today-2026-07-19.md"
+                && n.markdown.contains("did things")));
     }
 
     #[test]
@@ -569,13 +568,10 @@ mod tests {
         let specs = out
             .notes
             .iter()
-            .find(|n| n.rel_path == PathBuf::from("Specs-and-Plans.md"))
+            .find(|n| n.rel_path == *"Specs-and-Plans.md")
             .unwrap();
         assert!(specs.markdown.contains("[[2026-07-19-x-design]]"));
-        assert!(out
-            .notes
-            .iter()
-            .any(|n| n.rel_path == PathBuf::from("Research.md")));
+        assert!(out.notes.iter().any(|n| n.rel_path == *"Research.md"));
     }
 
     #[test]
@@ -591,7 +587,7 @@ mod tests {
         let home = out
             .notes
             .iter()
-            .find(|n| n.rel_path == PathBuf::from("Home.md"))
+            .find(|n| n.rel_path == *"Home.md")
             .expect("Home present");
         assert!(home
             .markdown

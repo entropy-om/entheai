@@ -83,6 +83,13 @@ async fn main() -> anyhow::Result<()> {
     let shared_memory = build_memory(&cfg)?;
     let session_id = uuid::Uuid::new_v4().to_string();
 
+    // Obsidian wiki-sync: session-scoped, fail-safe, stops on drop at end of main.
+    let _obsidian = entheai_obsidian::start(
+        &obsidian_options(&cfg.obsidian),
+        &root,
+        std::path::Path::new(&std::env::var("HOME").unwrap_or_default()),
+    );
+
     let companion = setup_companion(&cfg, &root, cli.no_companion)?;
     if let Some(ref c) = companion {
         let _ = c.state_tx.send(StateChange::working());
@@ -189,6 +196,21 @@ fn memory_runtime_config(m: &entheai_config::MemoryConfig) -> entheai_memory::Me
         } else {
             m.evidence_tools.clone()
         },
+    }
+}
+
+/// Map the config's `[obsidian]` block to the runtime options.
+fn obsidian_options(o: &entheai_config::ObsidianConfig) -> entheai_obsidian::ObsidianOptions {
+    entheai_obsidian::ObsidianOptions {
+        enabled: o.enabled,
+        vault_path: o.vault_path.clone(),
+        subtree: o.subtree.clone(),
+        watch: o.watch.clone(),
+        debounce_ms: o.debounce_ms,
+        mcp_nudge: o.mcp_nudge,
+        mcp_port: o.mcp_port,
+        include_architecture: o.include_architecture,
+        include_sessions: o.include_sessions,
     }
 }
 
