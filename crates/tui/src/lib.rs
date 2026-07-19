@@ -205,6 +205,10 @@ struct App {
     /// (decompose → parallel coders → integrate) instead of the single-agent
     /// `run_task` loop. Set once at construction; shown in the status bar.
     fanout: bool,
+    /// The `WorkerPool` backing the in-flight fan-out run, if any — set right
+    /// before spawning `run_fanout`, cleared when that run finishes (same
+    /// lifecycle as `fanout_rx`). `/workers list/stop/debug` read/mutate this.
+    worker_pool: Option<Arc<entheai_orchestrator::WorkerPool>>,
     /// Optional system prompt (e.g. skills advertisement) prepended to the
     /// conversation history sent on each single-agent run.
     system_prompt: Option<String>,
@@ -331,6 +335,7 @@ async fn event_loop<P: Provider + 'static>(
         current_action: "thinking".to_string(),
         now_playing: None,
         fanout,
+        worker_pool: None,
         system_prompt,
         streaming_idx: None,
         out_tokens: 0,
@@ -391,6 +396,9 @@ async fn event_loop<P: Provider + 'static>(
                         Action::Submit(text) if is_radio_command(&text) => {
                             handle_radio_command(&mut app, &radio, &text);
                         }
+                        Action::Submit(text) if is_workers_command(&text) => {
+                            handle_workers_command(&mut app, &text);
+                        }
                         Action::Submit(text) => {
                             app.messages.push(Msg { role: Role::User, text: text.clone() });
                             app.status = Status::Working;
@@ -405,6 +413,10 @@ async fn event_loop<P: Provider + 'static>(
                             app.plan.clear();
 
                             if fanout {
+                                let pool = entheai_orchestrator::WorkerPool::new(
+                                    config.router.max_parallel.max(1),
+                                );
+                                app.worker_pool = Some(Arc::clone(&pool));
                                 let config = Arc::clone(&config);
                                 let root = root.clone();
                                 let result_tx = result_tx.clone();
@@ -413,7 +425,7 @@ async fn event_loop<P: Provider + 'static>(
                                 fanout_rx = Some(frx);
                                 tokio::spawn(async move {
                                     let res =
-                                        entheai_orchestrator::run_fanout(&config, &root, &text, Some(ftx))
+                                        entheai_orchestrator::run_fanout(&config, &root, &text, Some(ftx), pool)
                                             .await;
                                     let _ = result_tx.send(res.map_err(|e| e.to_string())).await;
                                 });
@@ -471,6 +483,7 @@ async fn event_loop<P: Provider + 'static>(
                 app.run_started = None;
                 events_rx = None;
                 fanout_rx = None;
+                app.worker_pool = None;
                 app.streaming_idx = None;
                 app.plan.clear();
             }
@@ -596,7 +609,10 @@ async fn event_loop<P: Provider + 'static>(
                             ),
                         });
                     }
-                    None => fanout_rx = None, // sender dropped -> run finished
+                    None => {
+                        fanout_rx = None; // sender dropped -> run finished
+                        app.worker_pool = None;
+                    }
                 }
             }
             Some(rev) = radio.next_event() => {
@@ -752,6 +768,93 @@ fn handle_radio_command(app: &mut App, radio: &Radio, text: &str) {
         }
         _ => "usage: /radio <url> | add <url> | pause | next | stop  (Ctrl-P pause, Ctrl-N next)"
             .to_string(),
+    };
+    app.messages.push(Msg {
+        role: Role::Tool,
+        text: feedback,
+    });
+    app.follow = true;
+}
+
+/// True when the submitted input is a local `/workers` command (never sent to
+/// the agent).
+fn is_workers_command(text: &str) -> bool {
+    let t = text.trim_start();
+    t == "/workers" || t.starts_with("/workers ")
+}
+
+/// Human-readable rendering of a worker's status for `/workers list`/`debug`.
+fn format_status(status: &entheai_orchestrator::WorkerStatus) -> String {
+    use entheai_orchestrator::WorkerStatus;
+    match status {
+        WorkerStatus::Queued => "queued".to_string(),
+        WorkerStatus::Running { started_at } => {
+            format!("running {}s", started_at.elapsed().as_secs())
+        }
+        WorkerStatus::Done => "done".to_string(),
+        WorkerStatus::TimedOut => "timed out".to_string(),
+        WorkerStatus::Killed => "killed".to_string(),
+    }
+}
+
+/// Parse and dispatch a `/workers [list, stop <id>, debug <id>]` command
+/// against the in-flight fan-out's `WorkerPool` (if any), echoing feedback
+/// into the history.
+///
+/// Forms: `/workers` / `/workers list` · `/workers stop <id>` · `/workers debug <id>`.
+fn handle_workers_command(app: &mut App, text: &str) {
+    app.messages.push(Msg {
+        role: Role::User,
+        text: text.to_string(),
+    });
+    let mut parts = text.split_whitespace().skip(1); // skip "/workers"
+    let feedback = match &app.worker_pool {
+        None => "no fan-out running".to_string(),
+        Some(pool) => match (parts.next(), parts.next()) {
+            (None, None) | (Some("list"), None) => {
+                let mut summaries = pool.list();
+                if summaries.is_empty() {
+                    "no workers".to_string()
+                } else {
+                    summaries.sort_by_key(|s| s.id);
+                    summaries
+                        .iter()
+                        .map(|s| {
+                            format!(
+                                "[{}] {} \"{}\" — {}",
+                                s.id,
+                                s.role,
+                                s.task,
+                                format_status(&s.status)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                }
+            }
+            (Some("stop"), Some(id_str)) => {
+                match id_str.parse::<entheai_orchestrator::WorkerId>() {
+                    Ok(id) if pool.stop(id) => format!("stopped worker {id}"),
+                    Ok(id) => format!("no such worker {id}"),
+                    Err(_) => format!("invalid worker id: {id_str}"),
+                }
+            }
+            (Some("debug"), Some(id_str)) => match id_str.parse::<entheai_orchestrator::WorkerId>()
+            {
+                Ok(id) => match pool.status(id) {
+                    None => format!("no such worker {id}"),
+                    Some(status) => match pool.output_snapshot(id) {
+                        Some(out) => format!("[{id}] {}\n{out}", format_status(&status)),
+                        None => format!(
+                            "[{id}] {} — still running, no live output tail yet",
+                            format_status(&status)
+                        ),
+                    },
+                },
+                Err(_) => format!("invalid worker id: {id_str}"),
+            },
+            _ => "usage: /workers [list | stop <id> | debug <id>]".to_string(),
+        },
     };
     app.messages.push(Msg {
         role: Role::Tool,
@@ -1184,6 +1287,59 @@ mod tests {
     }
 
     #[test]
+    fn workers_command_detection() {
+        assert!(is_workers_command("/workers"));
+        assert!(is_workers_command("/workers list"));
+        assert!(is_workers_command("  /workers stop 0"));
+        assert!(!is_workers_command("/workersomething"));
+        assert!(!is_workers_command("list workers"));
+    }
+
+    #[test]
+    fn format_status_describes_each_variant() {
+        use entheai_orchestrator::WorkerStatus;
+        assert_eq!(format_status(&WorkerStatus::Queued), "queued");
+        assert!(format_status(&WorkerStatus::Running {
+            started_at: std::time::Instant::now(),
+        })
+        .starts_with("running "));
+        assert_eq!(format_status(&WorkerStatus::Done), "done");
+        assert_eq!(format_status(&WorkerStatus::TimedOut), "timed out");
+        assert_eq!(format_status(&WorkerStatus::Killed), "killed");
+    }
+
+    #[test]
+    fn workers_command_reports_no_fanout_running_when_pool_is_none() {
+        let mut app = App {
+            messages: Vec::new(),
+            input: String::new(),
+            status: Status::Idle,
+            scroll: 0,
+            follow: true,
+            model_label: "m".into(),
+            pending_permission: None,
+            run_started: None,
+            spinner_frame: 0,
+            current_action: String::new(),
+            now_playing: None,
+            fanout: true,
+            worker_pool: None,
+            system_prompt: None,
+            streaming_idx: None,
+            out_tokens: 0,
+            verb_idx: 0,
+            plan: Vec::new(),
+        };
+        handle_workers_command(&mut app, "/workers list");
+        assert!(app
+            .messages
+            .last()
+            .expect("feedback message")
+            .text
+            .contains("no fan-out running"));
+    }
+
+    #[test]
     fn radio_events_update_now_playing() {
         let mut app = App {
             messages: Vec::new(),
@@ -1198,6 +1354,7 @@ mod tests {
             current_action: String::new(),
             now_playing: None,
             fanout: false,
+            worker_pool: None,
             system_prompt: None,
             streaming_idx: None,
             out_tokens: 0,
