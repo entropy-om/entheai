@@ -1,6 +1,6 @@
 # entheai — `entheai-mapper` crate: structuring large prompts/tasks/files for fan-out
 
-**Design spec** · 2026-07-19 · status: approved — ready for implementation planning
+**Design spec** · 2026-07-19 · status: shipped — revised post-review (see §9)
 
 ## 1. Summary
 
@@ -42,6 +42,10 @@ impl Mapper {
 pub struct MappedInput {
     pub sections: Vec<PromptSection>,
     pub file_chunks: Vec<FileChunk>,
+    /// True if more file chunks were discovered than the crate's fixed safety
+    /// cap allows; `file_chunks` was truncated rather than risk blowing the
+    /// decompose call's context window. Added post-review — see §9.
+    pub truncated: bool,
 }
 
 impl MappedInput {
@@ -76,7 +80,7 @@ Markdown-aware sectioning: `#`/`##` headings and numbered/bulleted lists are
 grouped into named `PromptSection`s. If no structure is detected, the whole
 `task` becomes a single section with `heading: None`.
 
-### 4.2 File discovery (three layers, merged/deduped by resolved path)
+### 4.2 File discovery (three layers, merged/deduped by canonical path, root-scoped)
 
 1. **Explicit `files` param** — caller-supplied (programmatic callers; not
    used by the TUI in this slice).
@@ -89,12 +93,36 @@ grouped into named `PromptSection`s. If no structure is detected, the whole
    already captured by (1)/(2) (e.g. `crates/foo/src/bar.rs` mentioned without
    `@{}`). Best-effort; unresolvable tokens are ignored.
 
+Every candidate from all three layers is resolved and rejected if it escapes
+`root` — see §4.2.1 (added post-review, §9). Deduping happens by canonical
+path, not by the literal joined string, so equivalent spellings of the same
+file (`foo.rs` vs `./foo.rs`) collapse to one entry.
+
+#### 4.2.1 Root containment (security)
+
+`resolve_and_dedupe` canonicalizes both `root` and every resolved candidate,
+then rejects any candidate whose canonical path doesn't start with the
+canonical root — the same containment discipline `crates/tools/src/fs.rs`'s
+`resolve_in_root` already enforces for every other file-access path in this
+codebase (absolute-path escapes and `../` traversal are both rejected;
+symlinks are defeated because containment is checked against the
+*canonicalized* target, not the lexical one). Without this, an `@{path}` or
+bare-path reference could point anywhere the process can read (e.g.
+`@{/Users/me/.ssh/id_rsa}` or `@{../../secrets.env}`), and — because the
+mapper's whole purpose is to embed file content into a prompt sent to a
+remote LLM provider — that content would be exfiltrated off-machine. This
+was caught in code review after initial ship; see §9.
+
 ### 4.3 File chunking
 
 Each discovered file is read and split into size-bounded line chunks
 (~200 lines per chunk, snapped so no chunk cuts a line in half). Unreadable
 or binary files are skipped silently (debug-logged) — a bad file reference
-never aborts the map.
+never aborts the map. A fixed ceiling (`MAX_FILE_CHUNKS`, currently 50; see
+§9) caps the total chunks a single `map` call will include, so a large
+reference set can't blow the decompose call's context window;
+`MappedInput::truncated` is set and `render()` appends a note when this
+triggers.
 
 ### 4.4 Rendering
 
@@ -130,8 +158,19 @@ autocomplete/highlighting is in scope for this slice.
 
 `run_fanout` and `run_fanout_readonly` call `Mapper::map(root, task, &[])`
 before building `decompose_messages`, passing `mapped.render()` in place of
-the raw `task` string. The original `task` is still used verbatim for the
-synthesis step and the final report (only the decompose input changes).
+the raw `task` string.
+
+> **Revised post-review (§9):** the original version of this section said
+> "the original `task` is still used verbatim for the synthesis step and the
+> final report." That's still true for `run_fanout`'s human-facing final
+> report (`format_v2_report`, plain text formatting, no LLM call) — but it
+> was **wrong** for `run_fanout_readonly`'s synthesis step and both
+> functions' empty-decomposition fallbacks, which also go through
+> `orchestrate_once`. `orchestrate_once` never registers any tools (its
+> `ToolRegistry` is always empty), so those calls have no way to read a
+> referenced file themselves; feeding them the raw, unresolved `@{path}`
+> marker made file references a silent dead end on those paths. All three
+> now receive `mapped.render()` as well — see §9.
 
 ## 7. Testing
 
@@ -144,11 +183,39 @@ synthesis step and the final report (only the decompose input changes).
   mapper output, not the raw task string.
 - TUI passthrough test: an input string containing `@{...}` survives
   `Action::Submit` unmodified into the text passed to `run_fanout`.
+- *(Added post-review, §9)* Root-containment tests: relative `../` traversal
+  and absolute-path escapes are both rejected, even when the target file
+  exists; an in-root file resolves normally alongside a rejected escape in
+  the same call. Dedup-of-equivalent-forms test (`foo.rs` vs `./foo.rs`).
+  `MAX_FILE_CHUNKS` truncation test (cap hit + under-cap no-op). Orchestrator
+  contract test that synthesis and both fallbacks receive mapped content.
 
 ## 8. Out of scope (this slice)
 
 - TUI autocomplete/highlighting for `@{file}` (§5).
 - Structure-aware (AST/tree-sitter) file chunking — line-bounded only.
-- Config knobs for chunk size / max chunks (fixed constants for now; can be
-  lifted into `entheai-config` in a later slice per the config-refactor
-  design if needed).
+- Config knobs for chunk size / max chunks — `MAX_FILE_CHUNKS` (§9) is a
+  fixed safety ceiling, not a tunable one; can still be lifted into
+  `entheai-config` in a later slice per the config-refactor design if needed.
+
+## 9. Post-review revision (2026-07-19, same day)
+
+A workflow-backed code review (high effort) run against the shipped feature
+found one security bug and several correctness/reliability gaps, all fixed
+same-day in commit `243523f` on top of the original implementation
+(`12aefe8`..`c2e7865`):
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| 1 | **Security** | `resolve_and_dedupe` had no root-containment check — absolute paths and `../` traversal were resolved and read verbatim, so a task could exfiltrate any file the process can read to the remote LLM provider. | Canonicalize `root` and every candidate; reject anything whose canonical path doesn't start with the canonical root (mirrors `crates/tools/src/fs.rs`'s `resolve_in_root`). See §4.2.1. |
+| 2 | Correctness | `run_fanout_readonly`'s synthesis step used raw `task`, not `mapped.render()`, even on the successful path — `orchestrate_once` has no tools, so an unresolved `@{file}` marker there was unreadable. | Synthesis now uses `mapped.render()`. See §6. |
+| 3 | Correctness | Both functions' empty-decomposition fallback used raw `task` instead of `mapped.render()`, for the same no-tools reason. | Fallbacks now use `mapped.render()`. See §6. |
+| 4 | Correctness/reliability | No cap on total rendered file content — a large reference set could overflow the decompose model's context window and hard-fail a task that would otherwise succeed. | Added `MAX_FILE_CHUNKS` (50) as a fixed safety ceiling; `MappedInput.truncated` + a `render()` note when hit. See §3, §4.3. |
+| 5 | Correctness (plausible) | Dedup keyed on the literal joined path string, not canonical identity — `foo.rs` and `./foo.rs` both passed the "unseen" check and the file was embedded twice. | Fixed by the same canonicalization as #1 — dedup now keys on canonical path. See §4.2. |
+| 6 | Efficiency | Per-candidate existence checks and per-file reads ran sequentially in a loop — an "I/O-in-loop / N+1" pattern already flagged as an open performance risk elsewhere in this codebase. | Both now run concurrently via `tokio::spawn`, with results collected back in deterministic (submission, not completion) order — so `render()`'s output ordering stays reproducible run-to-run. |
+
+10 new/updated tests across `crates/mapper` and `crates/orchestrator` cover
+all six items (root-containment, dedup, truncation, and the
+synthesis/fallback contract). Full verification: `cargo test --workspace`,
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`, and
+`cargo fmt --all -- --check` all clean at commit `243523f`.

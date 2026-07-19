@@ -110,6 +110,7 @@ A Rust workspace of small, focused crates.
 | `tools` · `permission` | Root-scoped read / write / **edit** / shell / search + the permission gate. |
 | `router` | Config-driven role→model resolution + a reusable agent factory. |
 | `orchestrator` | Fan-out: decompose → parallel coders in git worktrees → verify → integrate. |
+| `mapper` | Structures a task's text + `@{path}`/bare-path file references into sectioned, chunked input before fan-out decomposition (root-scoped, no filesystem escape). |
 | `mcp` | Model Context Protocol client + supervisor. |
 | `skills` | `SKILL.md` discovery + the `skill` tool. |
 | `memory` | 5-namespace SQLite + vector store, wired into the loop. |
