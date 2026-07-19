@@ -6,10 +6,19 @@ use crate::{Tool, ToolError};
 
 pub struct Search {
     root: PathBuf,
+    max_results: usize,
 }
 impl Search {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            max_results: 200,
+        }
+    }
+    /// Override the maximum number of matching lines returned.
+    pub fn with_max_results(mut self, n: usize) -> Self {
+        self.max_results = n;
+        self
     }
 }
 
@@ -46,6 +55,7 @@ impl Tool for Search {
             .to_string();
         let query_for_search = query.clone();
         let root = self.root.clone();
+        let max_results = self.max_results;
         let (hits, truncated) = tokio::task::spawn_blocking(move || {
             let mut hits = Vec::new();
             for entry in WalkDir::new(&root)
@@ -61,7 +71,7 @@ impl Tool for Search {
                         if line.contains(&query_for_search) {
                             let rel = entry.path().strip_prefix(&root).unwrap_or(entry.path());
                             hits.push(format!("{}:{}: {}", rel.display(), i + 1, line.trim()));
-                            if hits.len() >= 200 {
+                            if hits.len() >= max_results {
                                 return (hits, true);
                             }
                         }
@@ -75,11 +85,42 @@ impl Tool for Search {
             Ok(format!("no matches for {query:?}"))
         } else if truncated {
             Ok(format!(
-                "{}\n...[truncated at 200 matches]",
+                "{}\n...[truncated at {max_results} matches]",
                 hits.join("\n")
             ))
         } else {
             Ok(hits.join("\n"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn search_respects_max_results() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..5 {
+            std::fs::write(dir.path().join(format!("f{i}.txt")), "needle here\n").unwrap();
+        }
+        let uncapped = Search::new(dir.path().to_path_buf());
+        let uncapped_out = uncapped
+            .call(serde_json::json!({"query": "needle"}))
+            .await
+            .unwrap();
+        assert_eq!(uncapped_out.lines().count(), 5);
+
+        let capped = Search::new(dir.path().to_path_buf()).with_max_results(1);
+        let capped_out = capped
+            .call(serde_json::json!({"query": "needle"}))
+            .await
+            .unwrap();
+        // 1 matching line + 1 truncation-notice line.
+        assert_eq!(capped_out.lines().count(), 2);
+        assert!(
+            capped_out.contains("truncated at 1 matches"),
+            "expected truncation notice: {capped_out}"
+        );
     }
 }

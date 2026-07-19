@@ -7,10 +7,22 @@ use crate::{Tool, ToolError};
 
 pub struct RunShell {
     cwd: PathBuf,
+    timeout_secs: u64,
+    output_cap: usize,
 }
 impl RunShell {
     pub fn new(cwd: impl Into<PathBuf>) -> Self {
-        Self { cwd: cwd.into() }
+        Self {
+            cwd: cwd.into(),
+            timeout_secs: 120,
+            output_cap: 100_000,
+        }
+    }
+    /// Override the command timeout (seconds) and combined-output byte cap.
+    pub fn with_limits(mut self, timeout_secs: u64, output_cap: usize) -> Self {
+        self.timeout_secs = timeout_secs.max(1);
+        self.output_cap = output_cap;
+        self
     }
 }
 #[async_trait]
@@ -45,11 +57,11 @@ impl Tool for RunShell {
             .stderr(Stdio::piped())
             .kill_on_drop(true) // on timeout the future is dropped — reap the child, don't orphan it
             .output();
-        let output = match tokio::time::timeout(Duration::from_secs(120), fut).await {
+        let output = match tokio::time::timeout(Duration::from_secs(self.timeout_secs), fut).await {
             Ok(res) => res?,
             Err(_) => {
                 return Err(ToolError::Timeout {
-                    secs: 120,
+                    secs: self.timeout_secs,
                     command: command.to_string(),
                 })
             }
@@ -61,15 +73,31 @@ impl Tool for RunShell {
             out.push_str(&String::from_utf8_lossy(&output.stderr));
         }
         out.push_str(&format!("\n[exit: {}]", output.status.code().unwrap_or(-1)));
-        const MAX: usize = 100_000;
-        if out.len() > MAX {
-            let mut end = MAX;
+        let max = self.output_cap;
+        if out.len() > max {
+            let mut end = max;
             while !out.is_char_boundary(end) {
                 end -= 1;
             }
             out.truncate(end);
-            out.push_str("\n...[output truncated at 100000 bytes]");
+            out.push_str(&format!("\n...[output truncated at {max} bytes]"));
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn shell_honors_configured_timeout() {
+        let dir = std::env::temp_dir();
+        let sh = RunShell::new(&dir).with_limits(1, 100_000); // 1s timeout
+        let err = sh
+            .call(serde_json::json!({"command": "sleep 3"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::Timeout { secs: 1, .. }));
     }
 }

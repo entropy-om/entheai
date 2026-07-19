@@ -212,12 +212,14 @@ async fn build_tools(
     registry.register(Box::new(entheai_tools::fs::EditFile::new(
         root.to_path_buf(),
     )));
-    registry.register(Box::new(entheai_tools::shell::RunShell::new(
-        root.to_path_buf(),
-    )));
-    registry.register(Box::new(entheai_tools::search::Search::new(
-        root.to_path_buf(),
-    )));
+    registry.register(Box::new(
+        entheai_tools::shell::RunShell::new(root.to_path_buf())
+            .with_limits(cfg.tools.shell_timeout_secs, cfg.tools.shell_output_cap),
+    ));
+    registry.register(Box::new(
+        entheai_tools::search::Search::new(root.to_path_buf())
+            .with_max_results(cfg.tools.search_max_results),
+    ));
     registry.register(Box::new(entheai_tools::todo::TodoTool));
 
     // Skills: discover, advertise via a system prompt, expose the `skill` tool.
