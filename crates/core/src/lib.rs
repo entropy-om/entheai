@@ -61,6 +61,44 @@ impl<P: Provider> Agent<P> {
         Ok(full)
     }
 
+    /// Emit `Thinking`, stream one model completion (forwarding text deltas as
+    /// `AgentEvent::Token` as they arrive), and return the assembled response.
+    /// Shared by `run_task` and `run_task_with_memory` to keep the streaming
+    /// select-loop in exactly one place.
+    async fn stream_turn(
+        &self,
+        messages: &[ChatMessage],
+        schemas: &[serde_json::Value],
+        events: &Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
+    ) -> Result<entheai_providers::AssistantResponse, CoreError> {
+        if let Some(tx) = events {
+            let _ = tx.send(AgentEvent::Thinking);
+        }
+        let (ttx, mut trx) = futures::channel::mpsc::unbounded::<String>();
+        let completion = self.provider.stream_complete(
+            &self.model,
+            messages.to_vec(),
+            schemas.to_vec(),
+            Some(ttx),
+        );
+        tokio::pin!(completion);
+        loop {
+            tokio::select! {
+                biased;
+                Some(tok) = trx.next() => {
+                    if let Some(tx) = events { let _ = tx.send(AgentEvent::Token(tok)); }
+                }
+                r = &mut completion => {
+                    // drain tokens buffered right before the future resolved
+                    while let Ok(tok) = trx.try_recv() {
+                        if let Some(tx) = events { let _ = tx.send(AgentEvent::Token(tok)); }
+                    }
+                    break Ok(r?);
+                }
+            }
+        }
+    }
+
     /// Agentic loop: repeatedly `complete()` with the tool schemas; execute any
     /// tool calls (gated by `policy`/`prompter`) and feed results back until the
     /// model answers with no tool calls. Returns the final text answer.
@@ -77,32 +115,7 @@ impl<P: Provider> Agent<P> {
         const MAX_TURNS: usize = 25;
         let schemas = registry.schemas();
         for _turn in 0..MAX_TURNS {
-            if let Some(tx) = &events {
-                let _ = tx.send(AgentEvent::Thinking);
-            }
-            let (ttx, mut trx) = futures::channel::mpsc::unbounded::<String>();
-            let completion = self.provider.stream_complete(
-                &self.model,
-                messages.clone(),
-                schemas.clone(),
-                Some(ttx),
-            );
-            tokio::pin!(completion);
-            let resp = loop {
-                tokio::select! {
-                    biased;
-                    Some(tok) = trx.next() => {
-                        if let Some(tx) = &events { let _ = tx.send(AgentEvent::Token(tok)); }
-                    }
-                    r = &mut completion => {
-                        // drain any tokens buffered right before the future resolved
-                        while let Ok(tok) = trx.try_recv() {
-                            if let Some(tx) = &events { let _ = tx.send(AgentEvent::Token(tok)); }
-                        }
-                        break r?;
-                    }
-                }
-            };
+            let resp = self.stream_turn(&messages, &schemas, &events).await?;
             if resp.tool_calls.is_empty() {
                 return Ok(resp.content);
             }
@@ -167,31 +180,7 @@ impl<P: Provider> Agent<P> {
         let mut tool_evidence: Vec<entheai_memory::ToolEvidence> = Vec::new();
 
         for _turn in 0..MAX_TURNS {
-            if let Some(tx) = &events {
-                let _ = tx.send(AgentEvent::Thinking);
-            }
-            let (ttx, mut trx) = futures::channel::mpsc::unbounded::<String>();
-            let completion = self.provider.stream_complete(
-                &self.model,
-                messages.clone(),
-                schemas.clone(),
-                Some(ttx),
-            );
-            tokio::pin!(completion);
-            let resp = loop {
-                tokio::select! {
-                    biased;
-                    Some(tok) = trx.next() => {
-                        if let Some(tx) = &events { let _ = tx.send(AgentEvent::Token(tok)); }
-                    }
-                    r = &mut completion => {
-                        while let Ok(tok) = trx.try_recv() {
-                            if let Some(tx) = &events { let _ = tx.send(AgentEvent::Token(tok)); }
-                        }
-                        break r?;
-                    }
-                }
-            };
+            let resp = self.stream_turn(&messages, &schemas, &events).await?;
             if resp.tool_calls.is_empty() {
                 // Post-task: record final answer.
                 if let Some(mem) = memory {
