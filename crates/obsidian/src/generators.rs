@@ -226,14 +226,103 @@ pub fn architecture(ctx: &RepoContext, out: &mut RenderOutput) {
         markdown: md,
     });
 }
-pub fn sessions(_ctx: &RepoContext, _out: &mut RenderOutput) {}
-pub fn section_indexes(_ctx: &RepoContext, _out: &mut RenderOutput) {}
-pub fn home_moc(_ctx: &RepoContext, _out: &mut RenderOutput) {}
+pub fn sessions(ctx: &RepoContext, out: &mut RenderOutput) {
+    for s in &ctx.sessions {
+        let name = s
+            .repo_rel
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "session.md".into());
+        let source = s.repo_rel.to_string_lossy().to_string();
+        out.notes.push(VaultNote {
+            rel_path: PathBuf::from("Sessions").join(name),
+            markdown: format!("{}{}", front_matter(&source), s.content),
+        });
+    }
+}
+
+/// Render one index note listing `paths` as wikilinks by stem. Skips when empty.
+fn index_note(title: &str, rel_path: &str, paths: &[PathBuf], out: &mut RenderOutput) {
+    if paths.is_empty() {
+        return;
+    }
+    let mut md = front_matter("");
+    md.push_str(&format!("# {title}\n\n"));
+    for p in paths {
+        if let Some(stem) = p.file_stem() {
+            md.push_str(&format!("- [[{}]]\n", stem.to_string_lossy()));
+        }
+    }
+    out.notes.push(VaultNote {
+        rel_path: PathBuf::from(rel_path),
+        markdown: md,
+    });
+}
+
+pub fn section_indexes(ctx: &RepoContext, out: &mut RenderOutput) {
+    // Specs + plans share one index.
+    let mut specs_plans = ctx.specs.clone();
+    specs_plans.extend(ctx.plans.iter().cloned());
+    index_note("Specs & Plans", "Specs-and-Plans.md", &specs_plans, out);
+    index_note("Research", "Research.md", &ctx.research, out);
+}
+
+pub fn home_moc(ctx: &RepoContext, out: &mut RenderOutput) {
+    // Home is generated last and inspects what other generators already produced.
+    if out.notes.is_empty() {
+        return; // lazy: nothing to link
+    }
+    let mut md = front_matter("");
+    md.push_str(&format!("# entheai — {}\n\n", ctx.repo_name));
+    md.push_str("Generated project wiki. Sections:\n\n");
+
+    let has = |p: &str| out.notes.iter().any(|n| n.rel_path == Path::new(p));
+
+    if !ctx.docs.is_empty() || !ctx.top_level.is_empty() {
+        md.push_str("## Docs\n\n");
+        for d in ctx.docs.iter().chain(ctx.top_level.iter()) {
+            if let Some(stem) = d.repo_rel.file_stem() {
+                md.push_str(&format!("- [[{}]]\n", stem.to_string_lossy()));
+            }
+        }
+        md.push('\n');
+    }
+    if has("Architecture.md") {
+        md.push_str("## [[Architecture]]\n\n");
+    }
+    if out.notes.iter().any(|n| n.rel_path.starts_with("Sessions")) {
+        md.push_str("## Sessions\n\n");
+        for n in out
+            .notes
+            .iter()
+            .filter(|n| n.rel_path.starts_with("Sessions"))
+        {
+            if let Some(stem) = n.rel_path.file_stem() {
+                md.push_str(&format!("- [[{}]]\n", stem.to_string_lossy()));
+            }
+        }
+        md.push('\n');
+    }
+    if has("Specs-and-Plans.md") {
+        md.push_str("## [[Specs-and-Plans|Specs & Plans]]\n\n");
+    }
+    if has("Research.md") {
+        md.push_str("## [[Research]]\n\n");
+    }
+    // SEAM(v1.1, @rahulmranga): when the SQLite memory layer is wired, add a
+    // "## [[Memory-Highlights]]" section here + a Memory-Highlights.md generator
+    // that reads top learnings read-only from crates/memory. Out of scope now.
+
+    out.notes.push(VaultNote {
+        rel_path: PathBuf::from("Home.md"),
+        markdown: md,
+    });
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::{CrateInfo, RenderOutput, RepoContext, SourceDoc};
+    use crate::render::{render_all, CrateInfo, RenderOutput, RepoContext, SourceDoc};
     use std::path::PathBuf;
 
     fn doc(rel: &str, content: &str) -> SourceDoc {
@@ -448,6 +537,69 @@ mod tests {
         assert!(
             out.notes.is_empty(),
             "degrade: nothing to describe → no note"
+        );
+    }
+
+    #[test]
+    fn sessions_become_dated_notes_under_sessions_dir() {
+        let ctx = RepoContext {
+            repo_name: "entheai".into(),
+            sessions: vec![doc(".remember/today-2026-07-19.md", "did things")],
+            ..Default::default()
+        };
+        let mut out = RenderOutput::default();
+        sessions(&ctx, &mut out);
+        assert!(out.notes.iter().any(|n| n.rel_path
+            == PathBuf::from("Sessions/today-2026-07-19.md")
+            && n.markdown.contains("did things")));
+    }
+
+    #[test]
+    fn section_indexes_link_specs_and_research() {
+        let ctx = RepoContext {
+            repo_name: "entheai".into(),
+            specs: vec![PathBuf::from(
+                "docs/superpowers/specs/2026-07-19-x-design.md",
+            )],
+            research: vec![PathBuf::from("docs/research/deepresearch.md")],
+            ..Default::default()
+        };
+        let mut out = RenderOutput::default();
+        section_indexes(&ctx, &mut out);
+        let specs = out
+            .notes
+            .iter()
+            .find(|n| n.rel_path == PathBuf::from("Specs-and-Plans.md"))
+            .unwrap();
+        assert!(specs.markdown.contains("[[2026-07-19-x-design]]"));
+        assert!(out
+            .notes
+            .iter()
+            .any(|n| n.rel_path == PathBuf::from("Research.md")));
+    }
+
+    #[test]
+    fn home_moc_backlinks_present_sections() {
+        // A context with docs + sessions should yield a Home linking both.
+        let ctx = RepoContext {
+            repo_name: "entheai".into(),
+            docs: vec![doc("docs/tui.md", "# TUI")],
+            sessions: vec![doc(".remember/now.md", "buffer")],
+            ..Default::default()
+        };
+        let out = render_all(&ctx);
+        let home = out
+            .notes
+            .iter()
+            .find(|n| n.rel_path == PathBuf::from("Home.md"))
+            .expect("Home present");
+        assert!(home
+            .markdown
+            .contains(&format!("entheai — {}", ctx.repo_name)));
+        assert!(home.markdown.contains("[[tui]]"), "links a mirrored doc");
+        assert!(
+            home.markdown.contains("Sessions"),
+            "references the sessions section"
         );
     }
 }
