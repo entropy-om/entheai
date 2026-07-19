@@ -451,7 +451,8 @@ async fn event_loop<P: Provider + 'static>(
                             text: "⋔ not a git repo — read-only fan-out".to_string(),
                         });
                     }
-                    Some(entheai_orchestrator::FanoutEvent::Decomposed { count }) => {
+                    Some(entheai_orchestrator::FanoutEvent::Decomposed { tasks }) => {
+                        let count = tasks.len();
                         app.messages.push(Msg {
                             role: Role::Tool,
                             text: format!("◇ decomposed into {count} sub-task(s)"),

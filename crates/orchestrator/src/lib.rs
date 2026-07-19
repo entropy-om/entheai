@@ -31,8 +31,8 @@ pub mod worktree;
 pub enum FanoutEvent {
     /// `root` isn't a git repo — falling back to the read-only v1 path.
     Fallback,
-    /// The orchestrator decomposed the task into `count` sub-tasks.
-    Decomposed { count: usize },
+    /// The orchestrator decomposed the task into these (role, task) sub-tasks.
+    Decomposed { tasks: Vec<(String, String)> },
     /// A coder sub-agent started work on its sub-task.
     CoderStarted {
         index: usize,
@@ -427,7 +427,7 @@ pub async fn run_fanout(
     }
     if let Some(tx) = &events {
         let _ = tx.send(FanoutEvent::Decomposed {
-            count: subtasks.len(),
+            tasks: subtasks.iter().map(|s| (s.role.clone(), s.task.clone())).collect(),
         });
     }
 
@@ -621,6 +621,14 @@ pub fn format_v2_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decomposed_carries_tasks() {
+        let ev = FanoutEvent::Decomposed { tasks: vec![("coder".into(), "add x".into())] };
+        if let FanoutEvent::Decomposed { tasks } = ev {
+            assert_eq!(tasks[0].1, "add x");
+        } else { panic!() }
+    }
 
     fn sub_task(role: &str, task: &str) -> SubTask {
         SubTask {
