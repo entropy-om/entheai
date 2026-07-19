@@ -10,7 +10,6 @@ pub struct FileChunk {
 }
 
 /// Lines per chunk (see design spec §4.3).
-#[allow(dead_code)] // consumed by read_and_chunk() in Task 3
 pub(crate) const CHUNK_LINES: usize = 200;
 
 /// Extract `@{path}` references from `text`. Returns the text with each
@@ -74,9 +73,64 @@ pub fn scan_bare_paths(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Resolve `candidates` against `root`, keep only paths that exist as files,
+/// and dedupe (by resolved path).
+#[allow(dead_code)] // consumed by Mapper::map() in Task 4
+pub async fn resolve_and_dedupe(root: &std::path::Path, candidates: &[PathBuf]) -> Vec<PathBuf> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for candidate in candidates {
+        let resolved = if candidate.is_absolute() {
+            candidate.clone()
+        } else {
+            root.join(candidate)
+        };
+        if !seen.insert(resolved.clone()) {
+            continue;
+        }
+        if tokio::fs::metadata(&resolved)
+            .await
+            .map(|m| m.is_file())
+            .unwrap_or(false)
+        {
+            out.push(resolved);
+        }
+    }
+    out
+}
+
+/// Read `path` and split into `CHUNK_LINES`-line chunks. Returns `None` for
+/// unreadable or non-UTF8 (binary) files -- a bad reference never aborts the
+/// map. Returns `Some(vec![])` for a readable-but-empty file.
+#[allow(dead_code)] // consumed by Mapper::map() in Task 4
+pub async fn read_and_chunk(path: &std::path::Path) -> Option<Vec<FileChunk>> {
+    let bytes = tokio::fs::read(path).await.ok()?;
+    let content = String::from_utf8(bytes).ok()?;
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        return Some(Vec::new());
+    }
+    let chunks: Vec<&[&str]> = lines.chunks(CHUNK_LINES).collect();
+    let total_chunks = chunks.len();
+    Some(
+        chunks
+            .into_iter()
+            .enumerate()
+            .map(|(i, lines)| FileChunk {
+                path: path.to_path_buf(),
+                chunk_index: i,
+                total_chunks,
+                content: lines.join("\n"),
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::tempdir;
 
     #[test]
     fn extract_single_ref_replaces_with_marker() {
@@ -130,5 +184,79 @@ mod tests {
     #[test]
     fn scan_bare_paths_ignores_extensionless_tokens() {
         assert!(scan_bare_paths("open a/b/c directory").is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolve_and_dedupe_filters_missing_and_dedupes() {
+        let dir = tempdir().unwrap();
+        let existing = dir.path().join("real.rs");
+        std::fs::write(&existing, "fn main() {}\n").unwrap();
+
+        let candidates = vec![
+            PathBuf::from("real.rs"),
+            PathBuf::from("real.rs"), // duplicate
+            PathBuf::from("missing.rs"),
+        ];
+        let resolved = resolve_and_dedupe(dir.path(), &candidates).await;
+        assert_eq!(resolved, vec![existing]);
+    }
+
+    #[tokio::test]
+    async fn read_and_chunk_exact_multiple() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("exact.txt");
+        let lines: Vec<String> = (0..400).map(|i| format!("line{i}")).collect();
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        let chunks = read_and_chunk(&path).await.unwrap();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].chunk_index, 0);
+        assert_eq!(chunks[0].total_chunks, 2);
+        assert!(chunks[0].content.starts_with("line0"));
+        assert!(chunks[0].content.ends_with("line199"));
+        assert!(chunks[1].content.starts_with("line200"));
+        assert!(chunks[1].content.ends_with("line399"));
+    }
+
+    #[tokio::test]
+    async fn read_and_chunk_with_remainder() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("remainder.txt");
+        let lines: Vec<String> = (0..250).map(|i| format!("line{i}")).collect();
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        let chunks = read_and_chunk(&path).await.unwrap();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].content.lines().count(), 200);
+        assert_eq!(chunks[1].content.lines().count(), 50);
+        assert_eq!(chunks[1].total_chunks, 2);
+    }
+
+    #[tokio::test]
+    async fn read_and_chunk_empty_file_returns_no_chunks() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("empty.txt");
+        std::fs::write(&path, "").unwrap();
+
+        let chunks = read_and_chunk(&path).await.unwrap();
+        assert!(chunks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_and_chunk_missing_file_returns_none() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.txt");
+
+        assert!(read_and_chunk(&path).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_and_chunk_binary_file_returns_none() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("binary.bin");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(&[0xFF, 0xFE, 0x00, 0xFF]).unwrap();
+
+        assert!(read_and_chunk(&path).await.is_none());
     }
 }
