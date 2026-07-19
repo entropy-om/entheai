@@ -200,12 +200,13 @@ pub fn docs_mirror(ctx: &RepoContext, out: &mut RenderOutput) {
     }
 }
 pub fn architecture(ctx: &RepoContext, out: &mut RenderOutput) {
-    if ctx.crates.is_empty() && ctx.repowise_index.is_none() {
-        return; // degrade: nothing structural to describe
+    let has_crates = !ctx.crates.is_empty();
+    if !has_crates && ctx.repowise_index.is_none() && ctx.root_entries.is_empty() {
+        return; // truly nothing structural to describe
     }
     let mut md = front_matter("");
     md.push_str(&format!("# Architecture — {}\n\n", ctx.repo_name));
-    if !ctx.crates.is_empty() {
+    if has_crates {
         md.push_str("## Crates & binaries\n\n");
         for c in &ctx.crates {
             if c.role.is_empty() {
@@ -213,6 +214,13 @@ pub fn architecture(ctx: &RepoContext, out: &mut RenderOutput) {
             } else {
                 md.push_str(&format!("- `{}` — {}\n", c.name, c.role));
             }
+        }
+        md.push('\n');
+    } else if !ctx.root_entries.is_empty() {
+        // Degrade: a plain top-level file listing for a non-cargo project.
+        md.push_str("## Files\n\n");
+        for e in &ctx.root_entries {
+            md.push_str(&format!("- `{e}`\n"));
         }
         md.push('\n');
     }
@@ -521,6 +529,24 @@ mod tests {
             note.markdown.contains("Hotspots"),
             "repowise index folded in"
         );
+    }
+
+    #[test]
+    fn architecture_degrades_to_file_listing_off_cargo() {
+        let ctx = RepoContext {
+            repo_name: "script".into(),
+            root_entries: vec!["main.py".into(), "src".into()],
+            ..Default::default()
+        };
+        let mut out = RenderOutput::default();
+        architecture(&ctx, &mut out);
+        let note = out
+            .notes
+            .iter()
+            .find(|n| n.rel_path == *"Architecture.md")
+            .expect("file-listing note produced off-cargo");
+        assert!(note.markdown.contains("main.py"), "lists a top-level file");
+        assert!(note.markdown.contains("Files"));
     }
 
     #[test]

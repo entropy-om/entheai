@@ -36,6 +36,7 @@ pub fn scan(root: &Path, options: RenderOptions) -> io::Result<RepoContext> {
     let specs = list_markdown(&root.join("docs/superpowers/specs"));
     let plans = list_markdown(&root.join("docs/superpowers/plans"));
     let research = list_markdown(&root.join("docs/research"));
+    let root_entries = read_root_entries(root);
 
     Ok(RepoContext {
         repo_name,
@@ -43,12 +44,31 @@ pub fn scan(root: &Path, options: RenderOptions) -> io::Result<RepoContext> {
         top_level,
         sessions,
         crates,
+        root_entries,
         repowise_index,
         specs,
         plans,
         research,
         options: RenderOptionsHolder(options),
     })
+}
+
+/// Top-level entry names (files + dirs) for the architecture fallback on
+/// non-cargo repos. Skips hidden entries and common build dirs.
+fn read_root_entries(root: &Path) -> Vec<String> {
+    const SKIP: &[&str] = &["target", "node_modules", "dist"];
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(root) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || SKIP.contains(&name.as_str()) {
+                continue;
+            }
+            out.push(name);
+        }
+    }
+    out.sort();
+    out
 }
 
 fn read_doc(root: &Path, rel: &Path) -> Option<SourceDoc> {
@@ -158,6 +178,12 @@ mod tests {
             .crates
             .iter()
             .any(|c| c.name == "foo" && c.role == "the foo crate"));
+        assert!(ctx.root_entries.contains(&"docs".to_string()));
+        assert!(ctx.root_entries.contains(&"README.md".to_string()));
+        assert!(
+            !ctx.root_entries.iter().any(|e| e.starts_with('.')),
+            "hidden entries excluded"
+        );
     }
 
     #[test]

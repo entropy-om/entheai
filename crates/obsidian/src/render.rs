@@ -70,6 +70,9 @@ pub struct RepoContext {
     pub top_level: Vec<SourceDoc>,
     pub sessions: Vec<SourceDoc>,
     pub crates: Vec<CrateInfo>,
+    /// Top-level entry names (files + dirs), for the architecture fallback on
+    /// non-cargo repos. Empty on a bare directory.
+    pub root_entries: Vec<String>,
     pub repowise_index: Option<String>,
     pub specs: Vec<PathBuf>,
     pub plans: Vec<PathBuf>,
