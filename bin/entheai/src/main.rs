@@ -56,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
     let mut registry = entheai_tools::ToolRegistry::new();
     registry.register(Box::new(entheai_tools::fs::ReadFile::new(root.clone())));
     registry.register(Box::new(entheai_tools::fs::WriteFile::new(root.clone())));
+    registry.register(Box::new(entheai_tools::fs::EditFile::new(root.clone())));
     registry.register(Box::new(entheai_tools::shell::RunShell::new(root.clone())));
     registry.register(Box::new(entheai_tools::search::Search::new(root.clone())));
 

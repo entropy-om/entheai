@@ -255,6 +255,9 @@ fn write_registry(root: &Path) -> entheai_tools::ToolRegistry {
     r.register(Box::new(entheai_tools::fs::WriteFile::new(
         root.to_path_buf(),
     )));
+    r.register(Box::new(entheai_tools::fs::EditFile::new(
+        root.to_path_buf(),
+    )));
     r.register(Box::new(entheai_tools::shell::RunShell::new(
         root.to_path_buf(),
     )));

@@ -19,6 +19,8 @@ pub enum ToolError {
     Join(#[from] tokio::task::JoinError),
     #[error("mcp tool error: {0}")]
     Mcp(String),
+    #[error("edit: {0}")]
+    Edit(String),
 }
 
 /// A callable tool. `schema()` is the OpenAI function-tool JSON schema;
@@ -125,6 +127,54 @@ mod tests {
             err.is_err(),
             "reading through an escaping symlink must be rejected"
         );
+    }
+
+    #[tokio::test]
+    async fn edit_file_replaces_unique_occurrence() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "alpha\nBETA\ngamma").unwrap();
+        let tool = crate::fs::EditFile::new(dir.path());
+        let out = tool
+            .call(serde_json::json!({ "path": "a.txt", "old_str": "BETA", "new_str": "DELTA" }))
+            .await
+            .unwrap();
+        assert!(out.contains("a.txt"));
+        let content = std::fs::read_to_string(dir.path().join("a.txt")).unwrap();
+        assert!(content.contains("DELTA"));
+        assert!(!content.contains("BETA"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_errors_when_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "alpha\nbeta\ngamma").unwrap();
+        let tool = crate::fs::EditFile::new(dir.path());
+        let err = tool
+            .call(serde_json::json!({ "path": "a.txt", "old_str": "MISSING", "new_str": "x" }))
+            .await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn edit_file_errors_when_not_unique() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x\nx\n").unwrap();
+        let tool = crate::fs::EditFile::new(dir.path());
+        let err = tool
+            .call(serde_json::json!({ "path": "a.txt", "old_str": "x", "new_str": "y" }))
+            .await;
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("not unique"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_refuses_path_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = crate::fs::EditFile::new(dir.path());
+        let err = tool
+            .call(serde_json::json!({ "path": "../escape.txt", "old_str": "x", "new_str": "y" }))
+            .await;
+        assert!(err.is_err());
     }
 
     #[tokio::test]

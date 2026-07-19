@@ -132,3 +132,61 @@ impl Tool for WriteFile {
         Ok(format!("wrote {} bytes to {rel}", content.len()))
     }
 }
+
+pub struct EditFile {
+    root: PathBuf,
+}
+impl EditFile {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+}
+#[async_trait]
+impl Tool for EditFile {
+    fn name(&self) -> &str {
+        "edit_file"
+    }
+    fn schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "edit_file",
+                "description": "Replace an exact, UNIQUE occurrence of old_str with new_str in a file. old_str must match exactly (including whitespace and indentation) and occur exactly once — include enough surrounding context to make it unique. Prefer this over write_file for edits.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File path relative to the workspace root"},
+                        "old_str": {"type": "string", "description": "Exact text to find (must be unique in the file)"},
+                        "new_str": {"type": "string", "description": "Replacement text"}
+                    },
+                    "required": ["path", "old_str", "new_str"]
+                }
+            }
+        })
+    }
+    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
+        let path = args["path"]
+            .as_str()
+            .ok_or_else(|| ToolError::MissingArg("path".into()))?;
+        let old_str = args["old_str"]
+            .as_str()
+            .ok_or_else(|| ToolError::MissingArg("old_str".into()))?;
+        let new_str = args["new_str"]
+            .as_str()
+            .ok_or_else(|| ToolError::MissingArg("new_str".into()))?;
+        let full = resolve_in_root(&self.root, path)?;
+        let content = tokio::fs::read_to_string(&full).await?;
+        let count = content.matches(old_str).count();
+        if count == 0 {
+            return Err(ToolError::Edit(format!("old_str not found in {path}")));
+        }
+        if count > 1 {
+            return Err(ToolError::Edit(format!(
+                "old_str is not unique in {path} ({count} matches) — include more surrounding context"
+            )));
+        }
+        let updated = content.replacen(old_str, new_str, 1);
+        tokio::fs::write(&full, updated).await?;
+        Ok(format!("edited {path}: 1 replacement"))
+    }
+}
