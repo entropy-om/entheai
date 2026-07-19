@@ -15,7 +15,6 @@ pub(crate) const CHUNK_LINES: usize = 200;
 /// Extract `@{path}` references from `text`. Returns the text with each
 /// `@{path}` token replaced by a short `[file: path]` marker, plus the list of
 /// raw path strings found (in order, may contain duplicates).
-#[allow(dead_code)] // consumed by Mapper::map() in Task 4
 pub fn extract_at_refs(text: &str) -> (String, Vec<String>) {
     let mut out = String::with_capacity(text.len());
     let mut refs = Vec::new();
@@ -47,7 +46,6 @@ pub fn extract_at_refs(text: &str) -> (String, Vec<String>) {
 
 /// Best-effort scan for bare (non-`@{}`-wrapped) path-like tokens: contains a
 /// `/` and a plausible extension, and isn't a URL.
-#[allow(dead_code)] // consumed by Mapper::map() in Task 4
 pub fn scan_bare_paths(text: &str) -> Vec<String> {
     text.split_whitespace()
         .filter_map(|tok| {
@@ -75,7 +73,6 @@ pub fn scan_bare_paths(text: &str) -> Vec<String> {
 
 /// Resolve `candidates` against `root`, keep only paths that exist as files,
 /// and dedupe (by resolved path).
-#[allow(dead_code)] // consumed by Mapper::map() in Task 4
 pub async fn resolve_and_dedupe(root: &std::path::Path, candidates: &[PathBuf]) -> Vec<PathBuf> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
@@ -102,7 +99,6 @@ pub async fn resolve_and_dedupe(root: &std::path::Path, candidates: &[PathBuf]) 
 /// Read `path` and split into `CHUNK_LINES`-line chunks. Returns `None` for
 /// unreadable or non-UTF8 (binary) files -- a bad reference never aborts the
 /// map. Returns `Some(vec![])` for a readable-but-empty file.
-#[allow(dead_code)] // consumed by Mapper::map() in Task 4
 pub async fn read_and_chunk(path: &std::path::Path) -> Option<Vec<FileChunk>> {
     let bytes = tokio::fs::read(path).await.ok()?;
     let content = String::from_utf8(bytes).ok()?;

@@ -10,7 +10,6 @@ pub struct PromptSection {
 /// section with `heading: None`. List lines (`-`, `*`, `+`, `1.`) are left as
 /// part of whichever section's body they fall in — sectioning only reacts to
 /// headings.
-#[allow(dead_code)] // consumed by Mapper::map() in Task 4
 pub fn split_sections(task: &str) -> Vec<PromptSection> {
     let mut sections = Vec::new();
     let mut current_heading: Option<String> = None;
@@ -50,7 +49,6 @@ pub fn split_sections(task: &str) -> Vec<PromptSection> {
 }
 
 /// `# Heading` or `## Heading` -> `Some("Heading")`; anything else -> `None`.
-#[allow(dead_code)] // consumed by split_sections() which is in Task 4
 fn heading_text(line: &str) -> Option<String> {
     let trimmed = line.trim_start();
     for prefix in ["## ", "# "] {
