@@ -5,6 +5,10 @@ use rusqlite::{params, Connection, OpenFlags};
 
 use super::{Embedder, Entry, Memory, MemoryError, Namespace, ScoredEntry};
 
+/// Raw `entries` row shape returned from the blocking DB thread in `load_entries`:
+/// `(id, key, content, metadata_json, created_at, updated_at)`.
+type RawRow = (i64, String, String, Option<String>, i64, i64);
+
 /// Register the `sqlite-vec` loadable extension **process-globally** via the
 /// FFI `sqlite3_auto_extension`. Idempotent (guarded by `Once`).
 ///
@@ -351,9 +355,13 @@ impl SqliteStore {
         }
 
         let fused = crate::recall::rrf(&[&vec_list, &fts_list], self.recall.rrf_k);
+        // Min-max normalize the fused RRF into [0,1] so relevance is comparable
+        // to the recency/confidence terms before blending (else raw ~1/k RRF
+        // scores are swamped by the recency boost and ranking is driven by age).
+        let normalized = crate::recall::normalize(&fused);
 
         // Load candidate rows (content/metadata/created_at) in one pass.
-        let ids: Vec<i64> = fused.keys().copied().collect();
+        let ids: Vec<i64> = normalized.keys().copied().collect();
         let rows = self.load_entries(namespace, &ids).await?;
 
         let now = timestamp_ms();
@@ -372,10 +380,11 @@ impl SqliteStore {
                     .as_ref()
                     .and_then(|m| m.get("confidence"))
                     .and_then(|c| c.as_f64())
-                    .unwrap_or(0.5);
+                    .unwrap_or(0.5)
+                    .clamp(0.0, 1.0);
                 let recency =
                     crate::recall::recency_decay(entry.created_at, now, weights.half_life_days);
-                let rrf_score = fused.get(&id).copied().unwrap_or(0.0);
+                let rrf_score = normalized.get(&id).copied().unwrap_or(0.0);
                 let final_s = crate::recall::final_score(rrf_score, recency, confidence, &weights);
                 ScoredEntry {
                     entry,
@@ -388,6 +397,7 @@ impl SqliteStore {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.entry.key.cmp(&b.entry.key))
         });
         scored.truncate(limit);
         Ok(scored)
@@ -405,39 +415,36 @@ impl SqliteStore {
         let ns = namespace.as_str().to_string();
         let ids: Vec<i64> = ids.to_vec();
         let db = Arc::clone(&self.db);
-        #[allow(clippy::type_complexity)]
-        let rows = tokio::task::spawn_blocking(
-            move || -> rusqlite::Result<Vec<(i64, String, String, Option<String>, i64, i64)>> {
-                let conn = Self::lock_db(&db);
-                let placeholders = std::iter::repeat("?")
-                    .take(ids.len())
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let sql = format!(
-                    "SELECT id, key, content, metadata, created_at, updated_at FROM entries
+        let rows = tokio::task::spawn_blocking(move || -> rusqlite::Result<Vec<RawRow>> {
+            let conn = Self::lock_db(&db);
+            let placeholders = std::iter::repeat("?")
+                .take(ids.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT id, key, content, metadata, created_at, updated_at FROM entries
                      WHERE namespace = ? AND id IN ({placeholders})"
-                );
-                let mut stmt = conn.prepare(&sql)?;
-                let mut binds: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 1);
-                binds.push(&ns);
-                for id in &ids {
-                    binds.push(id);
-                }
-                let out = stmt
-                    .query_map(binds.as_slice(), |r| {
-                        Ok((
-                            r.get::<_, i64>(0)?,
-                            r.get::<_, String>(1)?,
-                            r.get::<_, String>(2)?,
-                            r.get::<_, Option<String>>(3)?,
-                            r.get::<_, i64>(4)?,
-                            r.get::<_, i64>(5)?,
-                        ))
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(out)
-            },
-        )
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let mut binds: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 1);
+            binds.push(&ns);
+            for id in &ids {
+                binds.push(id);
+            }
+            let out = stmt
+                .query_map(binds.as_slice(), |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, i64>(4)?,
+                        r.get::<_, i64>(5)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(out)
+        })
         .await
         .map_err(|e| MemoryError::Internal(format!("spawn_blocking panicked: {e}")))??;
 
