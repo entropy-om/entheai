@@ -32,6 +32,42 @@ pub fn entheai_config_dir() -> PathBuf {
     PathBuf::from(home).join(".config").join("entheai")
 }
 
+/// The `ghostty` argument vector for an isolated, branded window running
+/// `entheai`. `--config-default-files=false` keeps the user's own Ghostty
+/// config from bleeding in.
+pub fn build_args(config_path: &Path, entheai_path: &Path) -> Vec<String> {
+    vec![
+        "--config-default-files=false".to_string(),
+        format!("--config-file={}", config_path.display()),
+        "-e".to_string(),
+        entheai_path.display().to_string(),
+    ]
+}
+
+/// Testable core: return the first `<app>/Contents/MacOS/ghostty` that exists
+/// among `candidates`.
+fn resolve_ghostty_in(candidates: &[PathBuf]) -> Option<PathBuf> {
+    for app in candidates {
+        let bin = app.join("Contents/MacOS/ghostty");
+        if bin.exists() {
+            return Some(bin);
+        }
+    }
+    None
+}
+
+/// Locate the installed Ghostty: the standard `/Applications/Ghostty.app`, else
+/// `ghostty` on `PATH`.
+pub fn resolve_ghostty() -> Option<PathBuf> {
+    if let Some(bin) = resolve_ghostty_in(&[PathBuf::from("/Applications/Ghostty.app")]) {
+        return Some(bin);
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|p| p.join("ghostty"))
+        .find(|p| p.exists())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,5 +100,35 @@ mod tests {
         assert!(std::fs::read_to_string(&s2)
             .unwrap()
             .contains("void mainImage"));
+    }
+
+    #[test]
+    fn build_args_is_exact() {
+        let cfg = Path::new("/Users/x/.config/entheai/ghostty-minimal.conf");
+        let entheai = Path::new("/usr/local/bin/entheai");
+        let args = build_args(cfg, entheai);
+        assert_eq!(
+            args,
+            vec![
+                "--config-default-files=false".to_string(),
+                "--config-file=/Users/x/.config/entheai/ghostty-minimal.conf".to_string(),
+                "-e".to_string(),
+                "/usr/local/bin/entheai".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_ghostty_prefers_app_bundle_then_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("Ghostty.app/Contents/MacOS");
+        std::fs::create_dir_all(&app).unwrap();
+        let bin = app.join("ghostty");
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        assert_eq!(
+            resolve_ghostty_in(&[dir.path().join("Ghostty.app")]).as_deref(),
+            Some(bin.as_path())
+        );
+        assert!(resolve_ghostty_in(&[dir.path().join("nope.app")]).is_none());
     }
 }
