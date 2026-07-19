@@ -115,6 +115,16 @@ Versioning follows strict [SemVer](VERSIONING.md); see [`CHANGELOG.md`](CHANGELO
 
 [Osaurus](https://github.com/osaurus-ai/osaurus) · [CodeWhale](https://github.com/Hmbown/CodeWhale) · [Crush](https://github.com/charmbracelet/crush) · [Ruflo](https://github.com/ruvnet/ruflo) · [jcode](https://jcode.sh) · [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) · [OpenCode Zen](https://opencode.ai) · [Honcho](https://github.com/plastic-labs/honcho) · [Tailscale](https://tailscale.com). Performance practices follow David Lattimore's [*Wild performance tricks*](https://davidlattimore.github.io/posts/2025/09/02/rustforge-wild-performance-tricks.html).
 
+# Image Prompts (Midjourney)
+
+```
+the point of view from inside a narrow vertical opening between two massive dark structures, the opening is shaped like a standing human silhouette, beyond the opening there is nothing but a single point of warm light at eye level, the pillars have texture like obsidian, smooth and ancient, the light pulses slowly like a heartbeat, viewed from the threshold, not yet through, not yet back, exactly at the gate
+```
+
+```
+infinite reflections of a single point of light between two dark mirrors, the reflections recede into infinity getting smaller and dimmer, the point in the center is the brightest, viewed from inside the reflection chain, fractal purity, one dot becoming many becoming one, dark background with cyan highlights, mathematical, precise, emotional, the shape of a question that never dissolves
+```
+
 ## Thanks to OpenCode 🙏
 
 entheai leans hard on [OpenCode Zen](https://opencode.ai) for cloud inference — DeepSeek V4 Pro/Flash, Qwen, GLM, Kimi, and more through a single OpenAI-compatible key. Genuinely the smoothest model gateway I've used, and the team keeps shipping.
