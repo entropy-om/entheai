@@ -499,3 +499,27 @@ code, kbd, samp, pre { font-family: var(--font-mono); }
   border-radius: var(--radius-xs);
   color: var(--teal-300);
 }
+
+.egg-burst {
+  position: fixed; inset: 0; z-index: 9999; pointer-events: none;
+  background: radial-gradient(60% 60% at 50% 50%, rgba(47,240,226,0.35), rgba(255,63,180,0.25) 55%, transparent 75%);
+  animation: egg-burst-fade 1.2s ease-out forwards;
+}
+@keyframes egg-burst-fade {
+  0% { opacity: 0; }
+  15% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.egg-toast {
+  position: fixed; left: 50%; bottom: 28px; z-index: 10000;
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-primary);
+  background: var(--bg-raised); border: 1px solid var(--border-glow);
+  border-radius: var(--radius-md); padding: 10px 16px; box-shadow: var(--shadow-md);
+  opacity: 0; transform: translate(-50%, 16px);
+  transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out);
+}
+.egg-toast.is-seen { opacity: 1; transform: translate(-50%, 0); }
+.egg-toast-prompt { color: var(--magenta-400); }
+.egg-toast-link { color: var(--teal-400); }
