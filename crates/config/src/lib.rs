@@ -41,6 +41,8 @@ pub struct Config {
     pub radio: RadioConfig,
     #[serde(default)]
     pub telemetry: TelemetryConfig,
+    #[serde(default)]
+    pub obsidian: ObsidianConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -549,6 +551,33 @@ mod tests {
     }
 
     #[test]
+    fn obsidian_config_defaults() {
+        let cfg = Config::from_toml_str("").unwrap();
+        assert!(
+            cfg.obsidian.enabled,
+            "obsidian on by default (no-op unless a vault resolves)"
+        );
+        assert_eq!(cfg.obsidian.vault_path, "");
+        assert_eq!(cfg.obsidian.subtree, "entheai-sync");
+        assert_eq!(cfg.obsidian.debounce_ms, 500);
+        assert!(cfg.obsidian.mcp_nudge);
+        assert_eq!(cfg.obsidian.mcp_port, 22360);
+        assert!(cfg.obsidian.include_architecture);
+        assert!(cfg.obsidian.include_sessions);
+        assert_eq!(
+            cfg.obsidian.watch,
+            vec![
+                "docs",
+                ".remember",
+                "README.md",
+                "AGENTS.md",
+                "CHANGELOG.md",
+                "VERSIONING.md"
+            ]
+        );
+    }
+
+    #[test]
     fn viz_config_defaults() {
         let cfg = Config::from_toml_str("").unwrap();
         assert!(cfg.viz.swarm, "the swarm is on by default");
@@ -704,6 +733,71 @@ impl Default for MemoryConfig {
             rrf_k: default_rrf_k(),
             recall_overfetch: default_recall_overfetch(),
             embed_timeout_secs: default_embed_timeout_secs(),
+        }
+    }
+}
+
+/// Obsidian wiki-sync layer configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ObsidianConfig {
+    #[serde(default = "default_obsidian_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub vault_path: String,
+    #[serde(default = "default_obsidian_subtree")]
+    pub subtree: String,
+    #[serde(default = "default_obsidian_watch")]
+    pub watch: Vec<String>,
+    #[serde(default = "default_obsidian_debounce_ms")]
+    pub debounce_ms: u64,
+    #[serde(default = "default_true")]
+    pub mcp_nudge: bool,
+    #[serde(default = "default_obsidian_mcp_port")]
+    pub mcp_port: u16,
+    #[serde(default = "default_true")]
+    pub include_architecture: bool,
+    #[serde(default = "default_true")]
+    pub include_sessions: bool,
+}
+
+fn default_obsidian_enabled() -> bool {
+    true
+}
+fn default_obsidian_subtree() -> String {
+    "entheai-sync".into()
+}
+fn default_obsidian_debounce_ms() -> u64 {
+    500
+}
+fn default_obsidian_mcp_port() -> u16 {
+    22360
+}
+fn default_obsidian_watch() -> Vec<String> {
+    [
+        "docs",
+        ".remember",
+        "README.md",
+        "AGENTS.md",
+        "CHANGELOG.md",
+        "VERSIONING.md",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+impl Default for ObsidianConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_obsidian_enabled(),
+            vault_path: String::new(),
+            subtree: default_obsidian_subtree(),
+            watch: default_obsidian_watch(),
+            debounce_ms: default_obsidian_debounce_ms(),
+            mcp_nudge: true,
+            mcp_port: default_obsidian_mcp_port(),
+            include_architecture: true,
+            include_sessions: true,
         }
     }
 }
