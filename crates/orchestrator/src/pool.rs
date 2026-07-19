@@ -78,11 +78,12 @@ impl WorkerPool {
     /// (flipping to `TimedOut` and dropping `fut` on expiry), and records the
     /// completed output for `output_snapshot` on normal completion.
     ///
-    /// `CoderRun` is intentionally crate-private (see the module-level note);
-    /// the bound below is only ever satisfied by callers inside this crate,
-    /// so the private-in-public-interface lint is a false positive here.
-    #[allow(private_bounds)]
-    pub fn spawn<F>(
+    /// Only ever called from inside this crate (the TUI / `bin/entheai` only
+    /// use `new`/`list`/`status`/`output_snapshot`/`stop`), so this is
+    /// `pub(crate)` rather than `pub` -- that also sidesteps the
+    /// private-in-public-interface lint on the `crate::CoderRun` bound
+    /// without needing an `#[allow(...)]`.
+    pub(crate) fn spawn<F>(
         self: &Arc<Self>,
         role: impl Into<String>,
         task: impl Into<String>,
@@ -95,9 +96,38 @@ impl WorkerPool {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let role = role.into();
         let task = task.into();
+
+        // Insert a placeholder entry BEFORE spawning the real task. The
+        // spawned task calls mark_running/mark_done, which look up `id` in
+        // `self.workers`; on the multi-thread runtime that task can start
+        // running before this function returns and does its own insert, so
+        // inserting only after `tokio::spawn` (the old code) let those
+        // updates race the insert -- they'd find no entry (silently
+        // dropped), and the later insert would then clobber the entry back
+        // to a stale `Queued` that never updates again. Inserting the
+        // placeholder first closes that window: mark_running/mark_done
+        // always find a live entry, and we just update it in place below
+        // once the real `JoinHandle`/`AbortHandle` exist.
+        self.workers.lock().unwrap().insert(
+            id,
+            WorkerHandle {
+                join: None,
+                // Throwaway abort handle for an already-completed no-op
+                // task, purely so the non-`Option` `abort` field has
+                // *something* valid to hold for the brief window before the
+                // real handle is attached below. Never externally
+                // observable as an abort target: nothing can call `stop()`
+                // on this `id` before this function itself returns and
+                // replaces it.
+                abort: tokio::spawn(std::future::ready(())).abort_handle(),
+                status: WorkerStatus::Queued,
+                role: role.clone(),
+                task: task.clone(),
+            },
+        );
+
         let pool = Arc::clone(self);
         let semaphore = Arc::clone(&self.semaphore);
-
         let join_handle: JoinHandle<Option<crate::CoderRun>> = tokio::spawn(async move {
             let _permit = semaphore.acquire_owned().await.expect("semaphore closed");
             pool.mark_running(id);
@@ -114,16 +144,10 @@ impl WorkerPool {
         });
 
         let abort = join_handle.abort_handle();
-        self.workers.lock().unwrap().insert(
-            id,
-            WorkerHandle {
-                join: Some(join_handle),
-                abort,
-                status: WorkerStatus::Queued,
-                role,
-                task,
-            },
-        );
+        if let Some(h) = self.workers.lock().unwrap().get_mut(&id) {
+            h.join = Some(join_handle);
+            h.abort = abort;
+        }
         id
     }
 
@@ -162,8 +186,11 @@ impl WorkerPool {
     /// missing outcome means for its own bookkeeping). Consumes the
     /// underlying join handle the first time it's called for a given `id`;
     /// subsequent calls return `None`.
-    #[allow(private_interfaces)]
-    pub async fn join(&self, id: WorkerId) -> Option<crate::CoderRun> {
+    ///
+    /// `pub(crate)` for the same reason as `spawn`: only called from inside
+    /// this crate, which also avoids the private-interfaces lint on the
+    /// `crate::CoderRun` return type without an `#[allow(...)]`.
+    pub(crate) async fn join(&self, id: WorkerId) -> Option<crate::CoderRun> {
         let handle = self
             .workers
             .lock()
@@ -283,6 +310,32 @@ mod tests {
         assert!(pool.stop(id));
         assert!(matches!(pool.status(id), Some(WorkerStatus::Killed)));
         assert!(pool.join(id).await.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn spawn_registers_the_worker_before_the_task_can_race_ahead() {
+        let pool = WorkerPool::new(4);
+        // A future that resolves immediately, so the spawned wrapper task has
+        // maximum opportunity to run on another worker thread and call
+        // mark_running/mark_done before `spawn` itself returns here.
+        let id = pool.spawn("coder", "race check", Duration::from_secs(5), async {
+            fake_run(0, "coder", "race check", "done")
+        });
+
+        // Before the fix, `spawn` inserted the tracked `WorkerHandle` only
+        // AFTER `tokio::spawn`. On this multi-thread runtime, the spawned
+        // task could run mark_running/mark_done first, find no entry yet
+        // (silently dropped), and then have this function's insert overwrite
+        // them with a stale `Queued` that would never update again. The fix
+        // inserts a placeholder before spawning, so an entry must exist here
+        // unconditionally, regardless of how far the task has already run.
+        assert!(pool.status(id).is_some());
+
+        let run = pool.join(id).await.expect("expected a completed run");
+        assert_eq!(run.output, "done");
+        // If the pre-fix race had struck, this could still read back
+        // `Queued` even though the task already ran mark_done to completion.
+        assert!(matches!(pool.status(id), Some(WorkerStatus::Done)));
     }
 
     #[tokio::test]
