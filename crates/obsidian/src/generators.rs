@@ -199,7 +199,33 @@ pub fn docs_mirror(ctx: &RepoContext, out: &mut RenderOutput) {
         mirror_one(d, out);
     }
 }
-pub fn architecture(_ctx: &RepoContext, _out: &mut RenderOutput) {}
+pub fn architecture(ctx: &RepoContext, out: &mut RenderOutput) {
+    if ctx.crates.is_empty() && ctx.repowise_index.is_none() {
+        return; // degrade: nothing structural to describe
+    }
+    let mut md = front_matter("");
+    md.push_str(&format!("# Architecture — {}\n\n", ctx.repo_name));
+    if !ctx.crates.is_empty() {
+        md.push_str("## Crates & binaries\n\n");
+        for c in &ctx.crates {
+            if c.role.is_empty() {
+                md.push_str(&format!("- `{}`\n", c.name));
+            } else {
+                md.push_str(&format!("- `{}` — {}\n", c.name, c.role));
+            }
+        }
+        md.push('\n');
+    }
+    if let Some(idx) = &ctx.repowise_index {
+        md.push_str("## Codebase index (Repowise)\n\n");
+        md.push_str(idx);
+        md.push('\n');
+    }
+    out.notes.push(VaultNote {
+        rel_path: PathBuf::from("Architecture.md"),
+        markdown: md,
+    });
+}
 pub fn sessions(_ctx: &RepoContext, _out: &mut RenderOutput) {}
 pub fn section_indexes(_ctx: &RepoContext, _out: &mut RenderOutput) {}
 pub fn home_moc(_ctx: &RepoContext, _out: &mut RenderOutput) {}
@@ -207,7 +233,7 @@ pub fn home_moc(_ctx: &RepoContext, _out: &mut RenderOutput) {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::{RenderOutput, RepoContext, SourceDoc};
+    use crate::render::{CrateInfo, RenderOutput, RepoContext, SourceDoc};
     use std::path::PathBuf;
 
     fn doc(rel: &str, content: &str) -> SourceDoc {
@@ -376,6 +402,52 @@ mod tests {
             out.notes[0].markdown.contains("[[tui|a/b]]"),
             "got: {}",
             out.notes[0].markdown
+        );
+    }
+
+    #[test]
+    fn architecture_lists_crates_and_folds_repowise() {
+        let ctx = RepoContext {
+            repo_name: "entheai".into(),
+            crates: vec![
+                CrateInfo {
+                    name: "entheai-obsidian".into(),
+                    role: "wiki-sync layer".into(),
+                },
+                CrateInfo {
+                    name: "entheai-memory".into(),
+                    role: "recall store".into(),
+                },
+            ],
+            repowise_index: Some("### Hotspots\n- crates/core/src/lib.rs".into()),
+            ..Default::default()
+        };
+        let mut out = RenderOutput::default();
+        architecture(&ctx, &mut out);
+        let note = out
+            .notes
+            .iter()
+            .find(|n| n.rel_path == PathBuf::from("Architecture.md"))
+            .expect("architecture note present");
+        assert!(note.markdown.contains("entheai-obsidian"));
+        assert!(note.markdown.contains("wiki-sync layer"));
+        assert!(
+            note.markdown.contains("Hotspots"),
+            "repowise index folded in"
+        );
+    }
+
+    #[test]
+    fn architecture_absent_when_no_crates_and_no_index() {
+        let ctx = RepoContext {
+            repo_name: "script".into(),
+            ..Default::default()
+        };
+        let mut out = RenderOutput::default();
+        architecture(&ctx, &mut out);
+        assert!(
+            out.notes.is_empty(),
+            "degrade: nothing to describe → no note"
         );
     }
 }
