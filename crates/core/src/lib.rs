@@ -34,11 +34,22 @@ pub trait TokenSink {
 pub struct Agent<P: Provider> {
     provider: P,
     model: String,
+    max_turns: usize,
 }
 
 impl<P: Provider> Agent<P> {
     pub fn new(provider: P, model: String) -> Self {
-        Self { provider, model }
+        Self {
+            provider,
+            model,
+            max_turns: 25,
+        }
+    }
+
+    /// Override the per-task tool-dispatch round cap (default 25).
+    pub fn with_max_turns(mut self, n: usize) -> Self {
+        self.max_turns = n.max(1);
+        self
     }
 
     /// Run one turn: stream the model's reply to `sink`, return the full text.
@@ -112,9 +123,8 @@ impl<P: Provider> Agent<P> {
     ) -> Result<String, CoreError> {
         // Hard cap on tool-dispatch rounds, so a looping model can't burn unbounded
         // paid API calls (critical under --yolo, where no human approves each call).
-        const MAX_TURNS: usize = 25;
         let schemas = registry.schemas();
-        for _turn in 0..MAX_TURNS {
+        for _turn in 0..self.max_turns {
             let resp = self.stream_turn(&messages, &schemas, &events).await?;
             if resp.tool_calls.is_empty() {
                 return Ok(resp.content);
@@ -132,7 +142,7 @@ impl<P: Provider> Agent<P> {
                 messages.push(ChatMessage::tool_result(call.id, dr.result));
             }
         }
-        Err(CoreError::MaxTurnsExceeded(MAX_TURNS))
+        Err(CoreError::MaxTurnsExceeded(self.max_turns))
     }
 
     /// Agentic loop with memory awareness. Injects pre-task retrieval context,
@@ -175,11 +185,10 @@ impl<P: Provider> Agent<P> {
             }
         }
 
-        const MAX_TURNS: usize = 25;
         let schemas = registry.schemas();
         let mut tool_evidence: Vec<entheai_memory::ToolEvidence> = Vec::new();
 
-        for _turn in 0..MAX_TURNS {
+        for _turn in 0..self.max_turns {
             let resp = self.stream_turn(&messages, &schemas, &events).await?;
             if resp.tool_calls.is_empty() {
                 // Post-task: record final answer.
@@ -233,7 +242,7 @@ impl<P: Provider> Agent<P> {
                 messages.push(ChatMessage::tool_result(call.id, dr.result));
             }
         }
-        Err(CoreError::MaxTurnsExceeded(MAX_TURNS))
+        Err(CoreError::MaxTurnsExceeded(self.max_turns))
     }
 
     async fn dispatch_call(
@@ -525,6 +534,30 @@ mod tests {
             .await;
         assert!(result.is_err());
         assert!(format!("{}", result.err().unwrap()).contains("exceeded"));
+    }
+
+    #[tokio::test]
+    async fn max_turns_caps_the_loop() {
+        // AlwaysToolProvider ALWAYS returns a tool call (never a final text
+        // answer), so it would loop forever; with_max_turns(1) must stop after
+        // ONE dispatch round with MaxTurnsExceeded(1).
+        let provider = AlwaysToolProvider;
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoTool));
+        let policy = Policy::new(true, vec![]);
+        let mut prompter = AllowAll;
+        let agent = Agent::new(provider, "m".to_string()).with_max_turns(1);
+        let err = agent
+            .run_task(
+                vec![ChatMessage::user("go")],
+                &registry,
+                &policy,
+                &mut prompter,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CoreError::MaxTurnsExceeded(1)));
     }
 
     #[tokio::test]
