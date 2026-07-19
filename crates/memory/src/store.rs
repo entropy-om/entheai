@@ -187,26 +187,36 @@ impl SqliteStore {
                 params![id, c2],
             )?;
             // Vec (ANN): lazily create the vec table at the first embedding's DIM,
-            // then keep it in sync via delete-then-insert. Mismatched dims are
-            // skipped (logged) so a model change can't poison the write path.
+            // then keep it in sync. Mismatched dims are skipped (logged) so a model
+            // change can't poison the write path.
             if let Some(ref emb) = embedding {
-                match meta_get_usize(&tx, "embed_dim")? {
-                    None => ensure_vec_table(&tx, emb.len())?,
-                    Some(d) if d == emb.len() => {}
-                    Some(d) => log::warn!(
-                        "memory: embedding dim {} != store dim {} — skipping vector index for {}/{}",
-                        emb.len(),
-                        d,
-                        ns2,
-                        k2
-                    ),
-                }
-                if meta_get_usize(&tx, "embed_dim")? == Some(emb.len()) {
-                    let blob = f32_slice_to_blob(emb);
-                    // `ensure_vec_table`'s backfill may have just inserted this row
-                    // (its embedding is already in `entries` within this tx), so
-                    // delete-then-insert avoids a duplicate rowid and syncs updates.
+                let dim_ok = match meta_get_usize(&tx, "embed_dim")? {
+                    None => {
+                        ensure_vec_table(&tx, emb.len())?;
+                        true
+                    }
+                    Some(d) if d == emb.len() => true,
+                    Some(d) => {
+                        log::warn!(
+                            "memory: embedding dim {} != store dim {} — skipping vector index for {}/{}",
+                            emb.len(),
+                            d,
+                            ns2,
+                            k2
+                        );
+                        false
+                    }
+                };
+                // Always drop this id's existing/backfilled vec row first, THEN
+                // re-insert only when dims match. Unconditional delete clears a stale
+                // vector when the embedding dim changed, and avoids a duplicate-rowid
+                // error when ensure_vec_table's backfill just inserted this row on the
+                // first write.
+                if table_exists(&tx, "vec_entries")? {
                     tx.execute("DELETE FROM vec_entries WHERE rowid = ?1", params![id])?;
+                }
+                if dim_ok {
+                    let blob = f32_slice_to_blob(emb);
                     tx.execute(
                         "INSERT INTO vec_entries(rowid, namespace, embedding) VALUES (?1, ?2, ?3)",
                         params![id, ns2, blob],
@@ -295,10 +305,16 @@ impl SqliteStore {
     ) -> Result<Vec<i64>, MemoryError> {
         let ns = namespace.as_str().to_string();
         let blob = f32_slice_to_blob(query);
+        let query_len = query.len();
         let db = Arc::clone(&self.db);
         let ids = tokio::task::spawn_blocking(move || -> rusqlite::Result<Vec<i64>> {
             let conn = Self::lock_db(&db);
             if !table_exists(&conn, "vec_entries")? {
+                return Ok(Vec::new());
+            }
+            // Query dim must match the index dim, else vec0's MATCH errors.
+            // Degrade to keyword-only (empty) on mismatch rather than hard-fail.
+            if meta_get_usize(&conn, "embed_dim")? != Some(query_len) {
                 return Ok(Vec::new());
             }
             let mut stmt = conn.prepare(
@@ -658,6 +674,10 @@ fn ensure_schema(conn: &mut Connection) -> rusqlite::Result<()> {
     )?;
     // Recreate the vec table when a DIM is already remembered, so KNN/backfill
     // work on reopen before any write this session (fresh DBs have no DIM yet).
+    //
+    // A pre-v1 DB with embeddings but no recorded `embed_dim` gets no vec table
+    // here (DIM unknown) — it self-heals on the next embedding write. Pre-v1 memory
+    // was off-by-default, so such DBs are effectively nonexistent.
     if let Some(dim) = meta_get_usize(conn, "embed_dim")? {
         ensure_vec_table(conn, dim)?;
     }
@@ -1234,13 +1254,41 @@ mod tests {
                 .await
                 .unwrap();
         }
-        // Reopen: ensure_schema must recreate vec_entries at the remembered DIM and
-        // backfill it, so a KNN query still finds the row.
+        // Drop just the ANN index, leaving entries.embedding + meta.embed_dim. Reopen
+        // must recreate vec_entries at the remembered DIM and backfill it from entries.
+        {
+            let raw = rusqlite::Connection::open(&path).unwrap();
+            raw.execute_batch("DROP TABLE vec_entries;").unwrap();
+        }
         let store = SqliteStore::open(&path, None).unwrap();
         let ids = store
             .vec_ids(Namespace::Tools, &[0.1, 0.2, 0.3, 0.4], 1)
             .await
             .unwrap();
-        assert_eq!(ids.len(), 1);
+        assert_eq!(
+            ids.len(),
+            1,
+            "reopen rebuilt + backfilled vec_entries from entries.embedding"
+        );
+    }
+
+    #[tokio::test]
+    async fn vec_ids_empty_on_dim_mismatch_query() {
+        let store = SqliteStore::open_memory(None).unwrap();
+        store
+            .store_inner(
+                Namespace::Learnings,
+                "a",
+                "alpha",
+                None,
+                Some(vec![1.0, 0.0, 0.0, 0.0]),
+            )
+            .await
+            .unwrap();
+        let ids = store
+            .vec_ids(Namespace::Learnings, &[1.0, 0.0], 5)
+            .await
+            .unwrap(); // wrong dim
+        assert!(ids.is_empty());
     }
 }
