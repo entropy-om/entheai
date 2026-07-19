@@ -1513,6 +1513,41 @@ mod tests {
     }
 
     #[test]
+    fn at_file_reference_survives_submit_unmodified() {
+        let mut app = App {
+            messages: Vec::new(),
+            input: "@{crates/tui/src/lib.rs} fix the input handler".to_string(),
+            status: Status::Idle,
+            scroll: 0,
+            follow: true,
+            model_label: "m".into(),
+            pending_permission: None,
+            run_started: None,
+            spinner_frame: 0,
+            current_action: String::new(),
+            now_playing: None,
+            fanout: true,
+            worker_pool: None,
+            system_prompt: None,
+            streaming_idx: None,
+            out_tokens: 0,
+            verb_idx: 0,
+            plan: Vec::new(),
+            swarm: entheai_viz::SwarmModel::new(),
+            view: ViewMode::Chat,
+            viz_swarm: false,
+        };
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let action = handle_key(&mut app, key);
+        match action {
+            Action::Submit(text) => {
+                assert_eq!(text, "@{crates/tui/src/lib.rs} fix the input handler")
+            }
+            _ => panic!("expected Action::Submit for an idle message containing @{{file}}"),
+        }
+    }
+
+    #[test]
     fn format_status_describes_each_variant() {
         use entheai_orchestrator::WorkerStatus;
         assert_eq!(format_status(&WorkerStatus::Queued), "queued");
