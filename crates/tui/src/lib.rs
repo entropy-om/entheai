@@ -365,7 +365,10 @@ async fn event_loop<P: Provider + 'static>(
     let mut radio = Radio::spawn(Radio::default_cache_dir()).expect("spawn radio thread");
 
     let mut events = EventStream::new();
-    let mut ticker = tokio::time::interval(Duration::from_millis(90));
+    // Floor the tick at 16ms (~60fps) so a `tick_ms = 0` config can't spin a
+    // 0ms busy-loop.
+    let tick_ms = config.viz.tick_ms.max(16);
+    let mut ticker = tokio::time::interval(Duration::from_millis(tick_ms));
     let mut line_cache = LineCache::default();
     // Redraw gate: only `terminal.draw` when something visible changed, so an
     // idle session (no keys, no running task) doesn't repaint every tick.
@@ -375,9 +378,9 @@ async fn event_loop<P: Provider + 'static>(
         if dirty {
             // Clamp scroll against the current terminal size before drawing.
             let size = terminal.size()?;
-            let plan_rows = plan_rows_for(app.plan.len());
+            let plan_rows = plan_rows_for(app.plan.len(), config.viz.plan_rows_cap);
             let swarm_rows = if app.view == ViewMode::Chat {
-                swarm_rows_for(app.viz_swarm, &app.swarm)
+                swarm_rows_for(app.viz_swarm, &app.swarm, config.viz.swarm_rows_cap)
             } else {
                 0
             };
@@ -676,30 +679,26 @@ async fn event_loop<P: Provider + 'static>(
 const STATUS_ROWS: u16 = 1;
 const PROGRESS_ROWS: u16 = 1;
 const INPUT_ROWS: u16 = 3;
-/// Cap on the plan pane's height in rows, so a long plan can't crowd out the
-/// history entirely.
-const PLAN_ROWS_CAP: u16 = 8;
 
 /// Height of the plan-pane layout region for a plan with `plan_len` items:
-/// zero when empty (the pane collapses), capped at [`PLAN_ROWS_CAP`] rows.
-fn plan_rows_for(plan_len: usize) -> u16 {
+/// zero when empty (the pane collapses), capped at `cap` rows (from
+/// `[viz].plan_rows_cap`) so a long plan can't crowd out the history entirely.
+fn plan_rows_for(plan_len: usize, cap: u16) -> u16 {
     if plan_len == 0 {
         0
     } else {
-        (plan_len as u16).min(PLAN_ROWS_CAP)
+        (plan_len as u16).min(cap)
     }
 }
 
-/// Cap on the inline swarm pane's height in rows.
-const SWARM_PANE_CAP: u16 = 8;
-
 /// Inline swarm-pane height: 0 unless enabled AND a fan-out is active; otherwise
-/// `min(nodes + 2 border, SWARM_PANE_CAP)`. Zero → the pane collapses.
-fn swarm_rows_for(enabled: bool, model: &entheai_viz::SwarmModel) -> u16 {
+/// `min(nodes + 2 border, cap)` where `cap` comes from `[viz].swarm_rows_cap`.
+/// Zero → the pane collapses.
+fn swarm_rows_for(enabled: bool, model: &entheai_viz::SwarmModel, cap: u16) -> u16 {
     if !enabled || !model.is_active() || model.nodes.is_empty() {
         0
     } else {
-        ((model.nodes.len() as u16) + 2).min(SWARM_PANE_CAP)
+        ((model.nodes.len() as u16) + 2).min(cap)
     }
 }
 
@@ -1523,13 +1522,20 @@ mod tests {
     }
 
     #[test]
+    fn plan_rows_uses_configured_cap() {
+        assert_eq!(plan_rows_for(20, 5), 5); // 20 items clamped to cap 5
+        assert_eq!(plan_rows_for(0, 8), 0); // empty collapses
+        assert_eq!(plan_rows_for(3, 8), 3); // under cap
+    }
+
+    #[test]
     fn swarm_pane_collapses_when_idle() {
         let m = entheai_viz::SwarmModel::new(); // Idle, empty
-        assert_eq!(swarm_rows_for(true, &m), 0);
+        assert_eq!(swarm_rows_for(true, &m, 8), 0);
         let mut active = entheai_viz::SwarmModel::new();
         active.decompose(&[("a".into(), "t".into())]);
-        assert_eq!(swarm_rows_for(true, &active), 3); // 1 node + 2 border
-        assert_eq!(swarm_rows_for(false, &active), 0); // disabled → collapsed
+        assert_eq!(swarm_rows_for(true, &active, 8), 3); // 1 node + 2 border
+        assert_eq!(swarm_rows_for(false, &active, 8), 0); // disabled → collapsed
     }
 
     #[test]
@@ -1537,21 +1543,17 @@ mod tests {
         let mut m = entheai_viz::SwarmModel::new();
         let tasks: Vec<(String, String)> = (0..12).map(|i| (format!("r{i}"), "t".into())).collect();
         m.decompose(&tasks);
-        assert_eq!(
-            swarm_rows_for(true, &m),
-            SWARM_PANE_CAP,
-            "12 nodes clamp to the cap"
-        );
+        assert_eq!(swarm_rows_for(true, &m, 8), 8, "12 nodes clamp to the cap");
     }
 
     #[test]
     fn swarm_pane_collapses_after_done() {
         let mut m = entheai_viz::SwarmModel::new();
         m.decompose(&[("a".into(), "t".into())]);
-        assert!(swarm_rows_for(true, &m) > 0, "active during the run");
+        assert!(swarm_rows_for(true, &m, 8) > 0, "active during the run");
         m.done(None, 1, 0);
         assert_eq!(
-            swarm_rows_for(true, &m),
+            swarm_rows_for(true, &m, 8),
             0,
             "collapses once the run is Done"
         );
