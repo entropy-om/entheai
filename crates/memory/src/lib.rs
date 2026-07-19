@@ -18,6 +18,7 @@
 //! an OpenAI-compatible endpoint (Osaurus by default).
 
 mod embed;
+pub mod recall;
 mod runtime;
 mod store;
 
@@ -28,7 +29,7 @@ use serde::{Deserialize, Serialize};
 
 pub use embed::Embedder;
 pub use runtime::{MemoryRuntime, MemoryRuntimeConfig, MemoryScope, ToolEvidence};
-pub use store::SqliteStore;
+pub use store::{RecallParams, SqliteStore};
 
 /// The five memory namespaces defined by the design spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
