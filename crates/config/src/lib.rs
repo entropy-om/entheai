@@ -328,15 +328,19 @@ mod tests {
     #[test]
     fn memory_config_defaults() {
         let cfg = Config::from_toml_str("").unwrap();
-        assert!(!cfg.memory.enabled);
-        assert_eq!(cfg.memory.path, ".entheai/memory.db");
+        assert!(cfg.memory.enabled, "memory is on by default in v1");
+        assert_eq!(cfg.memory.path, "~/.cache/entheai/memory.db");
+        assert!((cfg.memory.w_recency - 0.3).abs() < 1e-9);
+        assert!((cfg.memory.half_life_days - 14.0).abs() < 1e-9);
+        assert_eq!(cfg.memory.rrf_k, 60.0);
+        assert_eq!(cfg.memory.recall_overfetch, 3);
     }
 }
 
 /// Memory configuration per the SOTA memory design spec.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MemoryConfig {
-    #[serde(default)]
+    #[serde(default = "default_memory_enabled")]
     pub enabled: bool,
     #[serde(default)]
     pub strict: bool,
@@ -358,10 +362,23 @@ pub struct MemoryConfig {
     pub tool_spill_chars: usize,
     #[serde(default)]
     pub evidence_tools: Vec<String>,
+    #[serde(default = "default_w_recency")]
+    pub w_recency: f64,
+    #[serde(default = "default_w_conf")]
+    pub w_conf: f64,
+    #[serde(default = "default_half_life_days")]
+    pub half_life_days: f64,
+    #[serde(default = "default_rrf_k")]
+    pub rrf_k: f64,
+    #[serde(default = "default_recall_overfetch")]
+    pub recall_overfetch: usize,
 }
 
+fn default_memory_enabled() -> bool {
+    true
+}
 fn default_memory_path() -> String {
-    ".entheai/memory.db".into()
+    "~/.cache/entheai/memory.db".into()
 }
 fn default_embed_model() -> String {
     "nomic-embed-text".into()
@@ -381,11 +398,26 @@ fn default_max_context_chars() -> usize {
 fn default_tool_spill_chars() -> usize {
     8_000
 }
+fn default_w_recency() -> f64 {
+    0.3
+}
+fn default_w_conf() -> f64 {
+    0.2
+}
+fn default_half_life_days() -> f64 {
+    14.0
+}
+fn default_rrf_k() -> f64 {
+    60.0
+}
+fn default_recall_overfetch() -> usize {
+    3
+}
 
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_memory_enabled(),
             strict: false,
             path: default_memory_path(),
             embed_provider: None,
@@ -396,6 +428,11 @@ impl Default for MemoryConfig {
             max_context_chars: default_max_context_chars(),
             tool_spill_chars: default_tool_spill_chars(),
             evidence_tools: vec!["run_shell".into(), "search".into()],
+            w_recency: default_w_recency(),
+            w_conf: default_w_conf(),
+            half_life_days: default_half_life_days(),
+            rrf_k: default_rrf_k(),
+            recall_overfetch: default_recall_overfetch(),
         }
     }
 }
