@@ -2,10 +2,10 @@ use std::io::{BufRead, BufReader};
 use std::num::NonZeroU32;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Instant;
 
 use clap::Parser;
-use softbuffer::Surface;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{Event, MouseButton, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -14,6 +14,13 @@ use winit::window::{Window, WindowLevel};
 use entheai_companion::qr::{self, SessionPayload};
 use entheai_companion::render::{self, AnimationState};
 use entheai_companion::state::StateChange;
+
+/// The softbuffer context/surface pair, created once and reused across
+/// frames instead of being rebuilt on every `RedrawRequested`.
+type SoftbufferState = (
+    softbuffer::Context<Rc<Window>>,
+    softbuffer::Surface<Rc<Window>, Rc<Window>>,
+);
 
 /// entheai companion — a tiny session beacon window.
 #[derive(Parser)]
@@ -91,7 +98,7 @@ fn main() -> anyhow::Result<()> {
         .with_window_level(window_level);
 
     #[allow(deprecated)]
-    let window = event_loop.create_window(window_attrs)?;
+    let window = Rc::new(event_loop.create_window(window_attrs)?);
 
     if let Some(monitor) = window.current_monitor() {
         let screen = monitor.size();
@@ -120,10 +127,11 @@ fn main() -> anyhow::Result<()> {
     let mut socket_reader = socket_reader;
     let mut last_frame = Instant::now();
     let mut fading_since: Option<f64> = None;
+    let mut line_buf = String::new();
+    let mut surface_state: Option<SoftbufferState> = None;
 
     #[allow(deprecated)]
     event_loop.run(move |event, target| {
-        target.set_control_flow(ControlFlow::Poll);
         let now = start.elapsed().as_secs_f64();
 
         match event {
@@ -150,8 +158,27 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                let ctx = softbuffer::Context::new(&window).expect("softbuffer context");
-                let mut surf = Surface::new(&ctx, &window).expect("softbuffer surface");
+                // Create the softbuffer context/surface once and reuse them for
+                // every subsequent frame; only resize (cheap) per frame.
+                if surface_state.is_none() {
+                    match softbuffer::Context::new(Rc::clone(&window)) {
+                        Ok(ctx) => match softbuffer::Surface::new(&ctx, Rc::clone(&window)) {
+                            Ok(surf) => surface_state = Some((ctx, surf)),
+                            Err(e) => {
+                                eprintln!("companion: failed to create softbuffer surface: {e}");
+                                return;
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("companion: failed to create softbuffer context: {e}");
+                            return;
+                        }
+                    }
+                }
+
+                let Some((_ctx, surf)) = surface_state.as_mut() else {
+                    return;
+                };
 
                 let _ = surf.resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap());
 
@@ -185,24 +212,32 @@ fn main() -> anyhow::Result<()> {
             }
 
             Event::AboutToWait => {
-                // Drain any pending socket events.
+                // Drain any pending socket events. `line_buf` persists across
+                // `AboutToWait` calls so a `StateChange` line split across two
+                // non-blocking reads (WouldBlock mid-line) isn't discarded —
+                // it's only cleared once a full line has been parsed.
                 if let Some(ref mut reader) = socket_reader {
                     loop {
-                        let mut line = String::new();
-                        match reader.read_line(&mut line) {
+                        match reader.read_line(&mut line_buf) {
                             Ok(0) => {
                                 socket_reader = None;
                                 fading_since = Some(now);
                                 break;
                             }
                             Ok(_) => {
-                                let trimmed = line.trim();
-                                if !trimmed.is_empty() {
-                                    if let Ok(change) = serde_json::from_str::<StateChange>(trimmed)
-                                    {
-                                        anim.set_state(change.state);
+                                if line_buf.ends_with('\n') {
+                                    let trimmed = line_buf.trim();
+                                    if !trimmed.is_empty() {
+                                        if let Ok(change) =
+                                            serde_json::from_str::<StateChange>(trimmed)
+                                        {
+                                            anim.set_state(change.state);
+                                        }
                                     }
+                                    line_buf.clear();
                                 }
+                                // else: partial line without a trailing newline
+                                // yet; keep buffering on the next drain.
                             }
                             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                                 break;
@@ -216,7 +251,14 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                window.request_redraw();
+                // Cap redraws to the render module's frame budget instead of
+                // polling flat-out; sleep until the next frame is due.
+                let interval = render::frame_interval();
+                if last_frame.elapsed() >= interval {
+                    window.request_redraw();
+                    last_frame = Instant::now();
+                }
+                target.set_control_flow(ControlFlow::WaitUntil(last_frame + interval));
             }
 
             _ => {}

@@ -175,7 +175,7 @@ pub fn render_frame(
     }
 
     let qr_px = (w.min(h) * 0.60) as u32;
-    let module_px = qr_px / qr.size as u32;
+    let module_px = (qr_px / qr.size as u32).max(1);
     let total_qr_px = module_px * qr.size as u32;
     let qr_x0 = (width - total_qr_px) / 2;
     let qr_y0 = (height - total_qr_px) / 2;
