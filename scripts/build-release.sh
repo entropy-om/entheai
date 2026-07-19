@@ -43,6 +43,33 @@ else
   exit 1
 fi
 echo
+
+mkdir -p dist
+
+echo "==> assembling entheai.app"
+APP="dist/entheai.app"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/shaders"
+cp "target/${TARGET}/release/entheai-launch"     "$APP/Contents/MacOS/entheai-launch"
+cp "target/${TARGET}/release/entheai"            "$APP/Contents/MacOS/entheai"
+cp "target/${TARGET}/release/entheai-companion"  "$APP/Contents/MacOS/entheai-companion"
+cp crates/launcher/assets/ghostty-minimal.conf.tmpl "$APP/Contents/Resources/ghostty-minimal.conf.tmpl"
+cp crates/launcher/assets/rain_on_glass.glsl        "$APP/Contents/Resources/shaders/rain_on_glass.glsl"
+cp bin/entheai/resources/Info.plist "$APP/Contents/Info.plist"
+if [ -f docs/images/hero.jpg ]; then
+  ICONSET="$(mktemp -d)/AppIcon.iconset"; mkdir -p "$ICONSET"
+  for s in 16 32 64 128 256 512; do
+    sips -z "$s" "$s" docs/images/hero.jpg --out "$ICONSET/icon_${s}x${s}.png" >/dev/null 2>&1 || true
+    sips -z $((s*2)) $((s*2)) docs/images/hero.jpg --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null 2>&1 || true
+  done
+  iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns" 2>/dev/null || echo "   (icon generation skipped)"
+fi
+echo "==> ad-hoc codesigning entheai.app"
+codesign --force --deep --sign - "$APP"
+echo "==> zipping entheai-app-macos-arm64.zip"
+( cd dist && ditto -c -k --keepParent entheai.app entheai-app-macos-arm64.zip )
+echo "    built: dist/entheai-app-macos-arm64.zip"
+echo
 echo "Note: target-cpu=native tunes for THIS machine's exact Apple-Silicon chip (M1/M2/M3/M4)."
 echo "For a profile from real usage instead of tests, run before the optimize step:"
 echo "    cargo pgo build && $BIN --yolo \"<a representative prompt>\" && cargo pgo optimize build"
