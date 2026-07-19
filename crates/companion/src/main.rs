@@ -157,6 +157,9 @@ fn main() -> anyhow::Result<()> {
     let mut line_buf = String::new();
     let mut surface_state: Option<SoftbufferState> = None;
     let mut shift_held = false;
+    // Time of the last non-shift left release, for double-click-to-copy: a lone
+    // click on the always-on-top beacon must never clobber the user's clipboard.
+    let mut last_click: Option<f64> = None;
 
     #[allow(deprecated)]
     event_loop.run(move |event, target| {
@@ -249,10 +252,19 @@ fn main() -> anyhow::Result<()> {
                     },
                 ..
             } => {
+                // Only a deliberate DOUBLE-click copies the session URL; a lone
+                // click does nothing, so an accidental click never overwrites
+                // whatever the user currently has on their clipboard.
                 if !shift_held {
-                    anim.flash(now);
-                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                        let _ = clipboard.set_text(&session_url);
+                    let is_double = last_click.is_some_and(|t| now - t < 0.4);
+                    if is_double {
+                        anim.flash(now);
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            let _ = clipboard.set_text(&session_url);
+                        }
+                        last_click = None;
+                    } else {
+                        last_click = Some(now);
                     }
                 }
             }
