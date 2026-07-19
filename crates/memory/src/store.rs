@@ -763,6 +763,22 @@ mod tests {
             .unwrap();
         assert_eq!(entry.content, "old content");
         assert_eq!(entry.created_at, 100);
+
+        // Prove the migration actually ran: the rowid schema now has an `id` column
+        // the pre-v1 WITHOUT ROWID table did not. (get/store alone can't distinguish
+        // migrated vs. not — both work on the old schema — so assert on `id` directly.)
+        let raw = rusqlite::Connection::open(&path).unwrap();
+        let id_cols: i64 = raw
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('entries') WHERE name = 'id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            id_cols, 1,
+            "entries migrated to a rowid schema with an id column"
+        );
     }
 
     #[test]
