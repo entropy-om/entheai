@@ -1,6 +1,13 @@
 //! entheai Obsidian wiki-sync layer. See
 //! docs/superpowers/specs/2026-07-19-entheai-obsidian-wiki-sync-design.md.
 
+pub mod generators;
+pub mod render;
+
+pub use render::{
+    render_all, AssetRef, CrateInfo, RenderOptions, RenderOutput, RepoContext, SourceDoc, VaultNote,
+};
+
 #[cfg(test)]
 mod gate_tests {
     use notify_debouncer_mini::new_debouncer;
