@@ -28,6 +28,9 @@ struct Cli {
     /// Disable the companion window for this session.
     #[arg(long)]
     no_companion: bool,
+    /// Open entheai in a dedicated minimalist Ghostty window (the native-app experience).
+    #[arg(long)]
+    app: bool,
 }
 
 #[tokio::main]
@@ -36,6 +39,13 @@ async fn main() -> anyhow::Result<()> {
     // everything downstream (config parsing, providers, MCP spawn).
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
+
+    // `--app` opens a dedicated minimalist Ghostty window running plain `entheai`
+    // (no `--app`, so no recursion). Short-circuit before any config-file read so
+    // launching the native app never requires an `entheai.toml`.
+    if cli.app {
+        return entheai_launcher::launch();
+    }
 
     let cfg_text = std::fs::read_to_string(&cli.config)
         .with_context(|| format!("reading config {}", cli.config))?;

@@ -17,6 +17,7 @@ entheai-companion = { path = "../../crates/companion" }
 entheai-mcp = { path = "../../crates/mcp" }
 entheai-skills = { path = "../../crates/skills" }
 entheai-memory = { path = "../../crates/memory" }
+entheai-launcher = { path = "../../crates/launcher" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-std", "io-util", "net"] }
 anyhow.workspace = true
 clap.workspace = true

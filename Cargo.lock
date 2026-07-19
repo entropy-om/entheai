@@ -1121,6 +1121,7 @@ dependencies = [
  "entheai-companion",
  "entheai-config",
  "entheai-core",
+ "entheai-launcher",
  "entheai-mcp",
  "entheai-memory",
  "entheai-orchestrator",
