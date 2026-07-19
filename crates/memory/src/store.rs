@@ -1,9 +1,39 @@
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 
 use rusqlite::{params, Connection, OpenFlags};
 
 use super::{Embedder, Entry, Memory, MemoryError, Namespace, ScoredEntry};
+
+/// Register the `sqlite-vec` loadable extension for every SQLite connection
+/// opened in this process. Idempotent (guarded by `Once`) — safe to call from
+/// each `SqliteStore` constructor. Uses the FFI `sqlite3_auto_extension`
+/// (canonical sqlite-vec/rusqlite wiring) so no per-connection load is needed.
+// Currently exercised only by the gate test; the store constructors wire it in
+// once the vec0 tables land (memory-v1 Task 1+).
+#[allow(dead_code)]
+fn ensure_vec_extension() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        // SAFETY: `sqlite3_vec_init` has the sqlite3 extension-entry ABI; the
+        // transmute reconciles sqlite-vec's own bindgen `sqlite3`/
+        // `sqlite3_api_routines` types with rusqlite's ABI-identical ones,
+        // matching the `sqlite3_auto_extension` argument type exactly. Called
+        // exactly once, before any connection in this process is opened.
+        unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+                *const (),
+                unsafe extern "C" fn(
+                    *mut rusqlite::ffi::sqlite3,
+                    *mut *mut std::os::raw::c_char,
+                    *const rusqlite::ffi::sqlite3_api_routines,
+                ) -> std::os::raw::c_int,
+            >(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+    });
+}
 
 /// SQLite-backed [`Memory`] implementation.
 ///
@@ -618,5 +648,44 @@ mod tests {
                 .unwrap();
             assert_eq!(entry.content, "persisted");
         }
+    }
+
+    #[test]
+    fn vec0_knn_roundtrip_gate() {
+        // Registers sqlite-vec, then proves a vec0 KNN query returns the nearest
+        // neighbour — using the little-endian f32 BLOB representation production uses.
+        ensure_vec_extension();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE v USING vec0(
+                 namespace text partition key,
+                 embedding float[4] distance_metric=cosine);",
+        )
+        .unwrap();
+
+        let rows: [(i64, &str, [f32; 4]); 3] = [
+            (1, "learnings", [1.0, 0.0, 0.0, 0.0]),
+            (2, "learnings", [0.0, 1.0, 0.0, 0.0]),
+            (3, "learnings", [0.0, 0.0, 1.0, 0.0]),
+        ];
+        for (id, ns, vec) in rows {
+            conn.execute(
+                "INSERT INTO v(rowid, namespace, embedding) VALUES (?1, ?2, ?3)",
+                rusqlite::params![id, ns, f32_slice_to_blob(&vec)],
+            )
+            .unwrap();
+        }
+
+        let query = f32_slice_to_blob(&[0.9, 0.1, 0.0, 0.0]);
+        let nearest: i64 = conn
+            .query_row(
+                "SELECT rowid FROM v
+                 WHERE namespace = ?1 AND embedding MATCH ?2 AND k = ?3
+                 ORDER BY distance",
+                rusqlite::params!["learnings", query, 1_i64],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(nearest, 1, "row 1 is closest to the query vector");
     }
 }
