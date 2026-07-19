@@ -178,7 +178,7 @@ impl SqliteStore {
                 params![ns2, k2, c2, meta_json, embedding_blob, now, now],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
-            // --- SYNC POINT: FTS now, Task 3 will add vec sync here, inside the SAME tx. ---
+            // --- SYNC POINT: FTS + vec, inside the SAME tx. ---
             // FTS: delete-then-insert keeps the keyword row in sync on upsert.
             // The whole upsert + FTS sync commits atomically (RAII rollback on any `?`).
             tx.execute("DELETE FROM entries_fts WHERE rowid = ?1", params![id])?;
@@ -186,6 +186,33 @@ impl SqliteStore {
                 "INSERT INTO entries_fts(rowid, content) VALUES (?1, ?2)",
                 params![id, c2],
             )?;
+            // Vec (ANN): lazily create the vec table at the first embedding's DIM,
+            // then keep it in sync via delete-then-insert. Mismatched dims are
+            // skipped (logged) so a model change can't poison the write path.
+            if let Some(ref emb) = embedding {
+                match meta_get_usize(&tx, "embed_dim")? {
+                    None => ensure_vec_table(&tx, emb.len())?,
+                    Some(d) if d == emb.len() => {}
+                    Some(d) => log::warn!(
+                        "memory: embedding dim {} != store dim {} — skipping vector index for {}/{}",
+                        emb.len(),
+                        d,
+                        ns2,
+                        k2
+                    ),
+                }
+                if meta_get_usize(&tx, "embed_dim")? == Some(emb.len()) {
+                    let blob = f32_slice_to_blob(emb);
+                    // `ensure_vec_table`'s backfill may have just inserted this row
+                    // (its embedding is already in `entries` within this tx), so
+                    // delete-then-insert avoids a duplicate rowid and syncs updates.
+                    tx.execute("DELETE FROM vec_entries WHERE rowid = ?1", params![id])?;
+                    tx.execute(
+                        "INSERT INTO vec_entries(rowid, namespace, embedding) VALUES (?1, ?2, ?3)",
+                        params![id, ns2, blob],
+                    )?;
+                }
+            }
             tx.commit()?;
             Ok(created_at)
         })
@@ -252,6 +279,61 @@ impl SqliteStore {
         .await
         .map_err(|e| MemoryError::Internal(format!("spawn_blocking panicked: {e}")))??;
         Ok(ids)
+    }
+}
+
+impl SqliteStore {
+    /// Namespace-scoped ANN KNN → entry ids, nearest first. Empty if no vec
+    /// table exists yet (no embeddings written).
+    // Temporary — Task 5's `search_hybrid` consumes it and removes the attribute.
+    #[allow(dead_code)]
+    async fn vec_ids(
+        &self,
+        namespace: Namespace,
+        query: &[f32],
+        k: usize,
+    ) -> Result<Vec<i64>, MemoryError> {
+        let ns = namespace.as_str().to_string();
+        let blob = f32_slice_to_blob(query);
+        let db = Arc::clone(&self.db);
+        let ids = tokio::task::spawn_blocking(move || -> rusqlite::Result<Vec<i64>> {
+            let conn = Self::lock_db(&db);
+            if !table_exists(&conn, "vec_entries")? {
+                return Ok(Vec::new());
+            }
+            let mut stmt = conn.prepare(
+                "SELECT rowid FROM vec_entries
+                 WHERE namespace = ?1 AND embedding MATCH ?2 AND k = ?3
+                 ORDER BY distance",
+            )?;
+            let ids = stmt
+                .query_map(params![ns, blob, k as i64], |r| r.get::<_, i64>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(ids)
+        })
+        .await
+        .map_err(|e| MemoryError::Internal(format!("spawn_blocking panicked: {e}")))??;
+        Ok(ids)
+    }
+
+    /// Test-only helper: the integer id for a namespace+key, if present.
+    #[cfg(test)]
+    async fn id_of(&self, namespace: Namespace, key: &str) -> Result<Option<i64>, MemoryError> {
+        let ns = namespace.as_str().to_string();
+        let k = key.to_string();
+        let db = Arc::clone(&self.db);
+        let id = tokio::task::spawn_blocking(move || -> rusqlite::Result<Option<i64>> {
+            let conn = Self::lock_db(&db);
+            conn.query_row(
+                "SELECT id FROM entries WHERE namespace = ?1 AND key = ?2",
+                params![ns, k],
+                |r| r.get(0),
+            )
+            .optional()
+        })
+        .await
+        .map_err(|e| MemoryError::Internal(format!("spawn_blocking panicked: {e}")))??;
+        Ok(id)
     }
 }
 
@@ -407,7 +489,9 @@ impl Memory for SqliteStore {
                 .optional()?;
             if let Some(id) = id {
                 tx.execute("DELETE FROM entries_fts WHERE rowid = ?1", params![id])?;
-                // Task 3 adds: DELETE FROM vec_entries WHERE rowid = ?1
+                if table_exists(&tx, "vec_entries")? {
+                    tx.execute("DELETE FROM vec_entries WHERE rowid = ?1", params![id])?;
+                }
                 tx.execute("DELETE FROM entries WHERE id = ?1", params![id])?;
             }
             tx.commit()?;
@@ -494,6 +578,36 @@ fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
     Ok(n > 0)
 }
 
+fn meta_get_usize(conn: &Connection, k: &str) -> rusqlite::Result<Option<usize>> {
+    let v: Option<String> = conn
+        .query_row("SELECT v FROM meta WHERE k = ?1", params![k], |r| r.get(0))
+        .optional()?;
+    Ok(v.and_then(|s| s.parse::<usize>().ok()))
+}
+
+/// Create `vec_entries` sized to `dim` (idempotent), record the DIM in `meta`,
+/// and backfill any entries whose embedding matches that DIM. Cosine distance
+/// mirrors the pre-v1 cosine-similarity semantics.
+fn ensure_vec_table(conn: &Connection, dim: usize) -> rusqlite::Result<()> {
+    conn.execute_batch(&format!(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS vec_entries USING vec0(
+             namespace text partition key,
+             embedding float[{dim}] distance_metric=cosine);"
+    ))?;
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(k, v) VALUES ('embed_dim', ?1)",
+        params![dim.to_string()],
+    )?;
+    conn.execute(
+        "INSERT INTO vec_entries(rowid, namespace, embedding)
+             SELECT e.id, e.namespace, e.embedding FROM entries e
+             WHERE e.embedding IS NOT NULL AND length(e.embedding) = ?1
+               AND e.id NOT IN (SELECT rowid FROM vec_entries)",
+        params![(dim * 4) as i64],
+    )?;
+    Ok(())
+}
+
 /// Create the v1 schema, migrating a pre-v1 `WITHOUT ROWID` `entries` table
 /// (no `id` column) in place. `vec_entries`/`entries_fts` are added in later
 /// tasks; this task only establishes the rowid `entries` table + `meta`.
@@ -542,6 +656,11 @@ fn ensure_schema(conn: &mut Connection) -> rusqlite::Result<()> {
              WHERE f.rowid IS NULL",
         [],
     )?;
+    // Recreate the vec table when a DIM is already remembered, so KNN/backfill
+    // work on reopen before any write this session (fresh DBs have no DIM yet).
+    if let Some(dim) = meta_get_usize(conn, "embed_dim")? {
+        ensure_vec_table(conn, dim)?;
+    }
     Ok(())
 }
 
@@ -1052,5 +1171,76 @@ mod tests {
             tools_nearest, 4,
             "tools partition must select row 4, confirming the namespace filter discriminates"
         );
+    }
+
+    #[tokio::test]
+    async fn vec_knn_round_trip_via_store_inner() {
+        let store = SqliteStore::open_memory(None).unwrap();
+        // store_inner lets us inject embeddings with no network.
+        store
+            .store_inner(
+                Namespace::Learnings,
+                "a",
+                "alpha",
+                None,
+                Some(vec![1.0, 0.0, 0.0, 0.0]),
+            )
+            .await
+            .unwrap();
+        store
+            .store_inner(
+                Namespace::Learnings,
+                "b",
+                "beta",
+                None,
+                Some(vec![0.0, 1.0, 0.0, 0.0]),
+            )
+            .await
+            .unwrap();
+        store
+            .store_inner(
+                Namespace::Learnings,
+                "c",
+                "gamma",
+                None,
+                Some(vec![0.0, 0.0, 1.0, 0.0]),
+            )
+            .await
+            .unwrap();
+        let ids = store
+            .vec_ids(Namespace::Learnings, &[0.9, 0.1, 0.0, 0.0], 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            ids.first().copied(),
+            store.id_of(Namespace::Learnings, "a").await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn vec_backfilled_from_existing_embeddings_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bf.db");
+        {
+            let store = SqliteStore::open(&path, None).unwrap();
+            store
+                .store_inner(
+                    Namespace::Tools,
+                    "t1",
+                    "output",
+                    None,
+                    Some(vec![0.1, 0.2, 0.3, 0.4]),
+                )
+                .await
+                .unwrap();
+        }
+        // Reopen: ensure_schema must recreate vec_entries at the remembered DIM and
+        // backfill it, so a KNN query still finds the row.
+        let store = SqliteStore::open(&path, None).unwrap();
+        let ids = store
+            .vec_ids(Namespace::Tools, &[0.1, 0.2, 0.3, 0.4], 1)
+            .await
+            .unwrap();
+        assert_eq!(ids.len(), 1);
     }
 }
