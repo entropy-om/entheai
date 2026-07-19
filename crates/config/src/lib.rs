@@ -67,13 +67,30 @@ pub struct AgentConfig {
     pub model: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct FanoutConfig {
     /// Shell command run inside each coder's worktree to decide whether its
     /// changes are integrated (e.g. "cargo test"). Unset = integrate all
     /// changed branches without verifying.
     #[serde(default)]
     pub verify: Option<String>,
+    /// Per-coder timeout in seconds before it's force-aborted — a hung coder
+    /// must not block the rest of the fan-out batch. Default: 600 (10 min).
+    #[serde(default = "default_coder_timeout_secs")]
+    pub coder_timeout_secs: u64,
+}
+
+impl Default for FanoutConfig {
+    fn default() -> Self {
+        Self {
+            verify: None,
+            coder_timeout_secs: default_coder_timeout_secs(),
+        }
+    }
+}
+
+fn default_coder_timeout_secs() -> u64 {
+    600
 }
 
 /// One MCP server entheai spawns at startup; its tools are exposed to the agent.
@@ -226,6 +243,31 @@ mod tests {
         .unwrap();
 
         assert_eq!(cfg.fanout.verify, None);
+    }
+
+    #[test]
+    fn parses_fanout_coder_timeout_secs_when_present() {
+        let cfg = Config::from_toml_str(
+            r#"
+            [fanout]
+            coder_timeout_secs = 120
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.fanout.coder_timeout_secs, 120);
+    }
+
+    #[test]
+    fn fanout_coder_timeout_secs_defaults_to_600() {
+        let cfg = Config::from_toml_str(
+            r#"
+            default_model = "osaurus/qwen3-coder"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.fanout.coder_timeout_secs, 600);
     }
 
     #[test]
