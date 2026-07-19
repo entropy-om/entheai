@@ -1,35 +1,59 @@
 # entheai
 
+<p align="center">
+  <img src="docs/images/hero.jpg" alt="entheai — a coding agent with a brain that fans out" width="100%">
+</p>
+
 > A personal, macOS-native, **hybrid coding agent for the terminal** — with a brain that fans out.
+
+<p align="center">
+  <a href="https://github.com/peterlodri-sec/entheai/releases/tag/v0.1.0"><img src="https://img.shields.io/badge/release-v0.1.0-00e5ff" alt="release v0.1.0"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20·%20Apple%20Silicon-111" alt="platform">
+  <img src="https://img.shields.io/badge/built%20in-Rust-orange" alt="Rust">
+  <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="license">
+</p>
 
 `entheai` is a coding-agent CLI for Apple Silicon Macs. A strong cloud orchestrator (DeepSeek V4 Pro) plans and decomposes work, then **fans out** to a swarm of sub-agents — each matched to the *best model for its task* — that run in parallel inside isolated git worktrees and merge back only after building and passing tests. It runs local models via [Osaurus](https://github.com/osaurus-ai/osaurus), understands your codebase through a built-in knowledge graph, personalizes to how *you* work, and gets better over time.
 
-Built fresh in **Rust**, taking the best ideas from [Crush](https://github.com/charmbracelet/crush) (UX + YOLO), [CodeWhale](https://github.com/Hmbown/CodeWhale) (durable, sandboxed harness), and [Ruflo](https://github.com/ruvnet/ruflo) (sub-agents, memory, self-learning).
+Built fresh in **Rust**, taking the best ideas from [Crush](https://github.com/charmbracelet/crush) (UX + YOLO), [CodeWhale](https://github.com/Hmbown/CodeWhale) (durable, sandboxed harness), [Ruflo](https://github.com/ruvnet/ruflo) (sub-agents, memory, self-learning), and [jcode](https://jcode.sh) (a lean Rust harness with graph memory + swarm coordination).
 
-> **Status: early, built in the open.** v0.1 "Foundation" — a streaming agent loop against any OpenAI-compatible provider — is working and merged. The agentic tool loop (read/write/shell/search + permission) is in progress. See [`docs/superpowers/`](docs/superpowers/) for the full design spec and the milestone-by-milestone plans.
+> **Status: `v0.1.0` released, built in the open.** Working today: the tiered **router** (role→model), **fan-out** (parallel coders in isolated git worktrees → verify → integrate), the agentic tool loop (read / write / **edit** / shell / search + a permission gate), an **MCP** client + supervisor, a **skills** system, live **token streaming**, the 5-namespace **memory** engine, and the **companion** beacon window. Install it in one line (below). Later layers — visualization, `Sonar`, Honcho personalization, and the `dogfeed` self-improvement flywheel — are on the roadmap. See [`docs/superpowers/`](docs/superpowers/) for the full design spec and milestone plans.
 
 ## Highlights
 
 - **Tiered hybrid brain** — cloud orchestrator plans; fast local Osaurus workers execute; escalation when it's hard.
-- **Fan-out orchestration** — effort-gated decomposition → parallel *model-matched* coders → merge + verify (build & test).
-- **Visual by design** — a `ratatui` TUI with **shader backgrounds** (via the Kitty graphics protocol) and a toggleable **live 3D codebase graph**.
-- **Memory that compounds** — a five-namespace store (codebase graph, learnings, trajectories, tool results, sub-agent scratch), self-learning routing, and `kompress-v8` automatic context compaction — 100% local, no API keys.
-- **Deeply extensible** — native tools · **skills** (superpowers / caveman / BMAD bundled) · **plugins** (managed CLIs) · MCP servers.
-- **Knows you** — a built-in [Honcho](https://github.com/plastic-labs/honcho) personalization layer models how you like to work.
-- **Self-improving** — a low-overhead flywheel feeds real agent trajectories to a growing dataset.
-- **Yours across machines** — federation over your own Tailscale tailnet; a local crash/health sidecar (`Sonar`).
-- **macOS / Apple Silicon only** — and it leans all the way into it (Metal, MLX, Seatbelt, terminal graphics).
+- **Fan-out orchestration** — effort-gated decomposition → parallel *model-matched* coders in isolated git worktrees → merge + verify (build & test).
+- **Deeply extensible** — native tools · **skills** (`SKILL.md` discovery + the `skill` tool) · **MCP** servers (spawned at startup, tools exposed to the agent).
+- **Memory that compounds** — a five-namespace store (codebase, learnings, trajectories, tool results, sub-agent scratch), wired into the loop with pre-task retrieval + tool-output spillover.
+- **Visual by design** — a `ratatui` TUI (streaming chat, inline tool progress, permission modal) plus a session **companion** beacon you can scan to pair a device over your tailnet — with shader backgrounds and a live codebase graph on the roadmap.
+- **Self-improving** *(roadmap)* — a low-overhead flywheel feeds real agent trajectories to a growing dataset.
+- **macOS / Apple Silicon only** — and it leans all the way into it (mimalloc, native codegen, Seatbelt, terminal graphics).
+
+<p align="center">
+  <img src="docs/images/fanout.jpg" alt="a single point of light, fanning out" width="100%"><br>
+  <em>one orchestrator, fanning out into a swarm of model-matched sub-agents</em>
+</p>
 
 ## Quick start
 
-Requires a recent Rust toolchain and (for local inference) [Osaurus](https://github.com/osaurus-ai/osaurus) running on `127.0.0.1:1337`.
+**Install via Homebrew** (macOS / Apple Silicon):
+
+```bash
+brew tap peterlodri-sec/entheai https://github.com/peterlodri-sec/entheai
+brew trust peterlodri-sec/entheai    # one-time, third-party-tap security gate
+brew install entheai
+```
+
+Or build from source — requires a recent Rust toolchain and (for local inference) [Osaurus](https://github.com/osaurus-ai/osaurus) on `127.0.0.1:1337`:
 
 ```bash
 git clone https://github.com/peterlodri-sec/entheai.git
-cd entheai
-cargo build --release
+cd entheai && cargo build --release
+```
 
-# Configure a provider + model (entheai.toml)
+Configure a provider + model (`entheai.toml`), then talk to it:
+
+```bash
 cat > entheai.toml <<'TOML'
 default_model = "osaurus/qwen3-coder"
 
@@ -37,8 +61,9 @@ default_model = "osaurus/qwen3-coder"
 base_url = "http://127.0.0.1:1337/v1"
 TOML
 
-# Talk to it
-./target/release/entheai "Reply with exactly: pong"
+entheai "Reply with exactly: pong"     # one-shot
+entheai                                 # interactive TUI
+entheai --fanout "add a CONTRIBUTING.md and a .editorconfig"   # parallel coders
 ```
 
 Cloud models work too — point a provider at [OpenCode Zen](https://opencode.ai) (DeepSeek V4 Pro/Flash, Qwen, and more through one key):
@@ -51,38 +76,44 @@ base_url = "https://opencode.ai/zen/v1"
 api_key_env = "OPENCODE_API_KEY"
 ```
 
-Run the checks:
+Run the checks: `./scripts/check.sh` (fmt + clippy `-D warnings` + tests).
 
-```bash
-./scripts/check.sh   # fmt + clippy (-D warnings) + tests
-```
+## Architecture
 
-## Architecture (v0.1)
-
-A Rust workspace of small, focused crates. The v0.1 foundation is live; later crates are staged in the roadmap.
+A Rust workspace of small, focused crates.
 
 | Crate | Responsibility |
 |---|---|
-| `config` | Load TOML settings (providers, models). |
-| `providers` | OpenAI-compatible client + `Provider` trait (Osaurus, OpenCode Zen, DeepSeek, OpenRouter). |
-| `core` | The agent loop (`Agent` + streaming/tool-dispatch). |
-| `entheai` (bin) | The CLI that wires it together. |
+| `config` | TOML settings — providers, models, router, agents, MCP, skills. |
+| `providers` | OpenAI-compatible client + `Provider` trait (streaming + tool calls). |
+| `core` | The agent loop — streaming, tool dispatch, memory-aware runs. |
+| `tools` · `permission` | Root-scoped read / write / **edit** / shell / search + the permission gate. |
+| `router` | Config-driven role→model resolution + a reusable agent factory. |
+| `orchestrator` | Fan-out: decompose → parallel coders in git worktrees → verify → integrate. |
+| `mcp` | Model Context Protocol client + supervisor. |
+| `skills` | `SKILL.md` discovery + the `skill` tool. |
+| `memory` | 5-namespace SQLite + vector store, wired into the loop. |
+| `tui` | `ratatui` chat — streaming, inline tool progress, permission modal. |
+| `companion` | Session-beacon window (QR device pairing over the tailnet). |
+| `entheai` *(bin)* | The CLI that wires it all together. |
 
-Coming next (per the design spec): `router`, `agents` (fan-out), `memory`, `learning`, `tools`, `permission`, `mcp`, `skills`, `plugins`, `session`, `comms`, `tui`, `viz`, `dogfeed`, `compaction`, `honcho`, `sonar`.
+Roadmap crates (per the design spec): `viz`, `dogfeed`, `compaction`, `honcho`, `sonar`, `comms`, `plugins` — plus [`entheai-brain`](docs/superpowers/specs/), the self-hosted second-brain API.
 
 ## Roadmap
 
 | | |
 |---|---|
-| **v0.1** | Foundation: streaming agent loop, providers, CLI. ✅ |
-| **v0.2** | Agentic tool loop + permission; routing; more tools; durable sessions; visual polish. |
-| **v0.3** | Full self-learning; hooks; dogfeed flywheel; Tailscale federation; Sonar UI. |
-| **v0.4+** | Pluggable topologies; native 3D graph; Honcho personalization; more providers. |
+| **v0.1** | Router · fan-out · tools + permission · MCP · skills · streaming · memory · companion. **Released ✅** |
+| **v0.2** | Codebase-memory MCP auto-index; visualization (shaders + live graph); durable sessions; `Sonar` health UI. |
+| **v0.3** | Full self-learning scoring; `dogfeed` flywheel → HF; Tailscale federation. |
+| **v0.4+** | Honcho personalization; pluggable topologies; more providers. |
 | **v1.0** | Config freeze, perf passes, docs. |
+
+Versioning follows strict [SemVer](VERSIONING.md); see [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Built on
 
-[Osaurus](https://github.com/osaurus-ai/osaurus) · [CodeWhale](https://github.com/Hmbown/CodeWhale) · [Crush](https://github.com/charmbracelet/crush) · [Ruflo](https://github.com/ruvnet/ruflo) · [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) · [OpenCode Zen](https://opencode.ai) · [Honcho](https://github.com/plastic-labs/honcho) · [Tailscale](https://tailscale.com). Performance practices follow David Lattimore's [*Wild performance tricks*](https://davidlattimore.github.io/posts/2025/09/02/rustforge-wild-performance-tricks.html).
+[Osaurus](https://github.com/osaurus-ai/osaurus) · [CodeWhale](https://github.com/Hmbown/CodeWhale) · [Crush](https://github.com/charmbracelet/crush) · [Ruflo](https://github.com/ruvnet/ruflo) · [jcode](https://jcode.sh) · [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) · [OpenCode Zen](https://opencode.ai) · [Honcho](https://github.com/plastic-labs/honcho) · [Tailscale](https://tailscale.com). Performance practices follow David Lattimore's [*Wild performance tricks*](https://davidlattimore.github.io/posts/2025/09/02/rustforge-wild-performance-tricks.html).
 
 ## Thanks to OpenCode 🙏
 
