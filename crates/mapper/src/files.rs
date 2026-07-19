@@ -10,11 +10,13 @@ pub struct FileChunk {
 }
 
 /// Lines per chunk (see design spec §4.3).
+#[allow(dead_code)] // consumed by read_and_chunk() in Task 3
 pub(crate) const CHUNK_LINES: usize = 200;
 
 /// Extract `@{path}` references from `text`. Returns the text with each
 /// `@{path}` token replaced by a short `[file: path]` marker, plus the list of
 /// raw path strings found (in order, may contain duplicates).
+#[allow(dead_code)] // consumed by Mapper::map() in Task 4
 pub fn extract_at_refs(text: &str) -> (String, Vec<String>) {
     let mut out = String::with_capacity(text.len());
     let mut refs = Vec::new();
@@ -46,6 +48,7 @@ pub fn extract_at_refs(text: &str) -> (String, Vec<String>) {
 
 /// Best-effort scan for bare (non-`@{}`-wrapped) path-like tokens: contains a
 /// `/` and a plausible extension, and isn't a URL.
+#[allow(dead_code)] // consumed by Mapper::map() in Task 4
 pub fn scan_bare_paths(text: &str) -> Vec<String> {
     text.split_whitespace()
         .filter_map(|tok| {
