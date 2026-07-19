@@ -1320,6 +1320,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "entheai-viz"
+version = "0.1.0"
+dependencies = [
+ "ratatui",
+]
+
+[[package]]
 name = "entheai-worker"
 version = "0.1.0"
 dependencies = [

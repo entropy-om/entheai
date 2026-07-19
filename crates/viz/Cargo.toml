@@ -1,0 +1,8 @@
+[package]
+name = "entheai-viz"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ratatui = { workspace = true }
