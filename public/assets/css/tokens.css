@@ -353,6 +353,7 @@ code, kbd, samp, pre { font-family: var(--font-mono); }
 .btn-ghost:hover { background: var(--bg-hover); border-color: var(--border-glow); box-shadow: var(--glow-teal-sm); color: var(--text-primary); }
 
 .card {
+  display: block;
   background: var(--bg-raised);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
