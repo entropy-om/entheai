@@ -48,6 +48,14 @@ max_parallel = 4                         # cap on concurrently-running sub-agent
 # command = "codebase-memory-mcp"
 # args = ["--root", "."]
 
+# Valyu deep-search MCP (remote). entheai's MCP client is stdio-only, so we bridge
+# the remote endpoint through mcp_bridge.py. The API key is NOT stored here — this
+# file is tracked in a public repo. The full URL (incl. ?valyuApiKey=…) lives in
+# .env (gitignored) as VALYU_MCP_URL and is expanded by /bin/sh at spawn time.
+[mcp.valyu]
+command = "/bin/sh"
+args = ["-c", "exec /usr/bin/python3 /Users/peter.lodri/.mcp-usage/bin/mcp_bridge.py --source entheai --server valyu --url $VALYU_MCP_URL"]
+
 [agents.explore]
 model = ["deepseek/deepseek-chat"] # local instead: ["osaurus/<your-local-model>"]
 
