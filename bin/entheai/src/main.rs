@@ -139,6 +139,7 @@ async fn build_tools(
     registry.register(Box::new(entheai_tools::search::Search::new(
         root.to_path_buf(),
     )));
+    registry.register(Box::new(entheai_tools::todo::TodoTool));
 
     // Skills: discover, advertise via a system prompt, expose the `skill` tool.
     let skill_dirs: Vec<PathBuf> = cfg.skills.dirs.iter().map(|d| root.join(d)).collect();
@@ -161,6 +162,12 @@ async fn build_tools(
         );
         Some(skills.advertisement())
     };
+
+    let todo_hint = "Use the `todo` tool to publish and keep your plan up to date — set items to in_progress/done as you work.";
+    let system_prompt = Some(match system_prompt {
+        Some(skills_ad) => format!("{skills_ad}\n\n{todo_hint}"),
+        None => todo_hint.to_string(),
+    });
 
     // MCP servers: spawn each configured server, register its tools. A server
     // that fails or hangs is skipped with a warning (never blocks startup).
