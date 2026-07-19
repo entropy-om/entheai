@@ -244,7 +244,7 @@ impl<P: Provider> Agent<P> {
         prompter: &mut impl entheai_permission::Prompter,
         events: &Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
     ) -> DispatchResult {
-        use entheai_permission::Decision;
+        use entheai_permission::{Decision, Grant};
         let name = &call.function.name;
 
         // Emit ToolStarted up front so the UI can show "about to run X" even if
@@ -261,7 +261,14 @@ impl<P: Provider> Agent<P> {
         let allowed = match policy.decide(name) {
             Decision::Allow => true,
             Decision::Deny => false,
-            Decision::Ask => prompter.confirm(name, &call.function.arguments).await,
+            Decision::Ask => match prompter.confirm(name, &call.function.arguments).await {
+                Grant::Deny => false,
+                Grant::Allow => true,
+                Grant::AllowSession => {
+                    policy.grant_session(name);
+                    true
+                }
+            },
         };
         let result = if !allowed {
             format!("error: permission denied for tool '{name}'")
@@ -368,7 +375,7 @@ mod tests {
         assert_eq!(sink.0, "Hello");
     }
 
-    use entheai_permission::{Decision, Policy, Prompter};
+    use entheai_permission::{Decision, Grant, Policy, Prompter};
     use entheai_providers::{AssistantResponse, FunctionCall, ToolCall};
     use entheai_tools::{Tool, ToolRegistry};
     use std::sync::Mutex;
@@ -435,8 +442,8 @@ mod tests {
     struct AllowAll;
     #[async_trait]
     impl Prompter for AllowAll {
-        async fn confirm(&mut self, _t: &str, _a: &str) -> bool {
-            true
+        async fn confirm(&mut self, _t: &str, _a: &str) -> Grant {
+            Grant::Allow
         }
     }
 
@@ -618,8 +625,8 @@ mod tests {
     struct DenyAll;
     #[async_trait]
     impl Prompter for DenyAll {
-        async fn confirm(&mut self, _t: &str, _a: &str) -> bool {
-            false
+        async fn confirm(&mut self, _t: &str, _a: &str) -> Grant {
+            Grant::Deny
         }
     }
 
@@ -735,6 +742,76 @@ mod tests {
             tool_msg.content.contains("could not parse tool arguments"),
             "expected bad JSON args error, got: {}",
             tool_msg.content
+        );
+    }
+
+    fn tool_call(tool_name: &str, args: &str) -> Vec<AssistantResponse> {
+        vec![AssistantResponse {
+            content: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call_1".into(),
+                kind: "function".into(),
+                function: FunctionCall {
+                    name: tool_name.into(),
+                    arguments: args.into(),
+                },
+            }],
+        }]
+    }
+
+    fn final_answer(s: &str) -> Vec<AssistantResponse> {
+        vec![AssistantResponse {
+            content: s.into(),
+            tool_calls: vec![],
+        }]
+    }
+
+    struct CountingSessionPrompter {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+    #[async_trait]
+    impl Prompter for CountingSessionPrompter {
+        async fn confirm(&mut self, _t: &str, _a: &str) -> entheai_permission::Grant {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            entheai_permission::Grant::AllowSession
+        }
+    }
+
+    #[tokio::test]
+    async fn allow_for_session_stops_reprompting() {
+        // provider: echo tool call, echo tool call, final answer.
+        let provider = RecordingProvider {
+            seen: Mutex::new(Vec::new()),
+            responses: Mutex::new(
+                vec![tool_call("echo", "{}"), tool_call("echo", "{}"), final_answer("done")]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+            ),
+        };
+        let agent = Agent::new(provider, "m".into());
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoTool));
+        let policy = Policy::new(false, vec![]); // non-yolo -> Ask
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut prompter = CountingSessionPrompter {
+            calls: calls.clone(),
+        };
+        let ans = agent
+            .run_task(
+                vec![ChatMessage::user("go")],
+                &registry,
+                &policy,
+                &mut prompter,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(ans, "done");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "second echo must not re-prompt"
         );
     }
 }
