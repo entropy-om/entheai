@@ -783,10 +783,14 @@ mod tests {
         let provider = RecordingProvider {
             seen: Mutex::new(Vec::new()),
             responses: Mutex::new(
-                vec![tool_call("echo", "{}"), tool_call("echo", "{}"), final_answer("done")]
-                    .into_iter()
-                    .flatten()
-                    .collect(),
+                vec![
+                    tool_call("echo", "{}"),
+                    tool_call("echo", "{}"),
+                    final_answer("done"),
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
             ),
         };
         let agent = Agent::new(provider, "m".into());

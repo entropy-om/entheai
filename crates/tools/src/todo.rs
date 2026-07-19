@@ -2,25 +2,42 @@ use crate::{Tool, ToolError};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TodoStatus { Pending, InProgress, Done, Failed }
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Done,
+    Failed,
+}
 
 #[derive(Debug, Clone)]
-pub struct TodoItem { pub text: String, pub status: TodoStatus }
+pub struct TodoItem {
+    pub text: String,
+    pub status: TodoStatus,
+}
 
 /// Parse a `{ "items": [ { "text", "status" } ] }` payload into plan items.
 /// Unknown/missing status -> Pending; non-object/absent items -> empty.
 pub fn parse_todos(args: &Value) -> Vec<TodoItem> {
-    let Some(items) = args.get("items").and_then(|v| v.as_array()) else { return Vec::new() };
-    items.iter().filter_map(|it| {
-        let text = it.get("text")?.as_str()?.to_string();
-        let status = match it.get("status").and_then(|s| s.as_str()).unwrap_or("pending") {
-            "in_progress" => TodoStatus::InProgress,
-            "done" => TodoStatus::Done,
-            "failed" => TodoStatus::Failed,
-            _ => TodoStatus::Pending,
-        };
-        Some(TodoItem { text, status })
-    }).collect()
+    let Some(items) = args.get("items").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|it| {
+            let text = it.get("text")?.as_str()?.to_string();
+            let status = match it
+                .get("status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("pending")
+            {
+                "in_progress" => TodoStatus::InProgress,
+                "done" => TodoStatus::Done,
+                "failed" => TodoStatus::Failed,
+                _ => TodoStatus::Pending,
+            };
+            Some(TodoItem { text, status })
+        })
+        .collect()
 }
 
 /// The `todo` tool: the model publishes/updates its plan. The TUI reads the same
@@ -29,7 +46,9 @@ pub struct TodoTool;
 
 #[async_trait::async_trait]
 impl Tool for TodoTool {
-    fn name(&self) -> &str { "todo" }
+    fn name(&self) -> &str {
+        "todo"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type":"function",
@@ -72,7 +91,10 @@ mod tests {
     }
     #[tokio::test]
     async fn todo_tool_confirms_count() {
-        let out = TodoTool.call(serde_json::json!({"items":[{"text":"a","status":"pending"}]})).await.unwrap();
+        let out = TodoTool
+            .call(serde_json::json!({"items":[{"text":"a","status":"pending"}]}))
+            .await
+            .unwrap();
         assert!(out.contains('1'));
     }
 }

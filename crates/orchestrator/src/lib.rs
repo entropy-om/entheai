@@ -427,7 +427,10 @@ pub async fn run_fanout(
     }
     if let Some(tx) = &events {
         let _ = tx.send(FanoutEvent::Decomposed {
-            tasks: subtasks.iter().map(|s| (s.role.clone(), s.task.clone())).collect(),
+            tasks: subtasks
+                .iter()
+                .map(|s| (s.role.clone(), s.task.clone()))
+                .collect(),
         });
     }
 
@@ -624,10 +627,14 @@ mod tests {
 
     #[test]
     fn decomposed_carries_tasks() {
-        let ev = FanoutEvent::Decomposed { tasks: vec![("coder".into(), "add x".into())] };
+        let ev = FanoutEvent::Decomposed {
+            tasks: vec![("coder".into(), "add x".into())],
+        };
         if let FanoutEvent::Decomposed { tasks } = ev {
             assert_eq!(tasks[0].1, "add x");
-        } else { panic!() }
+        } else {
+            panic!()
+        }
     }
 
     fn sub_task(role: &str, task: &str) -> SubTask {
