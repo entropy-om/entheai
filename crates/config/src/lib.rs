@@ -27,6 +27,8 @@ pub struct Config {
     pub skills: SkillsConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
+    #[serde(default)]
+    pub viz: VizConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -141,6 +143,26 @@ impl Default for SkillsConfig {
 
 fn default_skill_dirs() -> Vec<String> {
     vec!["skills".to_string()]
+}
+
+/// Visualization settings (viz pillar).
+#[derive(Debug, Clone, Deserialize)]
+pub struct VizConfig {
+    /// Show the live fan-out swarm (inline pane + Ctrl-V full view).
+    #[serde(default = "default_viz_swarm")]
+    pub swarm: bool,
+}
+
+fn default_viz_swarm() -> bool {
+    true
+}
+
+impl Default for VizConfig {
+    fn default() -> Self {
+        Self {
+            swarm: default_viz_swarm(),
+        }
+    }
 }
 
 impl Config {
@@ -334,6 +356,18 @@ mod tests {
         assert!((cfg.memory.half_life_days - 14.0).abs() < 1e-9);
         assert_eq!(cfg.memory.rrf_k, 60.0);
         assert_eq!(cfg.memory.recall_overfetch, 3);
+    }
+
+    #[test]
+    fn viz_config_defaults() {
+        let cfg = Config::from_toml_str("").unwrap();
+        assert!(cfg.viz.swarm, "the swarm is on by default");
+    }
+
+    #[test]
+    fn viz_swarm_can_be_disabled() {
+        let cfg = Config::from_toml_str("[viz]\nswarm = false\n").unwrap();
+        assert!(!cfg.viz.swarm);
     }
 }
 
