@@ -343,26 +343,34 @@ async fn event_loop<P: Provider + 'static>(
 
     let mut events = EventStream::new();
     let mut ticker = tokio::time::interval(Duration::from_millis(90));
+    let mut line_cache = LineCache::default();
+    // Redraw gate: only `terminal.draw` when something visible changed, so an
+    // idle session (no keys, no running task) doesn't repaint every tick.
+    let mut dirty = true;
 
     loop {
-        // Clamp scroll against the current terminal size before drawing.
-        let size = terminal.size()?;
-        let plan_rows = plan_rows_for(app.plan.len());
-        let history_height = size
-            .height
-            .saturating_sub(STATUS_ROWS + PROGRESS_ROWS + INPUT_ROWS + plan_rows);
-        let lines = build_history_lines(&app.messages, size.width);
-        let max_scroll = (lines.len() as u16).saturating_sub(history_height);
-        if app.follow {
-            app.scroll = max_scroll;
-        } else {
-            app.scroll = app.scroll.min(max_scroll);
-            if app.scroll == max_scroll {
-                app.follow = true; // scrolled back to the bottom -> resume following
+        if dirty {
+            // Clamp scroll against the current terminal size before drawing.
+            let size = terminal.size()?;
+            let plan_rows = plan_rows_for(app.plan.len());
+            let history_height = size
+                .height
+                .saturating_sub(STATUS_ROWS + PROGRESS_ROWS + INPUT_ROWS + plan_rows);
+            let lines = line_cache.get_or_build(&app.messages, size.width);
+            let max_scroll = (lines.len() as u16).saturating_sub(history_height);
+            if app.follow {
+                app.scroll = max_scroll;
+            } else {
+                app.scroll = app.scroll.min(max_scroll);
+                if app.scroll == max_scroll {
+                    app.follow = true; // scrolled back to the bottom -> resume following
+                }
             }
+            let scroll = app.scroll;
+            let lines = lines.to_vec();
+            terminal.draw(|frame| render(frame, &app, lines, scroll, plan_rows))?;
+            dirty = false;
         }
-        let scroll = app.scroll;
-        terminal.draw(|frame| render(frame, &app, lines, scroll, plan_rows))?;
 
         tokio::select! {
             maybe_event = events.next() => {
@@ -371,7 +379,10 @@ async fn event_loop<P: Provider + 'static>(
                     Ok(ev) => ev,
                     Err(_) => break,
                 };
-                if let Event::Key(key) = ev {
+                match ev {
+                    Event::Resize(_, _) => dirty = true,
+                    Event::Key(key) => {
+                    dirty = true;
                     match handle_key(&mut app, key) {
                         Action::Quit => break,
                         Action::None => {}
@@ -426,9 +437,12 @@ async fn event_loop<P: Provider + 'static>(
                             }
                         }
                     }
+                    }
+                    _ => {}
                 }
             }
             Some(req) = perm_rx.recv() => {
+                dirty = true;
                 app.pending_permission = Some(req.respond);
                 if let Some(ref tx) = companion_tx {
                     let _ = tx.send(StateChange::permission_pending(&req.tool, &req.args));
@@ -436,6 +450,7 @@ async fn event_loop<P: Provider + 'static>(
                 app.status = Status::AwaitingPermission { tool: req.tool, args: req.args };
             }
             Some(result) = result_rx.recv() => {
+                dirty = true;
                 match result {
                     Ok(answer) => {
                         if let Some(idx) = app.streaming_idx {
@@ -465,6 +480,7 @@ async fn event_loop<P: Provider + 'static>(
                     None => std::future::pending().await,
                 }
             } => {
+                dirty = true;
                 match maybe_progress {
                     Some(AgentEvent::Thinking) => {
                         app.current_action = "thinking".to_string();
@@ -518,6 +534,7 @@ async fn event_loop<P: Provider + 'static>(
                     None => std::future::pending().await,
                 }
             } => {
+                dirty = true;
                 match maybe_fanout {
                     Some(entheai_orchestrator::FanoutEvent::Fallback) => {
                         app.messages.push(Msg {
@@ -583,11 +600,16 @@ async fn event_loop<P: Provider + 'static>(
                 }
             }
             Some(rev) = radio.next_event() => {
+                dirty = true;
                 handle_radio_event(&mut app, rev);
             }
             _ = ticker.tick() => {
+                // Only the spinner animates while idle-frugal; a run in flight
+                // needs a redraw each tick to advance it, otherwise the ticker
+                // is a no-op frame (no dirty flag).
                 if matches!(app.status, Status::Working) {
                     app.spinner_frame = (app.spinner_frame + 1) % FRAMES.len();
+                    dirty = true;
                 }
             }
         }
@@ -833,6 +855,31 @@ fn build_history_lines(messages: &[Msg], width: u16) -> Vec<Line<'static>> {
     lines
 }
 
+/// Caches the wrapped, styled history lines built by [`build_history_lines`],
+/// rebuilding only when the message count, the last message's text length, or
+/// the wrap width changes. The last-message-length signal is a cheap proxy for
+/// "the in-progress streaming bubble grew" without hashing the whole history
+/// every frame.
+#[derive(Default)]
+struct LineCache {
+    key: Option<(usize, usize, u16)>, // (msg count, last-msg len, width)
+    lines: Vec<Line<'static>>,
+    rebuilds: usize,
+}
+
+impl LineCache {
+    fn get_or_build(&mut self, messages: &[Msg], width: u16) -> &[Line<'static>] {
+        let last_len = messages.last().map(|m| m.text.len()).unwrap_or(0);
+        let key = (messages.len(), last_len, width);
+        if self.key != Some(key) {
+            self.lines = build_history_lines(messages, width);
+            self.key = Some(key);
+            self.rebuilds += 1;
+        }
+        &self.lines
+    }
+}
+
 fn render(frame: &mut Frame, app: &App, lines: Vec<Line<'static>>, scroll: u16, plan_rows: u16) {
     let area = frame.area();
     let [status_area, plan_area, history_area, progress_area, input_area] = Layout::vertical([
@@ -901,7 +948,10 @@ fn render(frame: &mut Frame, app: &App, lines: Vec<Line<'static>>, scroll: u16, 
                 ),
                 Span::raw(" "),
                 Span::styled(
-                    format!("{label} · {elapsed}s · ↓{} tokens", fmt_tokens(app.out_tokens)),
+                    format!(
+                        "{label} · {elapsed}s · ↓{} tokens",
+                        fmt_tokens(app.out_tokens)
+                    ),
                     Style::default().add_modifier(Modifier::DIM),
                 ),
             ])
@@ -1103,6 +1153,25 @@ mod tests {
         assert!(s[0].starts_with('✓'));
         assert!(s[1].starts_with('◐'));
         assert!(s[2].starts_with('◻'));
+    }
+
+    #[test]
+    fn line_cache_rebuilds_on_change_only() {
+        let mut c = LineCache::default();
+        let mut msgs = vec![Msg {
+            role: Role::User,
+            text: "hi".into(),
+        }];
+        let a = c.get_or_build(&msgs, 40).len();
+        let b = c.get_or_build(&msgs, 40).len(); // same key -> no rebuild
+        assert_eq!(c.rebuilds, 1);
+        assert_eq!(a, b);
+        msgs.push(Msg {
+            role: Role::Assistant,
+            text: "yo".into(),
+        });
+        c.get_or_build(&msgs, 40); // changed -> rebuild
+        assert_eq!(c.rebuilds, 2);
     }
 
     #[test]
