@@ -232,6 +232,14 @@ struct App {
     view: ViewMode,
     /// Whether the swarm viz is enabled (from `[viz] swarm`).
     viz_swarm: bool,
+    /// Timestamps of the last bare Esc / Ctrl-C, for double-tap detection:
+    /// Esc-Esc stops the current run, Ctrl-C twice quits. Any intervening key
+    /// clears them, so only a genuine double-tap fires.
+    last_esc: Option<Instant>,
+    last_ctrl_c: Option<Instant>,
+    /// Transient one-line hint on the progress row (e.g. "press Esc again to
+    /// stop the run"), cleared on the next key or when the window lapses.
+    notice: Option<String>,
 }
 
 /// Which main view the TUI is showing.
@@ -252,6 +260,8 @@ enum Action {
     RadioNext,
     /// Ctrl-V: toggle between the chat and full-screen swarm views.
     ViewToggle,
+    /// Esc pressed twice while a run is in flight: abort it and return to idle.
+    CancelRun,
 }
 
 // TODO(@rahulmranga): memory-v1 Task 9 — thread the shared memory into the
@@ -348,6 +358,9 @@ async fn event_loop<P: Provider + 'static>(
     // Receiver for the currently running fan-out's lifecycle events, if any.
     // Same lifecycle as `events_rx`, but only ever set in fan-out mode.
     let mut fanout_rx: Option<mpsc::UnboundedReceiver<entheai_orchestrator::FanoutEvent>> = None;
+    // Handle to the in-flight run task (single-agent or fan-out) so double-Esc
+    // can abort it; `None` while idle, cleared when a run completes normally.
+    let mut run_handle: Option<tokio::task::JoinHandle<()>> = None;
 
     let mut app = App {
         messages: Vec::new(),
@@ -371,6 +384,9 @@ async fn event_loop<P: Provider + 'static>(
         swarm: entheai_viz::SwarmModel::new(),
         view: ViewMode::Chat,
         viz_swarm: config.viz.swarm,
+        last_esc: None,
+        last_ctrl_c: None,
+        notice: None,
     };
 
     // Background music player (yt-dlp + rodio); one per TUI session.
@@ -446,6 +462,29 @@ async fn event_loop<P: Provider + 'static>(
                                 ViewMode::Chat
                             };
                         }
+                        Action::CancelRun => {
+                            // Abort the in-flight run task; its result_tx is
+                            // dropped, so we reset run state here rather than
+                            // waiting on the (never-arriving) result.
+                            if let Some(h) = run_handle.take() {
+                                h.abort();
+                            }
+                            app.messages.push(Msg {
+                                role: Role::Error,
+                                text: "⛔ run stopped".to_string(),
+                            });
+                            app.status = Status::Idle;
+                            app.follow = true;
+                            app.run_started = None;
+                            events_rx = None;
+                            fanout_rx = None;
+                            app.worker_pool = None;
+                            app.streaming_idx = None;
+                            app.plan.clear();
+                            if let Some(ref tx) = companion_tx {
+                                let _ = tx.send(StateChange::idle());
+                            }
+                        }
                         Action::Submit(text) if is_radio_command(&text) => {
                             handle_radio_command(&mut app, &radio, &text);
                         }
@@ -455,6 +494,19 @@ async fn event_loop<P: Provider + 'static>(
                         Action::Submit(text) if is_viz_command(&text) => {
                             handle_viz_command(&mut app, &text);
                         }
+                        Action::Submit(text) if is_help_command(&text) => {
+                            handle_help_command(&mut app);
+                        }
+                        Action::Submit(text) if is_clear_command(&text) => {
+                            handle_clear_command(&mut app);
+                        }
+                        Action::Submit(text) if is_fanout_command(&text) => {
+                            handle_fanout_command(&mut app, &text);
+                        }
+                        Action::Submit(text) if is_model_command(&text) => {
+                            handle_model_command(&mut app);
+                        }
+                        Action::Submit(text) if is_quit_command(&text) => break,
                         Action::Submit(text) => {
                             app.messages.push(Msg { role: Role::User, text: text.clone() });
                             app.status = Status::Working;
@@ -468,7 +520,7 @@ async fn event_loop<P: Provider + 'static>(
                             app.verb_idx = app.verb_idx.wrapping_add(1);
                             app.plan.clear();
 
-                            if fanout {
+                            if app.fanout {
                                 let pool = entheai_orchestrator::WorkerPool::new(
                                     config.router.max_parallel.max(1),
                                 );
@@ -490,7 +542,7 @@ async fn event_loop<P: Provider + 'static>(
                                     entheai_bus::new_session_id(),
                                     Some(ftx),
                                 );
-                                tokio::spawn(async move {
+                                run_handle = Some(tokio::spawn(async move {
                                     let res =
                                         entheai_orchestrator::run_fanout(&config, &root, &text, events, pool, None)
                                             .await;
@@ -499,7 +551,7 @@ async fn event_loop<P: Provider + 'static>(
                                     // subscribers. No-op when NATS is off.
                                     bus_session.finish().await;
                                     let _ = result_tx.send(res.map_err(|e| e.to_string())).await;
-                                });
+                                }));
                             } else {
                                 let history = build_history(app.system_prompt.as_deref(), &app.messages);
 
@@ -510,13 +562,13 @@ async fn event_loop<P: Provider + 'static>(
                                 let result_tx = result_tx.clone();
                                 let (event_tx, event_rx) = mpsc::unbounded_channel::<AgentEvent>();
                                 events_rx = Some(event_rx);
-                                tokio::spawn(async move {
+                                run_handle = Some(tokio::spawn(async move {
                                     let mut prompter = TuiPrompter { tx: perm_tx };
                                     let res = agent
                                         .run_task(history, &registry, &policy, &mut prompter, Some(event_tx))
                                         .await;
                                     let _ = result_tx.send(res.map_err(|e| e.to_string())).await;
-                                });
+                                }));
                             }
                         }
                     }
@@ -555,6 +607,7 @@ async fn event_loop<P: Provider + 'static>(
                 app.run_started = None;
                 events_rx = None;
                 fanout_rx = None;
+                run_handle = None;
                 app.worker_pool = None;
                 app.streaming_idx = None;
                 app.plan.clear();
@@ -704,6 +757,14 @@ async fn event_loop<P: Provider + 'static>(
                     app.spinner_frame = (app.spinner_frame + 1) % FRAMES.len();
                     dirty = true;
                 }
+                // Auto-dismiss a double-tap hint once its window has lapsed.
+                if app.notice.is_some()
+                    && app.last_esc.map_or(true, |t| t.elapsed() >= DOUBLE_TAP)
+                    && app.last_ctrl_c.map_or(true, |t| t.elapsed() >= DOUBLE_TAP)
+                {
+                    app.notice = None;
+                    dirty = true;
+                }
             }
         }
     }
@@ -714,6 +775,9 @@ async fn event_loop<P: Provider + 'static>(
 const STATUS_ROWS: u16 = 2; // row 1: entheai · model · state (+ ctx/tokens); row 2: env banner
 const PROGRESS_ROWS: u16 = 1;
 const INPUT_ROWS: u16 = 3;
+/// Window within which a repeated Esc / Ctrl-C counts as a deliberate
+/// double-tap (Esc-Esc stops a run; Ctrl-C twice quits).
+const DOUBLE_TAP: Duration = Duration::from_millis(1200);
 
 /// Height of the plan-pane layout region for a plan with `plan_len` items:
 /// zero when empty (the pane collapses), capped at `cap` rows (from
@@ -771,6 +835,13 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
 
     let idle = matches!(app.status, Status::Idle);
 
+    // Double-tap bookkeeping: take the prior Esc / Ctrl-C timestamps so any
+    // intervening key breaks the chain; the two arms below re-arm their own.
+    let prev_esc = app.last_esc.take();
+    let prev_ctrl_c = app.last_ctrl_c.take();
+    // Any key dismisses a transient hint; the arms below re-set it as needed.
+    app.notice = None;
+
     match key.code {
         // Radio transport keys work whether idle or mid-run.
         KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -783,20 +854,49 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             return Action::ViewToggle;
         }
-        // Ctrl-C / Esc quit only when idle (never mid-run or mid-modal).
+        // Ctrl-C twice quits (any state): the first press arms + hints, a
+        // second within the double-tap window exits.
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            if idle {
+            let now = Instant::now();
+            if prev_ctrl_c.is_some_and(|t| now.duration_since(t) < DOUBLE_TAP) {
                 return Action::Quit;
             }
+            app.last_ctrl_c = Some(now);
+            app.notice = Some("press Ctrl-C again to quit".to_string());
         }
-        KeyCode::Esc if idle => return Action::Quit,
+        // Esc twice stops the current run; when idle it clears the input line.
+        // (A single Esc no longer quits — quitting is Ctrl-C ×2 or bare `q`.)
+        KeyCode::Esc => {
+            let now = Instant::now();
+            if prev_esc.is_some_and(|t| now.duration_since(t) < DOUBLE_TAP) {
+                if matches!(app.status, Status::Working) {
+                    return Action::CancelRun;
+                }
+                app.input.clear();
+            } else {
+                app.last_esc = Some(now);
+                app.notice = Some(
+                    if matches!(app.status, Status::Working) {
+                        "press Esc again to stop the run"
+                    } else {
+                        "press Esc again to clear the input"
+                    }
+                    .to_string(),
+                );
+            }
+        }
         // Bare `q` quits only when idle AND the input is empty, so a chat message
         // can still contain the letter q.
         KeyCode::Char('q') if idle && app.input.is_empty() => return Action::Quit,
         KeyCode::Enter => {
             let trimmed = app.input.trim();
-            let is_local_command =
-                is_radio_command(trimmed) || is_workers_command(trimmed) || is_viz_command(trimmed);
+            // Commands safe to run mid-flight (read-only or run-management). The
+            // state-mutating ones (/clear, /fanout, /quit) stay idle-only.
+            let is_local_command = is_radio_command(trimmed)
+                || is_workers_command(trimmed)
+                || is_viz_command(trimmed)
+                || is_help_command(trimmed)
+                || is_model_command(trimmed);
             if !trimmed.is_empty() && (idle || is_local_command) {
                 return Action::Submit(std::mem::take(&mut app.input));
             }
@@ -990,6 +1090,113 @@ fn handle_viz_command(app: &mut App, text: &str) {
         text: format!("◈ switched to {where_now} (Ctrl-V to toggle)"),
     });
     app.follow = true;
+}
+
+/// True for `/help` (or its `/?` alias) — prints the command + key reference.
+fn is_help_command(text: &str) -> bool {
+    let t = text.trim();
+    t == "/help" || t == "/?"
+}
+
+/// Echo the full slash-command list plus key bindings into history so the whole
+/// surface is discoverable without leaving the TUI.
+fn handle_help_command(app: &mut App) {
+    app.messages.push(Msg {
+        role: Role::User,
+        text: "/help".to_string(),
+    });
+    let mut body = String::from("commands");
+    for (cmd, desc) in SLASH_COMMANDS {
+        body.push_str(&format!("\n  {cmd:<9} {desc}"));
+    }
+    body.push_str(
+        "\nkeys: Enter send · Esc Esc stop run · Ctrl-C ×2 quit · q quit (empty input)\
+         \n      Ctrl-V viz · Ctrl-P pause · Ctrl-N next · PgUp/PgDn scroll · Tab complete",
+    );
+    app.messages.push(Msg {
+        role: Role::Tool,
+        text: body,
+    });
+    app.follow = true;
+}
+
+/// True for `/clear` (or its `/new` alias) — wipes the conversation for a fresh
+/// context. Idle-only (gated in the key handler) so it never races a live run.
+fn is_clear_command(text: &str) -> bool {
+    let t = text.trim();
+    t == "/clear" || t == "/new"
+}
+
+/// Drop the whole conversation (and any derived plan/scroll state) so the next
+/// message starts from an empty context. The system prompt is untouched.
+fn handle_clear_command(app: &mut App) {
+    app.messages.clear();
+    app.streaming_idx = None;
+    app.plan.clear();
+    app.scroll = 0;
+    app.follow = true;
+    app.messages.push(Msg {
+        role: Role::Tool,
+        text: "◧ conversation cleared — fresh context".to_string(),
+    });
+}
+
+/// True for `/fanout [on|off]` — toggles swarm fan-out for the next message.
+fn is_fanout_command(text: &str) -> bool {
+    let t = text.trim();
+    t == "/fanout" || t.starts_with("/fanout ")
+}
+
+/// Flip (or set) whether submitted messages decompose into parallel coders
+/// (`app.fanout`, read by the run path) instead of the single-agent loop.
+fn handle_fanout_command(app: &mut App, text: &str) {
+    app.messages.push(Msg {
+        role: Role::User,
+        text: text.to_string(),
+    });
+    app.fanout = match text.split_whitespace().nth(1) {
+        Some("on") => true,
+        Some("off") => false,
+        _ => !app.fanout, // bare toggle
+    };
+    let state = if app.fanout {
+        "on — messages decompose into parallel coders"
+    } else {
+        "off — single-agent loop"
+    };
+    app.messages.push(Msg {
+        role: Role::Tool,
+        text: format!("⑂ fan-out {state}"),
+    });
+    app.follow = true;
+}
+
+/// True for `/model` — reports the active model (switching needs a restart).
+fn is_model_command(text: &str) -> bool {
+    text.trim() == "/model"
+}
+
+/// Echo the active model label; the agent is built once per session, so
+/// switching means relaunching with `--model "<provider>/<model>"`.
+fn handle_model_command(app: &mut App) {
+    app.messages.push(Msg {
+        role: Role::User,
+        text: "/model".to_string(),
+    });
+    app.messages.push(Msg {
+        role: Role::Tool,
+        text: format!(
+            "● model: {} — switch by restarting with --model \"<provider>/<model>\"",
+            app.model_label
+        ),
+    });
+    app.follow = true;
+}
+
+/// True for `/quit` (or its `/exit` alias) — leaves entheai (like Ctrl-C ×2).
+fn is_quit_command(text: &str) -> bool {
+    let t = text.trim();
+    t == "/quit" || t == "/exit"
 }
 
 /// Fold a player event into UI state, echoing noteworthy ones into history.
@@ -1396,6 +1603,20 @@ fn render(
         Status::Idle => Line::from(""),
     };
     frame.render_widget(Paragraph::new(progress), progress_area);
+    // Double-tap hint (e.g. "press Esc again to stop the run"), right-aligned so
+    // it sits clear of the left-aligned spinner.
+    if let Some(note) = &app.notice {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                format!("{note} "),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .alignment(ratatui::layout::Alignment::Right),
+            progress_area,
+        );
+    }
 
     // Input box + cursor.
     render_input(frame, app, input_area);
@@ -1502,12 +1723,17 @@ fn context_line(app: &App) -> Line<'static> {
 /// The local slash commands, surfaced in a live menu when the message box starts
 /// with `/` so they're discoverable in the TUI. (name, one-line help + sub-forms).
 const SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("/help", "list commands + key bindings"),
+    ("/clear", "clear the conversation — fresh context"),
+    ("/fanout", "toggle swarm fan-out — on · off"),
+    ("/model", "show the active model"),
     (
         "/radio",
         "music — add <url> · pause · next · stop  (Ctrl-P / Ctrl-N)",
     ),
     ("/workers", "fan-out swarm — list · stop <id> · debug <id>"),
     ("/viz", "toggle the full-screen swarm view  (Ctrl-V)"),
+    ("/quit", "exit entheai  (Ctrl-C ×2)"),
 ];
 
 /// Slash commands matching the first token of `input` (the command being typed).
@@ -1647,6 +1873,123 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].0, "/radio");
         assert!(slash_matches("/nope").is_empty());
+    }
+
+    /// Minimal idle `App` for exercising command handlers and the key handler.
+    fn test_app() -> App {
+        App {
+            messages: Vec::new(),
+            input: String::new(),
+            status: Status::Idle,
+            scroll: 0,
+            follow: true,
+            model_label: "deepseek/deepseek-chat".into(),
+            pending_permission: None,
+            run_started: None,
+            spinner_frame: 0,
+            current_action: String::new(),
+            now_playing: None,
+            fanout: false,
+            worker_pool: None,
+            system_prompt: None,
+            streaming_idx: None,
+            out_tokens: 0,
+            verb_idx: 0,
+            plan: Vec::new(),
+            swarm: entheai_viz::SwarmModel::new(),
+            view: ViewMode::Chat,
+            viz_swarm: false,
+            last_esc: None,
+            last_ctrl_c: None,
+            notice: None,
+        }
+    }
+
+    #[test]
+    fn new_command_predicates_match_their_verbs() {
+        assert!(is_help_command("/help") && is_help_command("/?"));
+        assert!(is_clear_command("/clear") && is_clear_command("/new"));
+        assert!(is_fanout_command("/fanout") && is_fanout_command("/fanout on"));
+        assert!(is_model_command("/model"));
+        assert!(is_quit_command("/quit") && is_quit_command("/exit"));
+        // Lookalikes and non-commands stay out.
+        assert!(!is_clear_command("/clearx"));
+        assert!(!is_quit_command("quit"));
+        assert!(!is_fanout_command("/fan"));
+    }
+
+    #[test]
+    fn fanout_command_toggles_and_sets() {
+        let mut app = test_app();
+        assert!(!app.fanout);
+        handle_fanout_command(&mut app, "/fanout");
+        assert!(app.fanout, "bare /fanout toggles on");
+        handle_fanout_command(&mut app, "/fanout");
+        assert!(!app.fanout, "bare /fanout toggles back off");
+        handle_fanout_command(&mut app, "/fanout on");
+        assert!(app.fanout, "/fanout on forces on");
+        handle_fanout_command(&mut app, "/fanout off");
+        assert!(!app.fanout, "/fanout off forces off");
+    }
+
+    #[test]
+    fn clear_command_empties_history_but_keeps_system_prompt() {
+        let mut app = test_app();
+        app.system_prompt = Some("skills advertisement".into());
+        app.messages.push(Msg {
+            role: Role::User,
+            text: "hi".into(),
+        });
+        app.messages.push(Msg {
+            role: Role::Assistant,
+            text: "hello".into(),
+        });
+        app.scroll = 9;
+        handle_clear_command(&mut app);
+        // Only the confirmation line remains; the prior turns are gone.
+        assert_eq!(app.messages.len(), 1);
+        assert!(matches!(app.messages[0].role, Role::Tool));
+        assert_eq!(app.scroll, 0);
+        assert_eq!(app.system_prompt.as_deref(), Some("skills advertisement"));
+    }
+
+    #[test]
+    fn double_esc_stops_a_running_task() {
+        let mut app = test_app();
+        app.status = Status::Working;
+        // First Esc arms + hints, no action yet.
+        let a1 = handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(a1, Action::None));
+        assert!(app.notice.is_some());
+        // Second Esc within the window cancels the run.
+        let a2 = handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(a2, Action::CancelRun));
+    }
+
+    #[test]
+    fn intervening_key_breaks_the_double_tap_chain() {
+        let mut app = test_app();
+        app.status = Status::Working;
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        // A normal keystroke resets the chain...
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        );
+        // ...so the next Esc is a fresh first-tap, not a cancel.
+        let a = handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(a, Action::None));
+    }
+
+    #[test]
+    fn double_ctrl_c_quits() {
+        let mut app = test_app();
+        let ctrl = KeyModifiers::CONTROL;
+        let a1 = handle_key(&mut app, KeyEvent::new(KeyCode::Char('c'), ctrl));
+        assert!(matches!(a1, Action::None));
+        assert!(app.notice.is_some());
+        let a2 = handle_key(&mut app, KeyEvent::new(KeyCode::Char('c'), ctrl));
+        assert!(matches!(a2, Action::Quit));
     }
 
     #[test]
@@ -1887,6 +2230,9 @@ mod tests {
             swarm: entheai_viz::SwarmModel::new(),
             view: ViewMode::Chat,
             viz_swarm: false,
+            last_esc: None,
+            last_ctrl_c: None,
+            notice: None,
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -1920,6 +2266,9 @@ mod tests {
             swarm: entheai_viz::SwarmModel::new(),
             view: ViewMode::Chat,
             viz_swarm: false,
+            last_esc: None,
+            last_ctrl_c: None,
+            notice: None,
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -1951,6 +2300,9 @@ mod tests {
             swarm: entheai_viz::SwarmModel::new(),
             view: ViewMode::Chat,
             viz_swarm: false,
+            last_esc: None,
+            last_ctrl_c: None,
+            notice: None,
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -2037,6 +2389,9 @@ mod tests {
             swarm: entheai_viz::SwarmModel::new(),
             view: ViewMode::Chat,
             viz_swarm: false,
+            last_esc: None,
+            last_ctrl_c: None,
+            notice: None,
         };
         handle_workers_command(&mut app, "/workers list");
         assert!(app
@@ -2071,6 +2426,9 @@ mod tests {
             swarm: entheai_viz::SwarmModel::new(),
             view: ViewMode::Chat,
             viz_swarm: false,
+            last_esc: None,
+            last_ctrl_c: None,
+            notice: None,
         };
         handle_radio_event(
             &mut app,
