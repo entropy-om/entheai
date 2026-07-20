@@ -87,6 +87,18 @@ api_key_env = "OPENCODE_API_KEY"
 
 Run the checks: `./scripts/check.sh` (fmt + clippy `-D warnings` + tests).
 
+### More commands
+
+```bash
+entheai --skills add https://docs.stripe.com   # install a skill from the web (.well-known/skills.json -> llms.txt -> page)
+entheai --skills list                          # list installed skills
+entheai --skills remove stripe-documentation   # remove one by name
+entheai --memory stats                         # inspect the memory store (also: list / search <namespace> <query...>)
+entheai --doctor                               # install the rain-on-glass shader into your own ~/.config/ghostty/config
+```
+
+**Federation (opt-in).** Set `[nats] enabled = true` in `entheai.toml` (with `NATS_URL` / `NATS_TOKEN` in `.env`) and every `--fanout` run publishes its lifecycle to NATS on `entheai.fanout.<session>.*` for any tailnet subscriber to watch live. Fully fail-safe — disabled or unreachable, runs stay entirely local.
+
 ### Native app (minimalist Ghostty window)
 
 Prefer a dedicated, branded window? Install the app (it uses Ghostty):
