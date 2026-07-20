@@ -55,13 +55,20 @@ pub fn render(model: &SwarmModel, area: Rect, buf: &mut Buffer, marker: Marker, 
         (x, h * 0.20)
     };
 
-    let nodes = model.nodes.clone();
+    // Clone only what the paint closure reads (status + role prefix), NOT each
+    // node's full `task` instruction string — the render never touches `task`,
+    // so cloning it every frame was pure churn.
+    let nodes: Vec<(NodeStatus, String)> = model
+        .nodes
+        .iter()
+        .map(|n| (n.status, n.role.chars().take(6).collect()))
+        .collect();
     Canvas::default()
         .marker(marker)
         .x_bounds([0.0, w])
         .y_bounds([0.0, h])
         .paint(move |ctx| {
-            for (i, _node) in nodes.iter().enumerate() {
+            for i in 0..nodes.len() {
                 let (nx, ny) = node_xy(i);
                 ctx.draw(&CanvasLine {
                     x1: orch.0,
@@ -77,14 +84,13 @@ pub fn render(model: &SwarmModel, area: Rect, buf: &mut Buffer, marker: Marker, 
                 color: Color::Blue,
             });
             ctx.print(orch.0, orch.1, "orch");
-            for (i, node) in nodes.iter().enumerate() {
+            for (i, (status, label)) in nodes.iter().enumerate() {
                 let (nx, ny) = node_xy(i);
                 ctx.draw(&Points {
                     coords: &[(nx, ny)],
-                    color: status_color(node.status),
+                    color: status_color(*status),
                 });
-                let label: String = node.role.chars().take(6).collect();
-                ctx.print(nx, ny, format!("{} {label}", glyph(node.status, frame)));
+                ctx.print(nx, ny, format!("{} {label}", glyph(*status, frame)));
             }
         })
         .render(area, buf);

@@ -1252,11 +1252,16 @@ fn render(
         frame.render_widget(plan, plan_area);
     }
 
-    // History (pre-wrapped, so scroll offset is exact). `borrow_history` hands
-    // the paragraph lines that borrow the cache's strings, so no per-frame deep
-    // clone of the scrollback.
+    // History (pre-wrapped: one `Line` per visual row, so the scroll offset is an
+    // exact row index). Slice to the visible viewport BEFORE borrowing — rendering
+    // rows [scroll .. scroll+height] with no scroll offset shows the identical
+    // window, but makes per-frame work O(viewport) instead of O(entire scrollback)
+    // (`borrow_history` was rebuilding every cached row every frame ≈ 60fps).
+    let vis_h = history_area.height as usize;
+    let start = (scroll as usize).min(lines.len());
+    let end = (start + vis_h).min(lines.len());
     frame.render_widget(
-        Paragraph::new(borrow_history(lines)).scroll((scroll, 0)),
+        Paragraph::new(borrow_history(&lines[start..end])),
         history_area,
     );
 
