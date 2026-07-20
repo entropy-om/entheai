@@ -40,6 +40,10 @@ struct Cli {
     /// `--memory search <namespace> <query...>`.
     #[arg(long = "memory", num_args = 1.., value_name = "ARGS")]
     memory: Vec<String>,
+    /// Add a skill from a URL, then exit: `--skills add <url>`. Discovers via
+    /// <origin>/.well-known/skills.json, then /llms.txt, then the page.
+    #[arg(long = "skills", num_args = 1.., value_name = "ARGS")]
+    skills: Option<Vec<String>>,
 }
 
 #[tokio::main]
@@ -52,8 +56,11 @@ async fn main() -> anyhow::Result<()> {
     // Install the log backend before anything can emit. Interactive TUI sessions
     // (no prompt, no `--memory`, no `--app`) log to a file only so the alternate
     // screen is never corrupted; every other mode mirrors to stderr too.
-    let interactive =
-        cli.prompt.is_none() && cli.memory.is_empty() && !cli.app && !cli.doctor;
+    let interactive = cli.prompt.is_none()
+        && cli.memory.is_empty()
+        && cli.skills.is_none()
+        && !cli.app
+        && !cli.doctor;
     logging::init(interactive);
 
     // `--app` opens a dedicated minimalist Ghostty window running plain `entheai`
@@ -79,6 +86,12 @@ async fn main() -> anyhow::Result<()> {
     // built — it needs neither, and must exit without running the agent.
     if !cli.memory.is_empty() {
         return run_memory_cmd(&cfg, &cli.memory).await;
+    }
+
+    // `--skills add <url>` fetches + installs a skill via layered well-known
+    // discovery, then exits before the tool registry or companion are built.
+    if let Some(skills_args) = cli.skills.as_ref() {
+        return run_skills_cmd(skills_args, &cfg, &root).await;
     }
 
     // Tool registry (built-ins + skills + MCP servers) + the skills system prompt.
@@ -243,6 +256,42 @@ fn run_doctor_cmd() -> anyhow::Result<()> {
     println!("                  {act}");
     println!("\n  → restart Ghostty (or reload its config) to see the rain-on-glass effect.");
     Ok(())
+}
+
+/// `entheai --skills add <url>`: fetch + install a skill, then exit. Resolves the
+/// install dir from `[skills].dirs` (first entry, default "skills") under `root`.
+async fn run_skills_cmd(
+    args: &[String],
+    cfg: &entheai_config::Config,
+    root: &std::path::Path,
+) -> anyhow::Result<()> {
+    let dir_name = cfg.skills.dirs.first().map(String::as_str).unwrap_or("skills");
+    let skills_dir = root.join(dir_name);
+    match args.first().map(String::as_str) {
+        Some("add") if args.len() >= 2 => {
+            let url = &args[1];
+            let added = entheai_skills::remote::add_from_url(url, &skills_dir).await?;
+            if added.is_empty() {
+                println!("skills: nothing to add from {url}");
+            }
+            for a in &added {
+                if a.skipped_existing {
+                    println!(
+                        "skills: {} already exists at {} — skipping (delete to re-add)",
+                        a.slug,
+                        a.path.display()
+                    );
+                } else {
+                    println!("skills: added '{}' [{}] -> {}", a.name, a.tier, a.path.display());
+                }
+            }
+            if added.iter().any(|a| !a.skipped_existing) {
+                println!("added from {url} — a skill's instructions are advisory to the agent. It's live on the next run.");
+            }
+            Ok(())
+        }
+        _ => anyhow::bail!("usage: entheai --skills add <url>"),
+    }
 }
 
 /// Expand a leading `~` to the user's home directory.
