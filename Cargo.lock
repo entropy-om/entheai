@@ -1305,6 +1305,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dotenvy",
+ "entheai-bus",
  "entheai-companion",
  "entheai-config",
  "entheai-launcher",

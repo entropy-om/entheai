@@ -117,8 +117,17 @@ async fn main() -> anyhow::Result<()> {
         Some(prompt) => {
             if cli.fanout {
                 let pool = entheai_orchestrator::WorkerPool::new(cfg.router.max_parallel.max(1));
+                // Federation event bus (F1): opt-in + fail-safe. With `[nats]`
+                // off or the hub unreachable, `connect` returns None and `tee`
+                // hands `None` straight to run_fanout — behavior unchanged.
+                let bus = entheai_bus::Bus::connect(
+                    &entheai_bus::BusOptions::from_config(&cfg.nats),
+                )
+                .await;
+                let (events, _bus_session) =
+                    entheai_bus::tee(bus, session_id.clone(), None);
                 let answer =
-                    entheai_orchestrator::run_fanout(&cfg, &root, &prompt, None, pool).await?;
+                    entheai_orchestrator::run_fanout(&cfg, &root, &prompt, events, pool).await?;
                 println!("{answer}");
             } else {
                 let mut prompter = entheai_permission::StdinPrompter;

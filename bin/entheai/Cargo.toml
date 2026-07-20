@@ -21,6 +21,7 @@ entheai-skills = { path = "../../crates/skills" }
 entheai-memory = { path = "../../crates/memory" }
 entheai-launcher = { path = "../../crates/launcher" }
 entheai-obsidian = { path = "../../crates/obsidian" }
+entheai-bus = { path = "../../crates/bus" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-std", "io-util", "net"] }
 anyhow.workspace = true
 clap.workspace = true
