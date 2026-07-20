@@ -42,6 +42,7 @@ base_url = "http://127.0.0.1:1337/v1"
 [router]
 orchestrator = "deepseek/deepseek-chat" # DeepSeek V4 Pro via credits: "zen/deepseek-v4-pro"
 max_parallel = 4                         # cap on concurrently-running sub-agents
+max_turns = 100                          # per-task tool-dispatch round cap (default 50)
 
 # Optional: verify each coder's worktree before integrating its changes.
 # [fanout]
