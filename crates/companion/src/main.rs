@@ -157,6 +157,13 @@ fn main() -> anyhow::Result<()> {
     let mut anim = AnimationState::default();
     let mut socket_reader = socket_reader;
     let mut last_frame = Instant::now();
+    // Dedicated clock for the animation `dt`, updated ONLY here in
+    // `RedrawRequested`. `last_frame` (above) is the redraw-pacing
+    // scheduler's clock (see `AboutToWait`); it gets reset moments before
+    // this handler runs, so reusing it for `dt` collapsed the delta to
+    // ~0 every frame and made state-color transitions crawl instead of
+    // completing in `TRANSITION_S`.
+    let mut last_render = Instant::now();
     let mut fading_since: Option<f64> = None;
     let mut line_buf = String::new();
     let mut surface_state: Option<SoftbufferState> = None;
@@ -180,8 +187,8 @@ fn main() -> anyhow::Result<()> {
                     return;
                 }
 
-                let dt = last_frame.elapsed().as_secs_f64();
-                last_frame = Instant::now();
+                let dt = last_render.elapsed().as_secs_f64();
+                last_render = Instant::now();
                 anim.tick(dt);
 
                 if let Some(fade_start) = fading_since {
@@ -218,7 +225,7 @@ fn main() -> anyhow::Result<()> {
                 let _ = surf.resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap());
 
                 if let Ok(mut buffer) = surf.buffer_mut() {
-                    render::render_frame(&mut buffer, w, h, &qr_grid, &anim, now, &name);
+                    render::render_frame(&mut buffer, w, h, &qr_grid, &mut anim, now, &name);
                     let _ = buffer.present();
                 }
             }

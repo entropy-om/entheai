@@ -42,6 +42,12 @@ pub struct AnimationState {
     flash_until: Option<f64>,
     /// When set, the companion is fading out. Value decreases from 1.0 → 0.0.
     pub fade_alpha: f32,
+    /// Per-pixel background glow factor, cached for the current `(width,
+    /// height)` — see [`AnimationState::ensure_glow_lut`]. The window is
+    /// non-resizable, so in practice this is built once; the size guard
+    /// only exists to keep it correct if that ever changes.
+    glow_lut: Vec<f32>,
+    glow_lut_size: (u32, u32),
 }
 
 impl Default for AnimationState {
@@ -58,6 +64,8 @@ impl Default for AnimationState {
             qr_dim: 0.0,
             flash_until: None,
             fade_alpha: 1.0,
+            glow_lut: Vec::new(),
+            glow_lut_size: (0, 0),
         }
     }
 }
@@ -89,6 +97,44 @@ impl AnimationState {
         );
         self.qr_dim = lerp_f32(self.qr_dim, self.target_qr_dim, t);
     }
+
+    /// Builds (or rebuilds, on a `(width, height)` change) the per-pixel
+    /// glow-factor LUT. The factor depends only on pixel coordinate,
+    /// center, and `max_r` — all invariant for a fixed-size window — so
+    /// this replaces a per-frame `sqrt` + [`smooth_falloff`] per pixel
+    /// with a one-time build plus a per-frame array lookup.
+    fn ensure_glow_lut(&mut self, width: u32, height: u32) {
+        if self.glow_lut_size == (width, height) && !self.glow_lut.is_empty() {
+            return;
+        }
+        let w = width as usize;
+        let h = height as usize;
+        let mut lut = Vec::with_capacity(w * h);
+        for y in 0..h {
+            for x in 0..w {
+                lut.push(glow_factor_at(x, y, w, h));
+            }
+        }
+        self.glow_lut = lut;
+        self.glow_lut_size = (width, height);
+    }
+}
+
+/// Pure per-pixel background glow factor for pixel `(x, y)` in a `w`x`h`
+/// frame: distance from center, normalized by `max_r`, run through
+/// [`smooth_falloff`]. Depends only on the pixel coordinate and frame
+/// size, so it's cacheable per `(w, h)` — see
+/// [`AnimationState::ensure_glow_lut`].
+fn glow_factor_at(x: usize, y: usize, w: usize, h: usize) -> f32 {
+    let wf = w as f32;
+    let hf = h as f32;
+    let cx = wf / 2.0;
+    let cy = hf / 2.0;
+    let max_r = wf.min(hf) / 2.0;
+    let dx = x as f32 - cx;
+    let dy = y as f32 - cy;
+    let dist = (dx * dx + dy * dy).sqrt() / max_r;
+    smooth_falloff(dist)
 }
 
 fn params_for(state: State) -> GlowParams {
@@ -144,7 +190,7 @@ pub fn render_frame(
     width: u32,
     height: u32,
     qr: &QrGrid,
-    anim: &AnimationState,
+    anim: &mut AnimationState,
     time: f64,
     name: &str,
 ) {
@@ -152,7 +198,8 @@ pub fn render_frame(
     let h = height as f32;
     let cx = w / 2.0;
     let cy = h / 2.0;
-    let max_r = w.min(h) / 2.0;
+
+    anim.ensure_glow_lut(width, height);
 
     let (pulse_min, pulse_max) = anim.target_amplitude;
     let pulse_raw = (time * std::f64::consts::TAU / anim.target_period).sin() as f32;
@@ -166,24 +213,22 @@ pub fn render_frame(
 
     for y in 0..height {
         for x in 0..width {
-            let dx = x as f32 - cx;
-            let dy = y as f32 - cy;
-            let dist = (dx * dx + dy * dy).sqrt() / max_r;
-            let glow_factor = smooth_falloff(dist);
+            let idx = (y * width + x) as usize;
+            let glow_factor = anim.glow_lut[idx];
             let alpha = glow_factor * pulse;
             let r = lerp_u8(BG.0, gr as u8, alpha);
             let g = lerp_u8(BG.1, gg as u8, alpha);
             let b = lerp_u8(BG.2, gb as u8, alpha);
             let a = (255.0 * fa) as u8;
-            buffer[(y * width + x) as usize] = pack_bgra(b, g, r, a);
+            buffer[idx] = pack_bgra(b, g, r, a);
         }
     }
 
     let qr_px = (w.min(h) * 0.60) as u32;
     let module_px = (qr_px / qr.size as u32).max(1);
     let total_qr_px = module_px * qr.size as u32;
-    let qr_x0 = (width - total_qr_px) / 2;
-    let qr_y0 = (height - total_qr_px) / 2;
+    let qr_x0 = width.saturating_sub(total_qr_px) / 2;
+    let qr_y0 = height.saturating_sub(total_qr_px) / 2;
     let dim = anim.qr_dim;
 
     for my in 0..qr.size {
@@ -237,8 +282,9 @@ pub fn render_frame(
         );
     }
 
-    let name_upper = name.to_uppercase();
-    draw_text(buffer, width, height, &name_upper, fa);
+    // `draw_text` -> `glyph_3x5` already `to_ascii_uppercase()`s per char,
+    // so pre-uppercasing here would just be a redundant per-frame alloc.
+    draw_text(buffer, width, height, name, fa);
 }
 
 fn draw_spinner(buffer: &mut [u32], w: u32, h: u32, cx: f32, cy: f32, time: f64, fade_alpha: f32) {
@@ -468,6 +514,23 @@ mod tests {
         assert!((smooth_falloff(0.3) - 1.0).abs() < 0.01);
         assert!(smooth_falloff(0.85) < 1.0 && smooth_falloff(0.85) > 0.0);
         assert!((smooth_falloff(1.2) - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_glow_lut_matches_glow_factor_at() {
+        // The LUT is purely a cache of `glow_factor_at`; this proves the
+        // cached values equal the inline math they replace in the
+        // per-frame hot loop.
+        let (w, h) = (10u32, 8u32);
+        let mut anim = AnimationState::default();
+        anim.ensure_glow_lut(w, h);
+        for &(x, y) in &[(0usize, 0usize), (5, 4), (9, 7), (3, 6), (0, 7)] {
+            let idx = y * w as usize + x;
+            assert_eq!(
+                anim.glow_lut[idx],
+                glow_factor_at(x, y, w as usize, h as usize)
+            );
+        }
     }
 
     #[test]
