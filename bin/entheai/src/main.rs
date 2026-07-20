@@ -290,7 +290,22 @@ async fn run_skills_cmd(
             }
             Ok(())
         }
-        _ => anyhow::bail!("usage: entheai --skills add <url>"),
+        Some("list") if args.len() == 1 => {
+            let dirs: Vec<std::path::PathBuf> =
+                cfg.skills.dirs.iter().map(|d| root.join(d)).collect();
+            let reg = entheai_skills::SkillRegistry::discover(&dirs);
+            if reg.is_empty() {
+                println!("no skills found in {:?}", cfg.skills.dirs);
+            } else {
+                println!("{} skill(s):", reg.list().len());
+                for s in reg.list() {
+                    println!("  {} — {}", s.name, s.description);
+                    println!("      {}", s.path.display());
+                }
+            }
+            Ok(())
+        }
+        _ => anyhow::bail!("usage: entheai --skills <add <url> | list>"),
     }
 }
 

@@ -6,6 +6,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+### Added
+- `entheai --skills list` — list installed skills (name, description, path), the companion to `--skills add`.
+
 ## [0.2.0] - 2026-07-20
 
 The v0.2 slice — federation, richer surfaces, and a portable build. All additive:
