@@ -124,6 +124,42 @@ fn decompose_messages(task: &str) -> Vec<ChatMessage> {
     ]
 }
 
+/// Decompose prompt for the v2 coder path (isolated git worktrees, full tools).
+/// The read-only [`DECOMPOSE_SYSTEM`] tells the model to "scope sub-tasks to
+/// analysis/exploration, not edits" — exactly wrong here, where sub-agents MAKE
+/// the changes. Without a coder-oriented prompt a weak orchestrator model returns
+/// an explore-only plan and the fan-out integrates nothing.
+const DECOMPOSE_SYSTEM_CODER: &str = "You are the orchestrator of a fan-out coding agent. \
+Break the user's task into a small set of INDEPENDENT sub-tasks that can run in parallel. \
+Each sub-task has a `role` (one of: coder, explore, reviewer, test, docs) and a concise `task` string. \
+Every sub-agent runs in its OWN isolated git worktree with full read/write/shell tools. \
+Any change to the codebase MUST be performed by a `coder` sub-task that actually makes the edit; \
+`explore`/`reviewer`/`test`/`docs` support it but never modify files. \
+If the task requires changing code, include at least one `coder` sub-task that implements it. \
+Respond with ONLY a JSON array, e.g. [{\"role\":\"coder\",\"task\":\"add a module doc comment to crates/foo/src/lib.rs\"}]. No prose.";
+
+fn decompose_messages_coder(task: &str) -> Vec<ChatMessage> {
+    vec![
+        ChatMessage::system(DECOMPOSE_SYSTEM_CODER),
+        ChatMessage::user(task),
+    ]
+}
+
+/// v2 safety net: the coder path exists to CHANGE code, so a run must contain at
+/// least one `coder` sub-task. A weak orchestrator model sometimes returns an
+/// explore-only (or empty) decomposition; without this guard the fan-out would
+/// analyze the task and integrate nothing. Appends a single coder for the whole
+/// task when the model produced none.
+fn ensure_coder(mut subtasks: Vec<SubTask>, task: &str) -> Vec<SubTask> {
+    if !subtasks.iter().any(|s| s.role.eq_ignore_ascii_case("coder")) {
+        subtasks.push(SubTask {
+            role: "coder".to_string(),
+            task: task.to_string(),
+        });
+    }
+    subtasks
+}
+
 fn subagent_messages(role: &str, task: &str) -> Vec<ChatMessage> {
     let sys = format!(
         "You are a `{role}` sub-agent in a fan-out coding agent. Use read_file/search to \
@@ -484,20 +520,14 @@ pub async fn run_fanout(
 
     // 1. Map + decompose.
     let mapped = entheai_mapper::Mapper::map(root, task, &[]).await;
-    let raw = orchestrate_once(config, &orch_model, decompose_messages(&mapped.render())).await?;
-    let subtasks = parse_decomposition(&raw, max_par);
-
-    // Fallback: couldn't decompose → just run the task once on the orchestrator.
-    // Uses `mapped.render()`, not raw `task`: `orchestrate_once` never registers any
-    // tools, so a raw `@{file}` marker here would be a dead end the model can't resolve.
-    if subtasks.is_empty() {
-        return orchestrate_once(
-            config,
-            &orch_model,
-            vec![ChatMessage::user(mapped.render())],
-        )
-        .await;
-    }
+    let raw =
+        orchestrate_once(config, &orch_model, decompose_messages_coder(&mapped.render())).await?;
+    // The v2 coder path exists to CHANGE code, so guarantee at least one `coder`
+    // sub-task: a weak orchestrator model sometimes returns an explore-only (or
+    // empty) plan, which would analyze the task and integrate nothing. `ensure_coder`
+    // appends a coder for the whole task when none is present. `mapped.render()` (not
+    // the raw task) carries the resolved file context a lone coder needs.
+    let subtasks = ensure_coder(parse_decomposition(&raw, max_par), &mapped.render());
     if let Some(tx) = &events {
         let _ = tx.send(FanoutEvent::Decomposed {
             tasks: subtasks
@@ -809,6 +839,25 @@ mod tests {
         } else {
             panic!()
         }
+    }
+
+    #[test]
+    fn ensure_coder_appends_when_no_coder_present() {
+        // A weak model returned an explore-only plan; the guard must add a coder
+        // so the v2 fan-out actually changes code instead of only analyzing it.
+        let out = ensure_coder(vec![sub_task("explore", "analyze foo")], "add a doc comment");
+        assert_eq!(out.len(), 2);
+        assert!(out
+            .iter()
+            .any(|s| s.role == "coder" && s.task == "add a doc comment"));
+    }
+
+    #[test]
+    fn ensure_coder_is_noop_when_a_coder_is_present() {
+        let plan = vec![sub_task("explore", "map"), sub_task("coder", "edit lib.rs")];
+        let out = ensure_coder(plan, "whole task");
+        assert_eq!(out.len(), 2, "no extra coder appended");
+        assert_eq!(out.iter().filter(|s| s.role == "coder").count(), 1);
     }
 
     #[tokio::test]
