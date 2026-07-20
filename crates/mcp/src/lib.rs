@@ -5,11 +5,20 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{oneshot, Mutex};
+
+/// Maximum size, in bytes, of a single newline-delimited JSON-RPC message
+/// read from an MCP server. A malicious or broken server that streams bytes
+/// without ever sending a newline would otherwise grow the reader's line
+/// buffer unbounded and OOM the process; lines longer than this are
+/// discarded (logged) instead of crashing the reader. Generous enough for
+/// any legitimate JSON-RPC message, including large tool outputs.
+const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
@@ -21,6 +30,8 @@ pub enum McpError {
     Closed,
     #[error("mcp rpc error: {0}")]
     Rpc(String),
+    #[error("mcp timeout: {0}")]
+    Timeout(String),
     #[error("mcp: {0}")]
     Other(String),
 }
@@ -45,23 +56,101 @@ pub struct McpClient {
     next_id: AtomicU64,
     /// The server's name (from config), used to namespace tool names.
     server_name: String,
+    /// Applied to the `initialize` handshake and every subsequent request
+    /// (`tools/list`, `tools/call`, ...); bounds how long a hung or
+    /// unresponsive server can block the caller. Sourced from
+    /// `mcp_defaults.spawn_timeout_secs`.
+    timeout: Duration,
+}
+
+/// Outcome of reading one newline-delimited chunk with `read_capped_line`.
+enum ReadLineOutcome {
+    /// A complete line (newline stripped), within the byte cap.
+    Line(String),
+    /// The line's length exceeded `max_bytes` before a newline was found.
+    /// Its bytes (up to and including the newline, if any) were still
+    /// consumed from `reader` so stream framing stays intact for the next
+    /// line; the content itself is discarded.
+    TooLong,
+    /// End of stream with no more data.
+    Eof,
+}
+
+/// Reads one newline-delimited line from `reader`, never buffering more than
+/// `max_bytes` of it. Bytes beyond the cap are still consumed from the
+/// underlying reader (to keep line framing intact for what follows) but are
+/// not appended to the in-memory buffer, so a line of unbounded length
+/// cannot grow memory unboundedly.
+async fn read_capped_line<R>(reader: &mut R, max_bytes: usize) -> std::io::Result<ReadLineOutcome>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut buf: Vec<u8> = Vec::new();
+    let mut too_long = false;
+    loop {
+        let chunk = reader.fill_buf().await?;
+        if chunk.is_empty() {
+            return Ok(if too_long {
+                ReadLineOutcome::TooLong
+            } else if buf.is_empty() {
+                ReadLineOutcome::Eof
+            } else {
+                // EOF without a trailing newline: surface what we have,
+                // matching `AsyncBufReadExt::lines()`'s behavior.
+                ReadLineOutcome::Line(String::from_utf8_lossy(&buf).into_owned())
+            });
+        }
+        if let Some(pos) = chunk.iter().position(|&b| b == b'\n') {
+            if !too_long {
+                if buf.len() + pos > max_bytes {
+                    too_long = true;
+                } else {
+                    buf.extend_from_slice(&chunk[..pos]);
+                }
+            }
+            let consumed = pos + 1;
+            reader.consume(consumed);
+            return Ok(if too_long {
+                ReadLineOutcome::TooLong
+            } else {
+                ReadLineOutcome::Line(String::from_utf8_lossy(&buf).into_owned())
+            });
+        }
+        if !too_long {
+            if buf.len() + chunk.len() > max_bytes {
+                too_long = true;
+            } else {
+                buf.extend_from_slice(chunk);
+            }
+        }
+        let n = chunk.len();
+        reader.consume(n);
+    }
 }
 
 impl McpClient {
     /// Background reader task: owns the `BufReader<R>`, reads newline-delimited
-    /// JSON-RPC messages, and routes responses (messages carrying `id` plus a
-    /// `result` or `error`) to the matching pending request. Messages without
-    /// an `id` (notifications/logs from the server) are ignored. On EOF the
+    /// JSON-RPC messages (each capped at `max_line_bytes` to bound memory
+    /// against a server that streams bytes without a newline), and routes
+    /// responses (messages carrying `id` plus a `result` or `error`) to the
+    /// matching pending request. Messages without an `id`
+    /// (notifications/logs from the server) are ignored. On EOF the
     /// remaining pending requests are failed with `Closed`.
-    async fn reader_loop<R>(reader: R, pending: Arc<Mutex<PendingMap>>)
+    async fn reader_loop<R>(reader: R, pending: Arc<Mutex<PendingMap>>, max_line_bytes: usize)
     where
         R: AsyncRead + Unpin + Send + 'static,
     {
-        let mut lines = BufReader::new(reader).lines();
+        let mut reader = BufReader::new(reader);
         loop {
-            let line = match lines.next_line().await {
-                Ok(Some(line)) => line,
-                Ok(None) => break,
+            let line = match read_capped_line(&mut reader, max_line_bytes).await {
+                Ok(ReadLineOutcome::Line(line)) => line,
+                Ok(ReadLineOutcome::TooLong) => {
+                    eprintln!(
+                        "mcp: dropping an oversized line (> {max_line_bytes} bytes) from server"
+                    );
+                    continue;
+                }
+                Ok(ReadLineOutcome::Eof) => break,
                 Err(_) => break,
             };
             let trimmed = line.trim();
@@ -109,6 +198,12 @@ impl McpClient {
         Ok(())
     }
 
+    /// Send a JSON-RPC request and await its response, bounded by
+    /// `self.timeout`. A server that never replies (hung, or a
+    /// misconfigured non-MCP command like `cat` that echoes the request
+    /// back without a `result`/`error`) fails this call with
+    /// `McpError::Timeout` instead of hanging forever; the pending entry is
+    /// removed on timeout so it can't linger or be resolved later.
     async fn request(&self, method: &str, params: Value) -> Result<Value, McpError> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
@@ -126,10 +221,19 @@ impl McpClient {
             self.pending.lock().await.remove(&id);
             return Err(err);
         }
-        match rx.await {
-            Ok(Ok(value)) => Ok(value),
-            Ok(Err(msg)) => Err(McpError::Rpc(msg)),
-            Err(_) => Err(McpError::Closed),
+        match tokio::time::timeout(self.timeout, rx).await {
+            Ok(Ok(Ok(value))) => Ok(value),
+            Ok(Ok(Err(msg))) => Err(McpError::Rpc(msg)),
+            Ok(Err(_)) => Err(McpError::Closed),
+            Err(_) => {
+                self.pending.lock().await.remove(&id);
+                Err(McpError::Timeout(format!(
+                    "mcp server '{}' did not respond to '{}' within {}s",
+                    self.server_name,
+                    method,
+                    self.timeout.as_secs()
+                )))
+            }
         }
     }
 
@@ -143,11 +247,16 @@ impl McpClient {
     }
 
     /// Wrap an already-connected reader/writer pair (or an in-memory mock) in
-    /// an `McpClient` and perform the MCP initialize handshake.
+    /// an `McpClient` and perform the MCP initialize handshake. `timeout`
+    /// bounds the handshake itself (via `request`) as well as every request
+    /// made through the returned client afterward — a server that accepts
+    /// the connection but never replies fails with `McpError::Timeout`
+    /// rather than hanging `connect` (or the caller) forever.
     pub async fn connect<R, W>(
         reader: R,
         writer: W,
         server_name: impl Into<String>,
+        timeout: Duration,
     ) -> Result<Arc<Self>, McpError>
     where
         R: AsyncRead + Unpin + Send + 'static,
@@ -160,9 +269,10 @@ impl McpClient {
             pending: pending.clone(),
             next_id: AtomicU64::new(1),
             server_name: server_name.into(),
+            timeout,
         });
 
-        tokio::spawn(Self::reader_loop(reader, pending));
+        tokio::spawn(Self::reader_loop(reader, pending, MAX_LINE_BYTES));
 
         client
             .request(
@@ -183,11 +293,14 @@ impl McpClient {
     }
 
     /// Spawn an MCP server subprocess, wire its stdio, and connect. Returns
-    /// the client plus a guard that kills the child when dropped.
+    /// the client plus a guard that kills the child when dropped. `timeout`
+    /// bounds the initialize handshake and every later request (see
+    /// `connect`); typically `mcp_defaults.spawn_timeout_secs`.
     pub async fn spawn(
         command: &str,
         args: &[String],
         server_name: impl Into<String>,
+        timeout: Duration,
     ) -> Result<(Arc<Self>, ChildGuard), McpError> {
         let mut cmd = Command::new(command);
         cmd.args(args)
@@ -206,7 +319,7 @@ impl McpClient {
             .take()
             .ok_or_else(|| McpError::Other("mcp child has no stdin".to_string()))?;
 
-        let client = Self::connect(stdout, stdin, server_name).await?;
+        let client = Self::connect(stdout, stdin, server_name, timeout).await?;
         Ok((client, ChildGuard { child }))
     }
 
@@ -430,24 +543,199 @@ mod tests {
     }
 
     /// Wires a mock server to a fresh `McpClient` over two in-memory duplex
-    /// pipes (client-writes->server-reads, server-writes->client-reads).
-    async fn connect_to_mock() -> Arc<McpClient> {
+    /// pipes (client-writes->server-reads, server-writes->client-reads),
+    /// using `client_timeout` as the client's per-request timeout.
+    async fn connect_to_mock_with_timeout(client_timeout: Duration) -> Arc<McpClient> {
         let (client_read, server_write) = tokio::io::duplex(8192);
         let (server_read, client_write) = tokio::io::duplex(8192);
         spawn_mock_server(server_read, server_write);
 
         timeout(
             Duration::from_secs(2),
-            McpClient::connect(client_read, client_write, "mock"),
+            McpClient::connect(client_read, client_write, "mock", client_timeout),
         )
         .await
         .expect("connect timed out")
         .expect("connect failed")
     }
 
+    async fn connect_to_mock() -> Arc<McpClient> {
+        connect_to_mock_with_timeout(Duration::from_secs(2)).await
+    }
+
     #[tokio::test]
     async fn connect_completes_handshake_without_hanging() {
         let _client = connect_to_mock().await;
+    }
+
+    /// Bug 1: a server that accepts the connection but never replies to
+    /// `initialize` must not hang `connect` forever — it should fail with
+    /// `McpError::Timeout` within the configured (here, short) bound.
+    #[tokio::test]
+    async fn connect_times_out_when_server_never_replies_to_initialize() {
+        let (client_read, _server_write) = tokio::io::duplex(8192);
+        let (_server_read, client_write) = tokio::io::duplex(8192);
+        // No mock server is attached to either end: nothing ever reads the
+        // request or writes a response, simulating a connected-but-silent
+        // server.
+
+        let result = timeout(
+            Duration::from_secs(2),
+            McpClient::connect(
+                client_read,
+                client_write,
+                "silent",
+                Duration::from_millis(100),
+            ),
+        )
+        .await
+        .expect("connect() hung past the outer test timeout — timeout not enforced");
+
+        match result {
+            Err(McpError::Timeout(_)) => {}
+            Err(other) => panic!("expected McpError::Timeout, got a different error: {other}"),
+            Ok(_) => panic!("expected connect() to time out, but it succeeded"),
+        }
+    }
+
+    /// Bug 1 (exact scenario from the report): a misconfigured `command =
+    /// "cat"` server echoes the request straight back — valid JSON, matching
+    /// `id`, but with neither `result` nor `error` — so the reader loop
+    /// `continue`s and the pending request is never resolved by a normal
+    /// response. `connect` must still time out rather than hang.
+    #[tokio::test]
+    async fn connect_times_out_against_a_cat_like_echo_server() {
+        let (client_read, server_write) = tokio::io::duplex(8192);
+        let (server_read, client_write) = tokio::io::duplex(8192);
+
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(server_read).lines();
+            let mut writer = server_write;
+            while let Ok(Some(line)) = lines.next_line().await {
+                let mut out = line;
+                out.push('\n');
+                if writer.write_all(out.as_bytes()).await.is_err() {
+                    break;
+                }
+                let _ = writer.flush().await;
+            }
+        });
+
+        let result = timeout(
+            Duration::from_secs(2),
+            McpClient::connect(
+                client_read,
+                client_write,
+                "cat-mcp",
+                Duration::from_millis(150),
+            ),
+        )
+        .await
+        .expect("connect() hung against a cat-like echo server — timeout not enforced");
+
+        match result {
+            Err(McpError::Timeout(_)) => {}
+            Err(other) => panic!("expected McpError::Timeout, got a different error: {other}"),
+            Ok(_) => panic!("expected connect() to time out, but it succeeded"),
+        }
+    }
+
+    /// Bug 1: a mid-session request (after a successful handshake) to a
+    /// server that stops responding must also time out rather than hang the
+    /// caller forever, and the client must remain usable afterward (a single
+    /// unresolved request can't wedge the whole client).
+    #[tokio::test]
+    async fn request_times_out_mid_session_and_client_stays_usable() {
+        let client = connect_to_mock_with_timeout(Duration::from_millis(150)).await;
+
+        // The mock server silently ignores unknown methods (no response),
+        // simulating a server that stops responding mid-session.
+        let result = timeout(
+            Duration::from_secs(2),
+            client.request("not/a/real/method", json!({})),
+        )
+        .await
+        .expect("request() hung instead of honoring the per-request timeout");
+
+        match result {
+            Err(McpError::Timeout(_)) => {}
+            other => panic!("expected McpError::Timeout, got {other:?}"),
+        }
+
+        // The timed-out request's pending entry must not wedge later calls.
+        let tools = timeout(Duration::from_secs(2), client.list_tools())
+            .await
+            .expect("list_tools timed out after a prior request timed out")
+            .expect("list_tools failed after a prior request timed out");
+        assert_eq!(tools.len(), 1);
+    }
+
+    /// Bug 2: a line far larger than the cap, with no newline for a long
+    /// stretch, must not grow the reader's buffer past the cap, must not
+    /// panic, and must not prevent later well-formed messages from being
+    /// routed correctly.
+    #[tokio::test]
+    async fn reader_loop_survives_an_oversized_line_and_still_routes_later_responses() {
+        let (client_read, mut server_write) = tokio::io::duplex(1 << 20);
+        let pending: Arc<Mutex<PendingMap>> = Arc::new(Mutex::new(HashMap::new()));
+        let (tx, rx) = oneshot::channel();
+        pending.lock().await.insert(1, tx);
+
+        // Tiny cap so the test doesn't need to push megabytes of data.
+        const TEST_CAP: usize = 64;
+        tokio::spawn(McpClient::reader_loop(
+            client_read,
+            pending.clone(),
+            TEST_CAP,
+        ));
+
+        // Oversized line: well over the 64-byte cap, followed by a newline.
+        let oversized = format!("{}\n", "a".repeat(TEST_CAP * 4));
+        server_write.write_all(oversized.as_bytes()).await.unwrap();
+
+        // A normal, properly small JSON-RPC response for id=1 must still be
+        // routed correctly after the oversized line is discarded.
+        let resp = json!({"jsonrpc": "2.0", "id": 1, "result": {"ok": true}});
+        let mut line = serde_json::to_string(&resp).unwrap();
+        line.push('\n');
+        server_write.write_all(line.as_bytes()).await.unwrap();
+        server_write.flush().await.unwrap();
+
+        let outcome = timeout(Duration::from_secs(2), rx)
+            .await
+            .expect("reader_loop did not route the response after an oversized line")
+            .expect("pending sender dropped");
+        assert_eq!(outcome.unwrap(), json!({"ok": true}));
+    }
+
+    /// Bug 2 (unit-level): `read_capped_line` itself never buffers more than
+    /// `max_bytes`, correctly flags the oversized line as `TooLong`, and
+    /// resumes normal line reading afterward.
+    #[tokio::test]
+    async fn read_capped_line_bounds_an_oversized_line_and_recovers() {
+        let (read_half, mut write_half) = tokio::io::duplex(4096);
+        let mut input = Vec::new();
+        input.extend_from_slice(&b"a".repeat(50));
+        input.push(b'\n');
+        input.extend_from_slice(b"hello\n");
+        write_half.write_all(&input).await.unwrap();
+        write_half.flush().await.unwrap();
+        drop(write_half); // signals EOF once the buffered bytes are consumed
+
+        let mut reader = BufReader::new(read_half);
+
+        match read_capped_line(&mut reader, 10).await.unwrap() {
+            ReadLineOutcome::TooLong => {}
+            _ => panic!("expected TooLong for the oversized line"),
+        }
+        match read_capped_line(&mut reader, 10).await.unwrap() {
+            ReadLineOutcome::Line(line) => assert_eq!(line, "hello"),
+            _ => panic!("expected Line(\"hello\") after the oversized line"),
+        }
+        match read_capped_line(&mut reader, 10).await.unwrap() {
+            ReadLineOutcome::Eof => {}
+            _ => panic!("expected Eof at end of input"),
+        }
     }
 
     #[tokio::test]

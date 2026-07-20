@@ -384,8 +384,13 @@ async fn build_tools(
         let load = tokio::time::timeout(
             std::time::Duration::from_secs(cfg.mcp_defaults.spawn_timeout_secs),
             async {
-                let (client, guard) =
-                    entheai_mcp::McpClient::spawn(&mcp_cfg.command, &mcp_cfg.args, name).await?;
+                let (client, guard) = entheai_mcp::McpClient::spawn(
+                    &mcp_cfg.command,
+                    &mcp_cfg.args,
+                    name,
+                    std::time::Duration::from_secs(cfg.mcp_defaults.spawn_timeout_secs),
+                )
+                .await?;
                 let tools = entheai_mcp::load_tools(client).await?;
                 Ok::<_, entheai_mcp::McpError>((guard, tools))
             },
