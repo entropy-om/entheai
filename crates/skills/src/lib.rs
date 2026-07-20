@@ -2,6 +2,8 @@
 //! with `name` + `description`, then a markdown body of instructions), advertise
 //! them to the agent, and load one's full instructions on demand via the `skill` tool.
 
+pub mod remote;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
