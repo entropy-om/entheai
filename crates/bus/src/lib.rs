@@ -8,6 +8,8 @@ mod event;
 pub use event::BusEvent;
 
 use entheai_orchestrator::FanoutEvent;
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::task::JoinHandle;
 
 /// Connection options resolved from the `[nats]` config + environment.
 #[derive(Debug, Clone, Default)]
@@ -87,6 +89,60 @@ impl Bus {
     }
 }
 
+/// A running event-tee task. Dropping it aborts the tee (mirrors
+/// `entheai_obsidian::ObsidianSession`), so a fan-out publisher never outlives
+/// its run.
+pub struct BusSession {
+    task: Option<JoinHandle<()>>,
+}
+
+impl BusSession {
+    fn inert() -> Self {
+        Self { task: None }
+    }
+}
+
+impl Drop for BusSession {
+    fn drop(&mut self) {
+        if let Some(t) = self.task.take() {
+            t.abort();
+        }
+    }
+}
+
+/// Interpose a NATS publisher between `run_fanout` and its optional downstream
+/// (UI) event sender. Returns the sender to hand to `run_fanout` plus a session
+/// handle (drop = stop).
+///
+/// When `bus` is `None`, this is a zero-overhead identity: it returns
+/// `downstream` unchanged and an inert handle, so behavior is exactly as a build
+/// with NATS off. Otherwise it spawns a task that, for each event, forwards to
+/// `downstream` FIRST (so UI latency stays independent of NATS) then publishes.
+pub fn tee(
+    bus: Option<Bus>,
+    session: String,
+    downstream: Option<UnboundedSender<FanoutEvent>>,
+) -> (Option<UnboundedSender<FanoutEvent>>, BusSession) {
+    let Some(bus) = bus else {
+        return (downstream, BusSession::inert());
+    };
+    let (tee_tx, mut tee_rx) = tokio::sync::mpsc::unbounded_channel::<FanoutEvent>();
+    let task = tokio::spawn(async move {
+        while let Some(ev) = tee_rx.recv().await {
+            if let Some(ds) = &downstream {
+                let _ = ds.send(ev.clone());
+            }
+            bus.publish_event(&session, &ev).await;
+        }
+    });
+    (Some(tee_tx), BusSession { task: Some(task) })
+}
+
+/// A fresh per-run session id for subject scoping (uuid v4, hyphen-free).
+pub fn new_session_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +173,33 @@ mod tests {
         assert!(opts.enabled);
         assert_eq!(opts.url.as_deref(), Some("nats://example:4222"));
         assert_eq!(opts.token.as_deref(), Some("s3cr3t"));
+    }
+
+    #[tokio::test]
+    async fn tee_with_no_bus_is_identity_passthrough() {
+        // With bus = None, tee returns the SAME downstream sender and an inert
+        // handle — behavior is byte-for-byte unchanged from a NATS-less build.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<FanoutEvent>();
+        let (returned, session) = tee(None, "sess".into(), Some(tx));
+        let returned = returned.expect("downstream passed through");
+        returned.send(FanoutEvent::Integrating { branches: 1 }).unwrap();
+        match rx.recv().await {
+            Some(FanoutEvent::Integrating { branches }) => assert_eq!(branches, 1),
+            other => panic!("expected Integrating, got {other:?}"),
+        }
+        drop(session); // inert: no task to abort
+    }
+
+    #[tokio::test]
+    async fn tee_with_no_bus_and_no_downstream_is_none() {
+        let (returned, _session) = tee(None, "sess".into(), None);
+        assert!(returned.is_none());
+    }
+
+    #[test]
+    fn new_session_id_is_nonempty_and_hyphenless() {
+        let id = new_session_id();
+        assert!(!id.is_empty());
+        assert!(!id.contains('-'), "simple uuid form has no hyphens");
     }
 }
