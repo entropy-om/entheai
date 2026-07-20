@@ -159,18 +159,16 @@ impl<P: Provider> Agent<P> {
     ) -> Result<String, CoreError> {
         // Pre-task: inject memory context if enabled.
         if let Some(mem) = memory {
-            if let Some(user_msg) = messages
-                .iter()
-                .rev()
-                .find(|m| m.role == "user")
-                .map(|m| m.content.clone())
-            {
+            // Insert the retrieved context immediately BEFORE the last user
+            // message (the turn it was retrieved for). Using the user message's
+            // actual index — not `len - 1` — keeps it correct when the list ends
+            // with a non-user message (e.g. a resumed conversation ending in a
+            // tool/assistant turn).
+            if let Some(user_idx) = messages.iter().rposition(|m| m.role == "user") {
+                let user_msg = messages[user_idx].content.clone();
                 match mem.retrieve_before(&user_msg).await {
                     Ok(Some(ctx)) => {
-                        messages.insert(
-                            messages.len().saturating_sub(1), // before last user msg
-                            ChatMessage::system(ctx),
-                        );
+                        messages.insert(user_idx, ChatMessage::system(ctx));
                     }
                     Ok(None) => {}
                     Err(e) => {
