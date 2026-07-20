@@ -796,6 +796,13 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 return Action::Submit(std::mem::take(&mut app.input));
             }
         }
+        // Tab completes the slash-command name to the first match (while the
+        // command name is still being typed — not once args have started).
+        KeyCode::Tab if app.input.starts_with('/') && !app.input.trim().contains(' ') => {
+            if let Some((cmd, _)) = slash_matches(&app.input).first() {
+                app.input = format!("{cmd} ");
+            }
+        }
         KeyCode::Backspace => {
             app.input.pop();
         }
@@ -1223,6 +1230,7 @@ fn render(
             app.spinner_frame as u64,
         );
         render_input(frame, app, input_area);
+        render_slash_menu(frame, app, input_area);
         return;
     }
 
@@ -1318,6 +1326,7 @@ fn render(
 
     // Input box + cursor.
     render_input(frame, app, input_area);
+    render_slash_menu(frame, app, input_area);
 
     // Permission modal, centered over history.
     if let Status::AwaitingPermission { tool, args } = &app.status {
@@ -1417,6 +1426,76 @@ fn context_line(app: &App) -> Line<'static> {
     ])
 }
 
+/// The local slash commands, surfaced in a live menu when the message box starts
+/// with `/` so they're discoverable in the TUI. (name, one-line help + sub-forms).
+const SLASH_COMMANDS: &[(&str, &str)] = &[
+    (
+        "/radio",
+        "music — add <url> · pause · next · stop  (Ctrl-P / Ctrl-N)",
+    ),
+    ("/workers", "fan-out swarm — list · stop <id> · debug <id>"),
+    ("/viz", "toggle the full-screen swarm view  (Ctrl-V)"),
+];
+
+/// Slash commands matching the first token of `input` (the command being typed).
+fn slash_matches(input: &str) -> Vec<&'static (&'static str, &'static str)> {
+    let token = input.split_whitespace().next().unwrap_or("/");
+    SLASH_COMMANDS
+        .iter()
+        .filter(|(cmd, _)| cmd.starts_with(token) || token.starts_with(cmd))
+        .collect()
+}
+
+/// Overlay a live command menu just above the input box while the message starts
+/// with `/`, filtered by what's typed — the slash commands are TUI-discoverable.
+fn render_slash_menu(frame: &mut Frame, app: &App, input_area: Rect) {
+    if !app.input.starts_with('/') {
+        return;
+    }
+    let matches = slash_matches(&app.input);
+    if matches.is_empty() {
+        return;
+    }
+    let lines: Vec<Line<'static>> = matches
+        .iter()
+        .map(|(cmd, desc)| {
+            Line::from(vec![
+                Span::styled(
+                    format!(" {cmd} "),
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    (*desc).to_string(),
+                    Style::default().add_modifier(Modifier::DIM),
+                ),
+            ])
+        })
+        .collect();
+    // Sit just above the input box, bounded by the room above it.
+    let h = (lines.len() as u16 + 2).min(input_area.y);
+    if h < 3 {
+        return;
+    }
+    let menu_area = Rect {
+        x: input_area.x,
+        y: input_area.y.saturating_sub(h),
+        width: input_area.width,
+        height: h,
+    };
+    frame.render_widget(Clear, menu_area);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" commands · Tab completes ")
+                .border_style(Style::default().fg(Color::Magenta)),
+        ),
+        menu_area,
+    );
+}
+
 /// Draw the bordered input box and place the cursor (cursor hidden while the
 /// permission modal is up). Shared by the chat and full-screen swarm views.
 fn render_input(frame: &mut Frame, app: &App, input_area: Rect) {
@@ -1482,6 +1561,19 @@ mod tests {
             vec!["abcd".to_string(), "ef".to_string()]
         );
         assert_eq!(wrap_str("abc", 0), vec!["abc".to_string()]);
+    }
+
+    #[test]
+    fn slash_matches_filters_by_typed_token() {
+        assert_eq!(slash_matches("/").len(), SLASH_COMMANDS.len()); // lists all
+        let w = slash_matches("/w");
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].0, "/workers");
+        // A full command (even with args) still matches itself.
+        let r = slash_matches("/radio add http://x");
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].0, "/radio");
+        assert!(slash_matches("/nope").is_empty());
     }
 
     #[test]
