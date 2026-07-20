@@ -71,7 +71,22 @@ The workspace release profile is already tuned: `lto = "fat"`, `codegen-units = 
 | obsidian sync — `crates/obsidian` `apply()` | **per debounced FS tick** | blocking-on-runtime (P6), full re-scan vs incremental (P1) |
 | companion beacon — `crates/companion` render | **per animation frame** | per-frame recompute, correct frame-delta clock, allocation per frame |
 
-*(This table is enriched by the ongoing hotspot complexity audit — concrete findings + their fixes are appended below as they land.)*
+### Hot-path findings — complexity audit (2026-07-20)
+
+| # | Path · runs | Was | Fix → | Status |
+|---|---|---|---|---|
+| 1 | tui `LineCache::get_or_build` (`lib.rs:1071`) · **per token** | O(n²)/turn — key `(len, last_msg_len, width)` churns every token → re-wraps the whole scrollback | cache lines **per message** keyed by `(msg_idx, text_len, width)`; re-wrap only the streaming msg → O(Δ)/token | fixing |
+| 2 | tui draw `lines.to_vec()` (`lib.rs:411`) · **per frame** | deep-clones the whole wrapped history every draw (borrow-checker appeasement) — compounds #1 | render the `Paragraph` from a borrowed `&[Line]` → O(1) extra | fixing |
+| 3 | companion glow loop (`render.rs:167`) · **per pixel/frame** | `sqrt` + `smooth_falloff` per pixel every frame — invariant for the fixed 180×180 window | precompute a `glow_factor` LUT once per (W,H); per frame = `LUT[i]·pulse` + 3 `lerp_u8` | fixing |
+| 4 | obsidian `apply()` (`lib.rs:111`) · **per FS tick** | re-scans + re-renders the WHOLE repo each tick; discards the debouncer's changed-path set | incremental: thread changed paths / mtime-cache `SourceDoc`s; rebuild aggregate notes only on set change | **deferred (large)** — debounced ~500ms so lower-frequency; `spawn_blocking` keeps it off the runtime meanwhile |
+| 5 | companion `name.to_uppercase()` (`render.rs:240`) · **per frame** | heap-allocs a `String` every frame (`glyph_3x5` re-uppercases anyway) | uppercase once at startup / drop it | fixing |
+| 6 | core `stream_turn` (`lib.rs:91`) · **per turn** | `schemas.to_vec()` clones every tool schema each turn (invariant); `messages.to_vec()` O(n²)/task | `Arc<[Value]>` schemas → O(1) clone/turn (borrow-in-trait = larger follow-up) | fixing |
+
+### Patterns observed (fold into review)
+
+**Bad (found + being fixed):** cache key built from a hot-path-mutating value (P3, #1) · `.to_vec()`/`.clone()` to appease the borrow checker on a per-frame/token path (P2, #1/#2/#6) · recomputing frame-invariant work in a per-pixel/frame loop (P2, #3/#5) · `push_str(&format!(…))` in string-building loops (P2 — `obsidian/generators.rs`) · discarding an event's "what changed" payload then doing full work (P1, #4).
+
+**Good (keep doing):** `OnceLock`-cached compiled `Regex` (`generators.rs:12`) · a dirty-flag redraw gate that only draws on change (`tui:388`) + a reused softbuffer `Context`/`Surface` across frames (`companion/main.rs:196`) + `String::with_capacity(len)` in the string builders · the FNV-1a content-hash manifest that skips unchanged *writes* (`writer.rs:56`).
 
 ---
 
