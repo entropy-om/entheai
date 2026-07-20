@@ -305,7 +305,15 @@ async fn run_skills_cmd(
             }
             Ok(())
         }
-        _ => anyhow::bail!("usage: entheai --skills <add <url> | list>"),
+        Some("remove") if args.len() == 2 => {
+            let name = &args[1];
+            match entheai_skills::remote::remove_from_dir(&skills_dir, name)? {
+                Some(p) => println!("skills: removed {}", p.display()),
+                None => println!("skills: no skill named {name:?} in {}", skills_dir.display()),
+            }
+            Ok(())
+        }
+        _ => anyhow::bail!("usage: entheai --skills <add <url> | list | remove <name>>"),
     }
 }
 

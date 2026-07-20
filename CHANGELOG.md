@@ -8,6 +8,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ### Added
 - `entheai --skills list` — list installed skills (name, description, path), the companion to `--skills add`.
+- `entheai --skills remove <name>` — remove an installed skill by name (slugified → traversal-safe, scoped to the skills dir). Completes the add/list/remove surface.
 
 ## [0.2.0] - 2026-07-20
 

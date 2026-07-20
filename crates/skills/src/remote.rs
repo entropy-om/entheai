@@ -320,6 +320,23 @@ pub async fn add_from_url(url: &str, skills_dir: &Path) -> anyhow::Result<Vec<Ad
     );
 }
 
+/// Remove an installed skill directory by name. The name is slugified the same
+/// way `add` slugified it (so `remove` is traversal-safe: a `../..` name resolves
+/// to a harmless in-dir slug that simply won't exist). Returns the removed path,
+/// or `None` if no such skill dir exists.
+pub fn remove_from_dir(skills_dir: &Path, name: &str) -> anyhow::Result<Option<PathBuf>> {
+    let slug = slugify(name)?;
+    let skill_dir = skills_dir.join(&slug);
+    if skill_dir.parent() != Some(skills_dir) {
+        anyhow::bail!("refusing to remove outside the skills dir: {}", skill_dir.display());
+    }
+    if !skill_dir.exists() {
+        return Ok(None);
+    }
+    std::fs::remove_dir_all(&skill_dir)?;
+    Ok(Some(skill_dir))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,6 +470,20 @@ mod tests {
         assert_eq!(added.len(), 1);
         assert_eq!(added[0].tier, "llms.txt");
         assert_eq!(added[0].slug, "fell-through");
+    }
+
+    #[test]
+    fn remove_from_dir_removes_only_the_named_skill_and_is_traversal_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        write_skill(dir.path(), "Keep Me", "d", "b", "src").unwrap();
+        write_skill(dir.path(), "Zap Me", "d", "b", "src").unwrap();
+        let removed = remove_from_dir(dir.path(), "Zap Me").unwrap();
+        assert_eq!(removed, Some(dir.path().join("zap-me")));
+        assert!(!dir.path().join("zap-me").exists());
+        assert!(dir.path().join("keep-me").exists()); // untouched
+        assert_eq!(remove_from_dir(dir.path(), "nope").unwrap(), None); // missing → None
+        // A traversal attempt slugifies to a harmless in-dir name that doesn't exist.
+        assert_eq!(remove_from_dir(dir.path(), "../../etc").unwrap(), None);
     }
 
     #[tokio::test]
