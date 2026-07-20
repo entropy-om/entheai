@@ -43,6 +43,8 @@ pub struct Config {
     pub telemetry: TelemetryConfig,
     #[serde(default)]
     pub obsidian: ObsidianConfig,
+    #[serde(default)]
+    pub nats: NatsConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -629,6 +631,30 @@ mod tests {
         assert!(!cfg.permission.fanout_auto_approve);
         assert_eq!(cfg.viz.tick_ms, 33);
     }
+
+    #[test]
+    fn nats_defaults_off_with_standard_env_names() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert!(!cfg.nats.enabled);
+        assert_eq!(cfg.nats.url_env, "NATS_URL");
+        assert_eq!(cfg.nats.token_env, "NATS_TOKEN");
+    }
+
+    #[test]
+    fn nats_block_parses_and_overrides() {
+        let cfg: Config = toml::from_str(
+            r#"
+            [nats]
+            enabled = true
+            url_env = "MY_NATS_URL"
+            token_env = "MY_NATS_TOKEN"
+            "#,
+        )
+        .unwrap();
+        assert!(cfg.nats.enabled);
+        assert_eq!(cfg.nats.url_env, "MY_NATS_URL");
+        assert_eq!(cfg.nats.token_env, "MY_NATS_TOKEN");
+    }
 }
 
 /// Memory configuration per the SOTA memory design spec.
@@ -800,4 +826,39 @@ impl Default for ObsidianConfig {
             include_sessions: true,
         }
     }
+}
+
+/// Federation event bus (`entheai-bus`, F1). Opt-in and fail-safe: with
+/// `enabled = false` (the default) or an unreachable hub, entheai runs entirely
+/// locally. The URL and token are read from the named environment variables
+/// (populated from the gitignored `.env`), never inlined in the tracked config.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NatsConfig {
+    /// Master switch. When false, `Bus::connect` short-circuits to `None`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Name of the env var holding the NATS URL (e.g. `nats://host:4222`).
+    #[serde(default = "default_nats_url_env")]
+    pub url_env: String,
+    /// Name of the env var holding the NATS auth token.
+    #[serde(default = "default_nats_token_env")]
+    pub token_env: String,
+}
+
+impl Default for NatsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url_env: default_nats_url_env(),
+            token_env: default_nats_token_env(),
+        }
+    }
+}
+
+fn default_nats_url_env() -> String {
+    "NATS_URL".to_string()
+}
+
+fn default_nats_token_env() -> String {
+    "NATS_TOKEN".to_string()
 }
