@@ -78,20 +78,25 @@ async fn run(opts: ObsidianOptions, root: PathBuf, home: PathBuf) -> anyhow::Res
     };
     let subtree = vault.join(&opts.subtree);
     let mut writer = writer::VaultWriter::new(subtree.clone());
+    // Persistent read cache: unchanged files are served from memory across
+    // ticks (see `scan::ScanCache`), so a debounced re-scan re-reads only what
+    // actually changed instead of the whole repo every tick.
+    let mut cache = scan::ScanCache::default();
 
     // Seed once (lazy: apply() creates nothing if the render is empty). Runs
     // off the runtime: apply() is a blocking scan+render+write pipeline, so it
     // must not execute inline on a Tokio worker thread (P6).
     let opts_c = opts.clone();
     let root_c = root.clone();
-    let (w, (res, changed)) = tokio::task::spawn_blocking(move || {
-        let res = apply(&opts_c, &root_c, &mut writer);
+    let (w, c, (res, changed)) = tokio::task::spawn_blocking(move || {
+        let res = apply(&opts_c, &root_c, &mut writer, &mut cache);
         let changed = writer.last_changed().to_vec();
-        (writer, (res, changed))
+        (writer, cache, (res, changed))
     })
     .await
     .map_err(|e| anyhow::anyhow!("obsidian apply task panicked: {e}"))?;
     writer = w;
+    cache = c;
     res?;
     if opts.mcp_nudge {
         nudge::best_effort(opts.mcp_port, &subtree, &changed).await;
@@ -108,14 +113,15 @@ async fn run(opts: ObsidianOptions, root: PathBuf, home: PathBuf) -> anyhow::Res
     while rx.recv().await.is_some() {
         let opts_c = opts.clone();
         let root_c = root.clone();
-        let (w, (res, changed)) = tokio::task::spawn_blocking(move || {
-            let res = apply(&opts_c, &root_c, &mut writer);
+        let (w, c, (res, changed)) = tokio::task::spawn_blocking(move || {
+            let res = apply(&opts_c, &root_c, &mut writer, &mut cache);
             let changed = writer.last_changed().to_vec();
-            (writer, (res, changed))
+            (writer, cache, (res, changed))
         })
         .await
         .map_err(|e| anyhow::anyhow!("obsidian apply task panicked: {e}"))?;
         writer = w;
+        cache = c;
         if let Err(e) = res {
             log::warn!("obsidian: apply failed: {e}");
             continue;
@@ -132,12 +138,13 @@ fn apply(
     opts: &ObsidianOptions,
     root: &Path,
     writer: &mut writer::VaultWriter,
+    cache: &mut scan::ScanCache,
 ) -> anyhow::Result<()> {
     let ropts = render::RenderOptions {
         include_architecture: opts.include_architecture,
         include_sessions: opts.include_sessions,
     };
-    let ctx = scan::scan(root, ropts)?;
+    let ctx = scan::scan_cached(root, ropts, cache)?;
     let out = render::render_all(&ctx);
     writer.apply(&out, root)?;
     Ok(())
