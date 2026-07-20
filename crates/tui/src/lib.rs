@@ -331,10 +331,7 @@ async fn event_loop<P: Provider + 'static>(
     // into each fan-out submit's tee. `None` when `[nats]` is off/unreachable →
     // the tee is a pure identity and the UI event flow is unchanged. Read
     // `config.nats` here, before `config` is moved into the `Arc` below.
-    let bus = entheai_bus::Bus::connect(
-        &entheai_bus::BusOptions::from_config(&config.nats),
-    )
-    .await;
+    let bus = entheai_bus::Bus::connect(&entheai_bus::BusOptions::from_config(&config.nats)).await;
 
     // Arc so each spawned run task can share the agent/registry/policy/config.
     let agent = Arc::new(agent);
@@ -1208,6 +1205,11 @@ fn render(
         ])
         .areas(area);
         frame.render_widget(Paragraph::new(status_line(app)), status_area);
+        // Right-aligned context/token readout in the same top bar.
+        frame.render_widget(
+            Paragraph::new(context_line(app)).alignment(ratatui::layout::Alignment::Right),
+            status_area,
+        );
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" swarm — Ctrl-V to exit ");
@@ -1237,6 +1239,11 @@ fn render(
 
     // Status bar: entheai · <model> · <state>
     frame.render_widget(Paragraph::new(status_line(app)), status_area);
+    // Right-aligned context/token readout in the same top bar.
+    frame.render_widget(
+        Paragraph::new(context_line(app)).alignment(ratatui::layout::Alignment::Right),
+        status_area,
+    );
 
     // Plan pane: boxless, dim-prefixed rows (one per todo item); collapses to
     // zero height (via `plan_rows`) when there's no live plan.
@@ -1353,6 +1360,56 @@ fn status_line(app: &App) -> Line<'static> {
         ));
     }
     Line::from(status_spans)
+}
+
+/// The model's context-window size in tokens, by model-id substring. Approximate
+/// — enough to show "how full is the window". Falls back to 128k.
+fn max_context_window(model: &str) -> usize {
+    let m = model.to_ascii_lowercase();
+    if m.contains("deepseek") {
+        131_072 // DeepSeek V3.x — 128k
+    } else if m.contains("qwen") {
+        32_768
+    } else if m.contains("claude") {
+        200_000
+    } else if m.contains("gemini") {
+        1_048_576
+    } else {
+        128_000 // gpt-4.x / o-series / unknown
+    }
+}
+
+/// Rough current-context size in tokens: the whole conversation (system prompt +
+/// every message) at ~4 chars/token — the same approximation `out_tokens` uses.
+fn est_context_tokens(app: &App) -> usize {
+    let sys = app.system_prompt.as_deref().map(str::len).unwrap_or(0);
+    let msgs: usize = app.messages.iter().map(|m| m.text.len()).sum();
+    (sys + msgs) / 4
+}
+
+/// Right-aligned top-bar segment: context fill + this run's generated tokens —
+/// `ctx ~<cur>/<max> · <pct>% · ↓<out>`. Counts are ~char/4 estimates.
+fn context_line(app: &App) -> Line<'static> {
+    let cur = est_context_tokens(app);
+    let max = max_context_window(&app.model_label);
+    let pct = (cur.saturating_mul(100) / max.max(1)).min(999);
+    let ctx_color = if pct >= 85 {
+        Color::Red
+    } else if pct >= 60 {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
+    Line::from(vec![
+        Span::styled(
+            format!("ctx ~{}/{} · {pct}%", fmt_tokens(cur), fmt_tokens(max)),
+            Style::default().fg(ctx_color),
+        ),
+        Span::styled(
+            format!(" · ↓{}", fmt_tokens(app.out_tokens)),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+    ])
 }
 
 /// Draw the bordered input box and place the cursor (cursor hidden while the
