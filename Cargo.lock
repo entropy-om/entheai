@@ -1300,7 +1300,7 @@ dependencies = [
 
 [[package]]
 name = "entheai"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1329,7 +1329,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-bus"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-nats",
  "entheai-config",
@@ -1343,7 +1343,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-companion"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1358,7 +1358,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -1367,7 +1367,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "entheai-memory",
@@ -1382,7 +1382,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-launch"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "entheai-launcher",
@@ -1390,7 +1390,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-launcher"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "tempfile",
@@ -1398,7 +1398,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-mapper"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tempfile",
  "tokio",
@@ -1406,7 +1406,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "entheai-tools",
@@ -1417,7 +1417,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-memory"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1435,7 +1435,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-obsidian"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -1451,7 +1451,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-orchestrator"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1471,7 +1471,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-permission"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "tokio",
@@ -1479,7 +1479,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-providers"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "eventsource-stream",
@@ -1494,7 +1494,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-radio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rodio",
  "tokio",
@@ -1503,7 +1503,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-router"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "entheai-config",
@@ -1513,7 +1513,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-skills"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1530,7 +1530,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "serde_json",
@@ -1542,7 +1542,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-tui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1565,14 +1565,14 @@ dependencies = [
 
 [[package]]
 name = "entheai-viz"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ratatui",
 ]
 
 [[package]]
 name = "entheai-worker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
