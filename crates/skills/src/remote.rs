@@ -103,6 +103,58 @@ fn write_skill(
     })
 }
 
+/// Build (name, description, body) from an `llms.txt`. `name` = first `# ` heading,
+/// else `host`. `description` = first `>` blockquote line, else first non-heading
+/// non-empty line (≤200 chars). `body` = the file, prefixed with a source note.
+fn synthesize_from_llms_txt(txt: &str, host: &str, source: &str) -> (String, String, String) {
+    let mut name = host.to_string();
+    let mut blockquote: Option<String> = None;
+    let mut first_para: Option<String> = None;
+    for line in txt.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if let Some(h) = t.strip_prefix("# ") {
+            if name == host {
+                name = h.trim().to_string();
+            }
+        } else if let Some(q) = t.strip_prefix('>') {
+            blockquote.get_or_insert_with(|| q.trim().to_string());
+        } else if !t.starts_with('#') {
+            first_para.get_or_insert_with(|| t.to_string());
+        }
+    }
+    let mut description = blockquote.or(first_para).unwrap_or_default();
+    if description.len() > 200 {
+        description.truncate(200);
+    }
+    let body = format!(
+        "> Skill added from {source} (an llms.txt docs index). Full text may be at the site's /llms-full.txt.\n\n{txt}"
+    );
+    (name, description, body)
+}
+
+/// Best-effort HTML→text: drop `<script>`/`<style>` blocks, strip tags, decode a
+/// few entities, collapse whitespace. Noisy by nature — callers label it.
+fn html_to_text(html: &str) -> String {
+    // Rust's `regex` crate has no backreferences, so match each tag pair
+    // explicitly instead of the backreferenced `<(script|style)>...</\1>` form.
+    let drop_blocks =
+        regex::Regex::new(r"(?is)<script\b.*?</\s*script\s*>|<style\b.*?</\s*style\s*>").unwrap();
+    let no_blocks = drop_blocks.replace_all(html, " ");
+    let tags = regex::Regex::new(r"(?s)<[^>]*>").unwrap();
+    let no_tags = tags.replace_all(&no_blocks, " ");
+    let decoded = no_tags
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ");
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +190,31 @@ mod tests {
         let b = write_skill(dir.path(), "My Skill", "d2", "b2", "https://x.example").unwrap();
         assert!(b.skipped_existing);
         assert_eq!(std::fs::read_to_string(&b.path).unwrap(), "EDITED");
+    }
+
+    #[test]
+    fn synthesize_from_llms_txt_extracts_title_and_blurb() {
+        let txt = "# Stripe Docs\n\n> Payments infrastructure for the internet.\n\n## Guides\n- [Quickstart](/q)\n";
+        let (name, desc, body) = synthesize_from_llms_txt(txt, "docs.stripe.com", "https://docs.stripe.com/llms.txt");
+        assert_eq!(name, "Stripe Docs");
+        assert_eq!(desc, "Payments infrastructure for the internet.");
+        assert!(body.contains("https://docs.stripe.com/llms.txt")); // source note
+        assert!(body.contains("Quickstart"));                        // original index retained
+    }
+
+    #[test]
+    fn synthesize_falls_back_to_host_and_first_paragraph() {
+        let txt = "No heading here.\nSecond line.\n";
+        let (name, desc, _body) = synthesize_from_llms_txt(txt, "example.com", "https://example.com/llms.txt");
+        assert_eq!(name, "example.com");
+        assert_eq!(desc, "No heading here.");
+    }
+
+    #[test]
+    fn html_to_text_strips_tags_scripts_styles() {
+        let html = "<html><head><style>x{}</style></head><body><script>evil()</script><h1>Hi</h1><p>A &amp; B</p></body></html>";
+        let out = html_to_text(html);
+        assert!(!out.contains('<') && !out.contains("evil"));
+        assert!(out.contains("Hi") && out.contains("A & B"));
     }
 }
