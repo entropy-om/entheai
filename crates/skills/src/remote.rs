@@ -224,7 +224,23 @@ pub async fn add_from_url(url: &str, skills_dir: &Path) -> anyhow::Result<Vec<Ad
         anyhow::bail!("only http/https URLs are supported (got {:?})", parsed.scheme());
     }
     let host = parsed.host_str().unwrap_or("skill").to_string();
-    let client = reqwest::Client::builder().timeout(REQ_TIMEOUT).build()?;
+    let client = reqwest::Client::builder()
+        .timeout(REQ_TIMEOUT)
+        // SSRF guard: follow redirects ONLY within the same host. Without this,
+        // reqwest follows up to 10 redirects to any host, so a same-host manifest
+        // could 302 a `skill_md_url` to an internal address (e.g. the cloud
+        // metadata endpoint 169.254.169.254) and that response would be written
+        // as a skill. Same-host redirects (http→https, path normalization) still
+        // work; a cross-host redirect is stopped (non-2xx → the fetch is skipped).
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            let prev_host = attempt.previous().last().and_then(|u| u.host_str());
+            if prev_host.is_some() && prev_host == attempt.url().host_str() {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
+        .build()?;
 
     // Tier 1: entheai-native manifest.
     let manifest_url = parsed.join("/.well-known/skills.json")?;

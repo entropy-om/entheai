@@ -74,8 +74,15 @@ async fn run_serve(config: &Config, test_coder: Option<&str>) -> anyhow::Result<
     }
 
     loop {
-        let Some(claimed) = fed.claim(std::time::Duration::from_secs(20)).await? else {
-            continue;
+        let claimed = match fed.claim(std::time::Duration::from_secs(20)).await {
+            Ok(Some(c)) => c,
+            Ok(None) => continue,
+            // A transient JetStream error must not kill a long-running worker.
+            Err(e) => {
+                log::warn!("claim failed ({e}) — retrying");
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                continue;
+            }
         };
         let item = claimed.item.clone();
         log::info!("claimed work {}::{} role={}", item.session, item.index, item.role);

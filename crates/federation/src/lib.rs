@@ -21,6 +21,9 @@ const BUNDLES_BUCKET: &str = "entheai-bundles";
 const DURABLE: &str = "coder-workers";
 const PRESENCE_SUBJECT: &str = "entheai.presence.coder";
 const PRESENCE_PING: &str = "entheai.presence.ping";
+/// Cap on a downloaded bundle — a malicious dispatcher (huge base bundle) or
+/// worker (huge result bundle) must not be able to OOM the node reading it.
+const BUNDLE_CAP: usize = 128 * 1024 * 1024; // 128 MiB
 
 /// Resolved federation options (reuses the `[nats]` connection).
 #[derive(Debug, Clone, Default)]
@@ -81,7 +84,10 @@ impl Federation {
         let client = match connect.connect(url.clone()).await {
             Ok(c) => c,
             Err(e) => {
-                log::warn!("federation: connect {url} failed ({e}) — off");
+                log::warn!(
+                    "federation: connect {} failed ({e}) — off",
+                    entheai_bus::redact_url(&url)
+                );
                 return None;
             }
         };
@@ -129,7 +135,14 @@ impl Federation {
         let store = self.js.get_object_store(BUNDLES_BUCKET).await?;
         let mut obj = store.get(key).await?;
         let mut buf = Vec::new();
-        obj.read_to_end(&mut buf).await?;
+        // Bounded read (cap + 1 to detect overflow) so an oversized object can't OOM us.
+        (&mut obj)
+            .take((BUNDLE_CAP + 1) as u64)
+            .read_to_end(&mut buf)
+            .await?;
+        if buf.len() > BUNDLE_CAP {
+            anyhow::bail!("bundle {key} exceeds the {BUNDLE_CAP}-byte cap");
+        }
         Ok(buf)
     }
 

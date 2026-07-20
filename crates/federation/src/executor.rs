@@ -2,7 +2,7 @@
 //! squash-apply its delta into the caller's worktree. Any miss (no worker, no
 //! result, no change, or an error) returns `None` so `run_fanout` falls back to
 //! a local coder. The base bundle is created + uploaded **once per run** (via a
-//! `OnceCell`) so concurrent coders don't race on the shared `fed-base` branch.
+//! `OnceCell`) so concurrent coders don't race on the shared `entheai-fed-base` branch.
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -104,10 +104,15 @@ impl entheai_orchestrator::CoderExecutor for FederationExecutor {
         tokio::fs::write(&rb, self.fed.get_bundle(&result.result_bundle_key).await.ok()?)
             .await
             .ok()?;
-        if !git(worktree_path, &["fetch", rb.to_str()?, "fed-work"]).await {
-            return None;
-        }
-        if !git(worktree_path, &["merge", "--squash", "FETCH_HEAD"]).await {
+        // Squash-apply the delta as UNCOMMITTED changes. On ANY failure, restore
+        // the worktree to a clean base — otherwise a half-applied/conflicted merge
+        // would be left for the local fallback (or `commit_all`) to snapshot and
+        // integrate as garbage.
+        let applied = git(worktree_path, &["fetch", rb.to_str()?, "fed-work"]).await
+            && git(worktree_path, &["merge", "--squash", "FETCH_HEAD"]).await;
+        if !applied {
+            let _ = git(worktree_path, &["reset", "--hard"]).await;
+            let _ = git(worktree_path, &["clean", "-fd"]).await;
             return None;
         }
         Some(result.log)

@@ -17,26 +17,26 @@ async fn git_ok(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
 }
 
 /// Create a base bundle of `repo`'s HEAD under `out` (a `.bundle` path). Bundles
-/// the branch `fed-base` pointing at HEAD so a clone lands on a named branch.
+/// the branch `entheai-fed-base` pointing at HEAD so a clone lands on a named branch.
 pub async fn bundle_base(repo: &Path, out: &Path) -> anyhow::Result<String> {
     let base_sha = git_ok(repo, &["rev-parse", "HEAD"]).await?.trim().to_string();
     // A fresh branch ref for the bundle (force in case it exists).
-    git_ok(repo, &["branch", "-f", "fed-base", &base_sha]).await?;
+    git_ok(repo, &["branch", "-f", "entheai-fed-base", &base_sha]).await?;
     let out_s = out.to_string_lossy();
-    git_ok(repo, &["bundle", "create", &out_s, "fed-base"]).await?;
-    // The bundle is self-contained now; don't leave a `fed-base` branch littering
+    git_ok(repo, &["bundle", "create", &out_s, "entheai-fed-base"]).await?;
+    // The bundle is self-contained now; don't leave a `entheai-fed-base` branch littering
     // the dispatcher's real repo (best-effort — a failure here is harmless).
-    let _ = git(repo, &["branch", "-D", "fed-base"]).await;
+    let _ = git(repo, &["branch", "-D", "entheai-fed-base"]).await;
     Ok(base_sha)
 }
 
-/// Clone a base bundle into `dest` and check out `fed-base`, then create a
+/// Clone a base bundle into `dest` and check out `entheai-fed-base`, then create a
 /// working branch `fed-work`. Returns the worktree path (`dest`).
 pub async fn materialize_from_bundle(bundle: &Path, dest: &Path) -> anyhow::Result<()> {
     let bundle_s = bundle.to_string_lossy();
     let dest_s = dest.to_string_lossy();
     let out = tokio::process::Command::new("git")
-        .args(["clone", "-b", "fed-base", &bundle_s, &dest_s]).output().await?;
+        .args(["clone", "-b", "entheai-fed-base", &bundle_s, &dest_s]).output().await?;
     if !out.status.success() {
         anyhow::bail!("git clone bundle failed: {}", String::from_utf8_lossy(&out.stderr));
     }
@@ -94,9 +94,9 @@ mod tests {
         // Dispatcher bundles base.
         let base_bundle = tmp.path().join("base.bundle");
         let base_sha = bundle_base(&dispatcher, &base_bundle).await.unwrap();
-        // bundle_base must not leave a `fed-base` branch in the dispatcher's repo.
-        let (has_fed_base, _) = git(&dispatcher, &["rev-parse", "--verify", "fed-base"]).await.unwrap();
-        assert!(!has_fed_base, "fed-base branch should be cleaned up after bundling");
+        // bundle_base must not leave a `entheai-fed-base` branch in the dispatcher's repo.
+        let (has_fed_base, _) = git(&dispatcher, &["rev-parse", "--verify", "entheai-fed-base"]).await.unwrap();
+        assert!(!has_fed_base, "entheai-fed-base branch should be cleaned up after bundling");
 
         // Worker materializes, changes a file, delta-bundles.
         let work = tmp.path().join("work");

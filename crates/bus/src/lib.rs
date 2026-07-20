@@ -16,7 +16,7 @@ use tokio::task::JoinHandle;
 /// Redact `user:pass@` userinfo from a URL before logging. The documented setup
 /// keeps the token in `NATS_TOKEN` (not the URL), but a user who embeds
 /// credentials in `NATS_URL` must not have them leak into logs.
-fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
+pub fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
     let Some(scheme_end) = url.find("://") else {
         return std::borrow::Cow::Borrowed(url);
     };
