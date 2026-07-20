@@ -1381,6 +1381,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "entheai-federation"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "entheai-bus",
+ "entheai-config",
+ "futures",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "entheai-launch"
 version = "0.2.0"
 dependencies = [

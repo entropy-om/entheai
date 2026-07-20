@@ -45,6 +45,8 @@ pub struct Config {
     pub obsidian: ObsidianConfig,
     #[serde(default)]
     pub nats: NatsConfig,
+    #[serde(default)]
+    pub federation: FederationConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -655,6 +657,14 @@ mod tests {
         assert_eq!(cfg.nats.url_env, "MY_NATS_URL");
         assert_eq!(cfg.nats.token_env, "MY_NATS_TOKEN");
     }
+
+    #[test]
+    fn federation_defaults_off() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert!(!cfg.federation.enabled);
+        assert_eq!(cfg.federation.role, "auto");
+        assert_eq!(cfg.federation.deadline_secs, 600);
+    }
 }
 
 /// Memory configuration per the SOTA memory design spec.
@@ -862,3 +872,24 @@ fn default_nats_url_env() -> String {
 fn default_nats_token_env() -> String {
     "NATS_TOKEN".to_string()
 }
+
+/// Distributed swarm (F2). Opt-in; reuses `[nats]` for the connection. `role`
+/// selects whether this process dispatches work, serves as a worker, or both.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FederationConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_fed_role")]
+    pub role: String, // "auto" | "worker" | "dispatch"
+    #[serde(default = "default_fed_deadline_secs")]
+    pub deadline_secs: u64,
+}
+
+impl Default for FederationConfig {
+    fn default() -> Self {
+        Self { enabled: false, role: default_fed_role(), deadline_secs: default_fed_deadline_secs() }
+    }
+}
+
+fn default_fed_role() -> String { "auto".to_string() }
+fn default_fed_deadline_secs() -> u64 { 600 }
