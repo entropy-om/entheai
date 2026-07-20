@@ -160,7 +160,15 @@ pub struct InferenceSettings {
 impl OpenAiCompatProvider {
     pub fn new(base_url: impl Into<String>, api_key: Option<String>) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            // No default `.timeout()` here: it would cap the *entire* request
+            // (including a long streamed body) and break long generations.
+            // `connect_timeout` only bounds establishing the TCP/TLS connection;
+            // the "connects but never responds" case is guarded separately by
+            // wrapping `.send().await` in `post_chat` with `RESPONSE_HEADERS_TIMEOUT`.
+            client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             base_url: base_url.into(),
             api_key,
             max_tokens: None,
@@ -185,6 +193,12 @@ impl OpenAiCompatProvider {
     /// Build, send, and status-check a POST to `/chat/completions`.
     /// Injects configured sampling params and retries transient failures.
     /// Callers consume the returned response (streaming vs. JSON) as needed.
+    ///
+    /// `.send().await` is wrapped in `RESPONSE_HEADERS_TIMEOUT`: reqwest
+    /// resolves `.send()` as soon as response *headers* arrive, not the full
+    /// body, so this bounds "provider connects but never answers" without
+    /// cutting off a long SSE stream (whose body is read after `.send()`
+    /// returns, by the caller).
     async fn post_chat(
         &self,
         mut body: serde_json::Value,
@@ -207,13 +221,20 @@ impl OpenAiCompatProvider {
                 req = req.bearer_auth(key);
             }
             let result = async {
-                let resp = req
-                    .send()
-                    .await
-                    .map_err(|source| ProviderError::Unreachable {
-                        url: url.clone(),
-                        source,
-                    })?;
+                let resp = match tokio::time::timeout(RESPONSE_HEADERS_TIMEOUT, req.send()).await {
+                    Ok(send_result) => {
+                        send_result.map_err(|source| ProviderError::Unreachable {
+                            url: url.clone(),
+                            source,
+                        })?
+                    }
+                    Err(_elapsed) => {
+                        return Err(ProviderError::Stream(format!(
+                            "provider did not respond within {}s",
+                            RESPONSE_HEADERS_TIMEOUT.as_secs()
+                        )));
+                    }
+                };
                 let status = resp.status();
                 if !status.is_success() {
                     let body = resp.text().await.unwrap_or_default();
@@ -241,6 +262,45 @@ impl OpenAiCompatProvider {
 fn is_retryable(e: &ProviderError) -> bool {
     matches!(e, ProviderError::Unreachable { .. })
         || matches!(e, ProviderError::Status { status, .. } if *status >= 500)
+}
+
+/// Cap on time-to-first-response-headers for a single provider request. Guards
+/// against a provider that accepts the connection but never answers; does NOT
+/// bound a streamed body's total duration (see `post_chat`).
+const RESPONSE_HEADERS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Cap on the number of concurrent tool-call accumulator slots per streamed
+/// turn. A real turn has a handful of tool calls; this bounds worst-case
+/// memory against a malicious/corrupt stream sending an absurd `index`
+/// (e.g. `{"index": 1000000000}`), which would otherwise grow the
+/// accumulator to match and OOM the process.
+const MAX_TOOL_CALLS: usize = 512;
+
+/// Apply one `delta.tool_calls[]` fragment (as raw JSON) to the accumulator,
+/// keyed by the delta's `index`. Arguments arrive as JSON-string fragments
+/// that must be concatenated in arrival order to reassemble the full
+/// arguments string. Deltas whose `index` is at/beyond `MAX_TOOL_CALLS` are
+/// ignored rather than growing the accumulator to match.
+fn apply_tool_call_delta(tcs: &mut Vec<(String, String, String)>, tc: &serde_json::Value) {
+    let idx = tc["index"].as_u64().unwrap_or(0) as usize;
+    if idx >= MAX_TOOL_CALLS {
+        eprintln!(
+            "entheai-providers: provider tool-call index {idx} exceeds cap {MAX_TOOL_CALLS}; ignoring delta"
+        );
+        return;
+    }
+    while tcs.len() <= idx {
+        tcs.push((String::new(), String::new(), String::new()));
+    }
+    if let Some(id) = tc["id"].as_str() {
+        tcs[idx].0 = id.to_string();
+    }
+    if let Some(name) = tc["function"]["name"].as_str() {
+        tcs[idx].1.push_str(name);
+    }
+    if let Some(args) = tc["function"]["arguments"].as_str() {
+        tcs[idx].2.push_str(args);
+    }
 }
 
 #[async_trait]
@@ -351,19 +411,7 @@ impl Provider for OpenAiCompatProvider {
 
             if let Some(arr) = delta["tool_calls"].as_array() {
                 for tc in arr {
-                    let idx = tc["index"].as_u64().unwrap_or(0) as usize;
-                    while tcs.len() <= idx {
-                        tcs.push((String::new(), String::new(), String::new()));
-                    }
-                    if let Some(id) = tc["id"].as_str() {
-                        tcs[idx].0 = id.to_string();
-                    }
-                    if let Some(name) = tc["function"]["name"].as_str() {
-                        tcs[idx].1.push_str(name);
-                    }
-                    if let Some(args) = tc["function"]["arguments"].as_str() {
-                        tcs[idx].2.push_str(args);
-                    }
+                    apply_tool_call_delta(&mut tcs, tc);
                 }
             }
         }
@@ -577,6 +625,53 @@ mod stream_complete_tests {
         assert_eq!(resp.tool_calls[0].id, "call_1");
         assert_eq!(resp.tool_calls[0].function.name, "read_file");
         assert_eq!(resp.tool_calls[0].function.arguments, "{\"path\":\"x\"}");
+    }
+}
+
+#[cfg(test)]
+mod tool_call_delta_tests {
+    use super::*;
+
+    /// Bug 1 regression test: a malicious/corrupt stream emitting a delta
+    /// with an absurd `index` (e.g. `{"index": 1000000000}`) must not grow
+    /// the accumulator to match — that would allocate ~1e9 tuples and OOM.
+    /// It must be ignored, leaving the accumulator untouched.
+    #[test]
+    fn huge_index_delta_is_ignored_and_accumulator_stays_bounded() {
+        let mut tcs: Vec<(String, String, String)> = Vec::new();
+        let delta: serde_json::Value =
+            serde_json::from_str(r#"{"index": 1000000000, "function": {"name": "x"}}"#).unwrap();
+
+        apply_tool_call_delta(&mut tcs, &delta);
+
+        assert!(
+            tcs.is_empty(),
+            "huge-index delta must produce no entry, got {tcs:?}"
+        );
+        assert!(tcs.len() <= MAX_TOOL_CALLS);
+    }
+
+    /// An index exactly at the cap is also rejected (cap is exclusive of a
+    /// valid `[0, MAX_TOOL_CALLS)` range), and a well-formed low-index delta
+    /// still accumulates normally.
+    #[test]
+    fn index_at_cap_is_ignored_sane_index_still_applies() {
+        let mut tcs: Vec<(String, String, String)> = Vec::new();
+
+        let at_cap: serde_json::Value =
+            serde_json::from_str(&format!(r#"{{"index": {MAX_TOOL_CALLS}}}"#)).unwrap();
+        apply_tool_call_delta(&mut tcs, &at_cap);
+        assert!(tcs.is_empty(), "index == cap must be rejected");
+
+        let sane: serde_json::Value = serde_json::from_str(
+            r#"{"index": 0, "id": "call_1", "function": {"name": "read_file", "arguments": "{}"}}"#,
+        )
+        .unwrap();
+        apply_tool_call_delta(&mut tcs, &sane);
+        assert_eq!(tcs.len(), 1);
+        assert_eq!(tcs[0].0, "call_1");
+        assert_eq!(tcs[0].1, "read_file");
+        assert_eq!(tcs[0].2, "{}");
     }
 }
 
