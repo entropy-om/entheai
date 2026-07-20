@@ -1,6 +1,10 @@
 # Keys are loaded from .env at startup (DEEPSEEK_API_KEY / HUGGINGFACE_API_KEY /
 # OPENROUTER_API_KEY / OPENCODE_API_KEY). See .env.example. Switch providers with
 # `--model "<provider>/<model>"` or by changing default_model below.
+#
+# Add a skill from the web (tries <origin>/.well-known/skills.json, then /llms.txt,
+# then the page), then exit — writes skills/<slug>/SKILL.md, live on the next run:
+#   entheai --skills add https://docs.stripe.com
 default_model = "deepseek/deepseek-chat"
 
 # DeepSeek direct API. Models: deepseek-chat (V3), deepseek-reasoner (R1).
