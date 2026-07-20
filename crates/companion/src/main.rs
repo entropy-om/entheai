@@ -112,7 +112,6 @@ fn main() -> anyhow::Result<()> {
         Some(BufReader::new(stream))
     });
 
-    #[allow(deprecated)]
     let event_loop = EventLoop::new()?;
 
     let window_level = if cli.no_always_on_top {
