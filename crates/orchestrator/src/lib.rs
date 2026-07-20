@@ -61,6 +61,31 @@ pub enum FanoutEvent {
     },
 }
 
+/// A strategy for running one coder sub-task. `run_fanout` uses this to
+/// optionally offload coders to a remote worker fleet (F2.2); `None` = always
+/// local (today's behavior). Kept NATS-agnostic — the impl lives in
+/// `entheai-federation`, which depends on this crate for the trait.
+#[async_trait::async_trait]
+pub trait CoderExecutor: Send + Sync {
+    /// Cheap check: is at least one worker available right now? When false,
+    /// `run_fanout` skips remote dispatch entirely and runs every coder locally.
+    async fn workers_available(&self) -> bool;
+
+    /// Run the coder for `(role, task)` remotely, applying its changes into
+    /// `worktree_path` as UNCOMMITTED working-tree changes (ready for the normal
+    /// commit/verify/integrate path). `base_sha` is the worktree's base commit.
+    /// Returns the coder's log on success, or `None` to fall back to local.
+    async fn execute(
+        &self,
+        session: &str,
+        index: usize,
+        base_sha: &str,
+        worktree_path: &Path,
+        role: &str,
+        task: &str,
+    ) -> Option<String>;
+}
+
 /// One decomposed unit of work: a role (routes to a model) + its focused task.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct SubTask {
@@ -392,20 +417,9 @@ pub async fn run_coder_once(
 
 /// Run one coder sub-agent to completion inside its own worktree. Never returns
 /// Err — a failure is captured as the run's `output`, mirroring [`run_subagent`],
-/// so one bad coder doesn't sink the whole fan-out.
-async fn run_coder(
-    config: Arc<Config>,
-    wt: worktree::Worktree,
-    st: SubTask,
-    events: Option<tokio::sync::mpsc::UnboundedSender<FanoutEvent>>,
-) -> CoderRun {
-    if let Some(tx) = &events {
-        let _ = tx.send(FanoutEvent::CoderStarted {
-            index: wt.index,
-            role: st.role.clone(),
-            task: st.task.clone(),
-        });
-    }
+/// so one bad coder doesn't sink the whole fan-out. Emits no events (its caller
+/// [`run_coder_maybe_remote`] owns the `CoderStarted` event).
+async fn run_coder_inner(config: Arc<Config>, wt: worktree::Worktree, st: SubTask) -> CoderRun {
     let output = run_coder_once(&config, &st.role, &st.task, &wt.path).await;
     CoderRun {
         index: wt.index,
@@ -415,6 +429,47 @@ async fn run_coder(
         path: wt.path,
         output,
     }
+}
+
+/// Run one coder either remotely (via the injected [`CoderExecutor`], which
+/// applies the delta into the worktree) or locally. On any remote miss — no
+/// executor, no worker, no result, no change, or an error — falls back to a
+/// local [`run_coder_inner`], so a coder is never silently dropped. Owns the
+/// `CoderStarted` event for both paths.
+async fn run_coder_maybe_remote(
+    config: Arc<Config>,
+    wt: worktree::Worktree,
+    st: SubTask,
+    events: Option<tokio::sync::mpsc::UnboundedSender<FanoutEvent>>,
+    remote: Option<(Arc<dyn CoderExecutor>, String)>,
+    session: String,
+) -> CoderRun {
+    if let Some(tx) = &events {
+        let _ = tx.send(FanoutEvent::CoderStarted {
+            index: wt.index,
+            role: st.role.clone(),
+            task: st.task.clone(),
+        });
+    }
+    if let Some((ex, base_sha)) = remote {
+        if let Some(log) = ex
+            .execute(&session, wt.index, &base_sha, &wt.path, &st.role, &st.task)
+            .await
+        {
+            // The worker applied its delta into wt.path; steps 4–5 (commit /
+            // verify / integrate) proceed exactly as for a local coder.
+            return CoderRun {
+                index: wt.index,
+                role: st.role,
+                task: st.task,
+                branch: wt.branch,
+                path: wt.path,
+                output: log,
+            };
+        }
+        log::info!("federation: coder {} fell back to local", wt.index);
+    }
+    run_coder_inner(config, wt, st).await
 }
 
 /// Outcome of running an optional `[fanout].verify` command in a coder's worktree.
@@ -506,6 +561,7 @@ pub async fn run_fanout(
     task: &str,
     events: Option<tokio::sync::mpsc::UnboundedSender<FanoutEvent>>,
     pool: Arc<WorkerPool>,
+    executor: Option<Arc<dyn CoderExecutor>>,
 ) -> anyhow::Result<String> {
     if !worktree::is_git_repo(root).await {
         if let Some(tx) = &events {
@@ -539,6 +595,14 @@ pub async fn run_fanout(
 
     let session = uuid::Uuid::new_v4().simple().to_string();
     let base = worktree::resolve_base(root, "HEAD").await?;
+
+    // Offload coders to the fleet only when an executor is wired AND a worker is
+    // actually available right now; otherwise every coder runs locally (the
+    // unchanged path). This one presence check gates the whole batch.
+    let remote: Option<(Arc<dyn CoderExecutor>, String)> = match &executor {
+        Some(ex) if ex.workers_available().await => Some((ex.clone(), base.clone())),
+        _ => None,
+    };
     let wt_pool = worktree::WorktreePool::new(root, &session, &base).await?;
 
     // A scope guard owns every worktree created below and, on EVERY exit from
@@ -569,11 +633,13 @@ pub async fn run_fanout(
             st.role.clone(),
             st.task.clone(),
             coder_timeout,
-            run_coder(
+            run_coder_maybe_remote(
                 Arc::clone(&config_arc),
                 wt.clone(),
                 st.clone(),
                 events.clone(),
+                remote.clone(),
+                session.clone(),
             ),
         );
         worker_ids.push((id, wt, st));

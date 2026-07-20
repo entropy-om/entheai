@@ -490,7 +490,7 @@ async fn event_loop<P: Provider + 'static>(
                                 );
                                 tokio::spawn(async move {
                                     let res =
-                                        entheai_orchestrator::run_fanout(&config, &root, &text, events, pool)
+                                        entheai_orchestrator::run_fanout(&config, &root, &text, events, pool, None)
                                             .await;
                                     // Drain + flush the tee before dropping it so
                                     // the final events (e.g. `done`) reach

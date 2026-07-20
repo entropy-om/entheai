@@ -140,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
                 let (events, bus_session) =
                     entheai_bus::tee(bus, session_id.clone(), None);
                 let answer =
-                    entheai_orchestrator::run_fanout(&cfg, &root, &prompt, events, pool).await?;
+                    entheai_orchestrator::run_fanout(&cfg, &root, &prompt, events, pool, None).await?;
                 // Drain + flush the tee before teardown so the final events
                 // (e.g. `done`) actually reach subscribers. No-op when NATS off.
                 bus_session.finish().await;
