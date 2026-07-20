@@ -33,6 +33,9 @@ struct Cli {
     /// Open entheai in a dedicated minimalist Ghostty window (the native-app experience).
     #[arg(long)]
     app: bool,
+    /// Install the rain-on-glass shader into your own Ghostty config, then exit.
+    #[arg(long)]
+    doctor: bool,
     /// Inspect memory then exit: `--memory stats`, `--memory list <namespace>`,
     /// `--memory search <namespace> <query...>`.
     #[arg(long = "memory", num_args = 1.., value_name = "ARGS")]
@@ -49,7 +52,8 @@ async fn main() -> anyhow::Result<()> {
     // Install the log backend before anything can emit. Interactive TUI sessions
     // (no prompt, no `--memory`, no `--app`) log to a file only so the alternate
     // screen is never corrupted; every other mode mirrors to stderr too.
-    let interactive = cli.prompt.is_none() && cli.memory.is_empty() && !cli.app;
+    let interactive =
+        cli.prompt.is_none() && cli.memory.is_empty() && !cli.app && !cli.doctor;
     logging::init(interactive);
 
     // `--app` opens a dedicated minimalist Ghostty window running plain `entheai`
@@ -57,6 +61,12 @@ async fn main() -> anyhow::Result<()> {
     // launching the native app never requires an `entheai.toml`.
     if cli.app {
         return entheai_launcher::launch();
+    }
+
+    // `--doctor` installs the rain-on-glass shader into the user's own Ghostty
+    // config and exits — needs no config file, agent, or companion.
+    if cli.doctor {
+        return run_doctor_cmd();
     }
 
     let cfg_text = std::fs::read_to_string(&cli.config)
@@ -177,6 +187,50 @@ fn init_telemetry(config_dsn: Option<String>) -> sentry::ClientInitGuard {
             ..Default::default()
         },
     ))
+}
+
+/// `entheai --doctor`: install the rain-on-glass shader into the user's own
+/// Ghostty config (viz Slice 2b, Path A) and print a health summary. Reuses the
+/// launcher's bundled shader — one shader, one canonical location.
+fn run_doctor_cmd() -> anyhow::Result<()> {
+    use entheai_launcher::ConfigAction;
+    let home = entheai_launcher::entheai_config_dir();
+    let cfg = entheai_launcher::ghostty_config_path();
+    let r = entheai_launcher::run_doctor(&home, &cfg)?;
+
+    let tilde = |p: &Path| -> String {
+        match std::env::var("HOME") {
+            Ok(h) => match p.strip_prefix(&h) {
+                Ok(rest) => format!("~/{}", rest.display()),
+                Err(_) => p.display().to_string(),
+            },
+            Err(_) => p.display().to_string(),
+        }
+    };
+
+    println!("entheai doctor — rain-on-glass shader (Ghostty)\n");
+    if r.is_ghostty_term {
+        println!("  terminal        Ghostty ✓  (the shader renders here)");
+    } else {
+        println!("  terminal        not Ghostty — the shader only renders inside Ghostty");
+        println!("                  (the ANSI ambient fallback, Path C, isn't built yet)");
+    }
+    if r.ghostty_installed {
+        println!("  ghostty binary  found ✓");
+    } else {
+        println!("  ghostty binary  not found — install: brew install --cask ghostty");
+    }
+    println!("  shader          {} ✓", tilde(&r.shader_path));
+    let act = match r.action {
+        ConfigAction::Created => "created config + added shader block ✓",
+        ConfigAction::Added => "added shader block ✓",
+        ConfigAction::Updated => "updated shader block (path changed) ✓",
+        ConfigAction::AlreadyCurrent => "already configured ✓ (no change)",
+    };
+    println!("  config          {}", tilde(&r.config_path));
+    println!("                  {act}");
+    println!("\n  → restart Ghostty (or reload its config) to see the rain-on-glass effect.");
+    Ok(())
 }
 
 /// Expand a leading `~` to the user's home directory.
