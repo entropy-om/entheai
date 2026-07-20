@@ -6,13 +6,19 @@ use entheai_orchestrator::FanoutEvent;
 use serde::Serialize;
 
 /// JSON-serializable mirror of `FanoutEvent`, tagged by `event` kind. Published
-/// to `entheai.fanout.<session>.<subject_suffix()>`.
+/// to `entheai.fanout.<session>.<subject_suffix()>`. The `event` tag is kept
+/// identical to `subject_suffix()` so an event kind has exactly ONE canonical
+/// string on the wire (the two multi-word kinds carry an explicit dotted
+/// `rename` to match their dotted NATS subject — see the `event_tag_matches_*`
+/// test). `snake_case` covers the single-word variants.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum BusEvent {
     Fallback,
     Decomposed { tasks: Vec<(String, String)> },
+    #[serde(rename = "coder.started")]
     CoderStarted { index: usize, role: String, task: String },
+    #[serde(rename = "coder.finished")]
     CoderFinished { index: usize, committed: bool, status: String },
     Integrating { branches: usize },
     Done { integration_branch: Option<String>, merged: usize, conflicted: usize },
@@ -75,6 +81,29 @@ mod tests {
         let unique: std::collections::HashSet<_> = suffixes.iter().collect();
         assert_eq!(unique.len(), suffixes.len(), "subject suffixes must be unique");
         assert_eq!(BusEvent::CoderStarted { index: 0, role: String::new(), task: String::new() }.subject_suffix(), "coder.started");
+    }
+
+    #[test]
+    fn event_tag_matches_subject_suffix_for_every_variant() {
+        // One canonical string per event kind: the JSON `event` tag MUST equal
+        // the subject suffix, so a subscriber filtering by subject and a consumer
+        // parsing the body never see two different names for the same event.
+        let all = [
+            BusEvent::Fallback,
+            BusEvent::Decomposed { tasks: vec![] },
+            BusEvent::CoderStarted { index: 0, role: String::new(), task: String::new() },
+            BusEvent::CoderFinished { index: 0, committed: false, status: String::new() },
+            BusEvent::Integrating { branches: 0 },
+            BusEvent::Done { integration_branch: None, merged: 0, conflicted: 0 },
+        ];
+        for ev in &all {
+            let json: serde_json::Value = serde_json::to_value(ev).unwrap();
+            assert_eq!(
+                json["event"].as_str().unwrap(),
+                ev.subject_suffix(),
+                "JSON event tag must equal subject suffix for {ev:?}"
+            );
+        }
     }
 
     #[test]
