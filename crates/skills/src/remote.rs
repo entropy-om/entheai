@@ -44,6 +44,65 @@ fn slugify(name: &str) -> anyhow::Result<String> {
     Ok(slug)
 }
 
+/// Read a response body, bounded to `cap` bytes (reject over-large via
+/// Content-Length when present, else stream-cap). Lossy UTF-8.
+async fn read_capped(mut resp: reqwest::Response, cap: usize) -> anyhow::Result<String> {
+    if let Some(len) = resp.content_length() {
+        if len as usize > cap {
+            anyhow::bail!("response too large ({len} bytes > {cap} cap)");
+        }
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if buf.len() + chunk.len() > cap {
+            anyhow::bail!("response exceeded {cap}-byte cap");
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Write `skills_dir/<slug>/SKILL.md` with provenance frontmatter. Skip-if-exists:
+/// if the skill dir already exists, return it flagged and do not clobber.
+fn write_skill(
+    skills_dir: &Path,
+    name: &str,
+    description: &str,
+    body: &str,
+    source: &str,
+) -> anyhow::Result<AddedSkill> {
+    let slug = slugify(name)?;
+    let skill_dir = skills_dir.join(&slug);
+    // Defense in depth: the joined path must stay inside skills_dir.
+    if skill_dir.parent() != Some(skills_dir) {
+        anyhow::bail!("refusing to write outside the skills dir: {}", skill_dir.display());
+    }
+    let path = skill_dir.join("SKILL.md");
+    if skill_dir.exists() {
+        return Ok(AddedSkill {
+            name: name.to_string(),
+            slug,
+            path,
+            source: source.to_string(),
+            tier: "",
+            skipped_existing: true,
+        });
+    }
+    std::fs::create_dir_all(&skill_dir)?;
+    let doc = format!(
+        "---\nname: {name}\ndescription: {description}\nsource: {source}\n---\n\n{body}\n"
+    );
+    std::fs::write(&path, doc)?;
+    Ok(AddedSkill {
+        name: name.to_string(),
+        slug,
+        path,
+        source: source.to_string(),
+        tier: "",
+        skipped_existing: false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,5 +120,23 @@ mod tests {
         assert!(slugify("!!!").is_err());
         // Length cap.
         assert!(slugify(&"a".repeat(200)).unwrap().len() <= 64);
+    }
+
+    #[test]
+    fn write_skill_creates_file_and_skips_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = write_skill(dir.path(), "My Skill", "desc here", "body text", "https://x.example").unwrap();
+        assert_eq!(a.slug, "my-skill");
+        assert!(!a.skipped_existing);
+        let text = std::fs::read_to_string(&a.path).unwrap();
+        assert!(text.contains("name: My Skill"));
+        assert!(text.contains("description: desc here"));
+        assert!(text.contains("source: https://x.example"));
+        assert!(text.contains("body text"));
+        // Re-add → skip, no clobber.
+        std::fs::write(&a.path, "EDITED").unwrap();
+        let b = write_skill(dir.path(), "My Skill", "d2", "b2", "https://x.example").unwrap();
+        assert!(b.skipped_existing);
+        assert_eq!(std::fs::read_to_string(&b.path).unwrap(), "EDITED");
     }
 }
