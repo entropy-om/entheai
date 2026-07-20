@@ -51,6 +51,28 @@ async fn run_serve(config: &Config, test_coder: Option<&str>) -> anyhow::Result<
         anyhow::anyhow!("federation not available (check [federation].enabled + [nats] creds)")
     })?;
     log::info!("entheai-worker: serving the coder work-queue");
+
+    // Presence: announce liveness every 5s, and answer presence pings promptly so
+    // a dispatcher's `count_workers` sees us right away.
+    {
+        let fed_hb = fed.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                ticker.tick().await;
+                fed_hb.heartbeat().await;
+            }
+        });
+        let fed_ping = fed.clone();
+        tokio::spawn(async move {
+            if let Ok(mut pings) = fed_ping.subscribe_ping().await {
+                while futures::StreamExt::next(&mut pings).await.is_some() {
+                    fed_ping.heartbeat().await;
+                }
+            }
+        });
+    }
+
     loop {
         let Some(claimed) = fed.claim(std::time::Duration::from_secs(20)).await? else {
             continue;

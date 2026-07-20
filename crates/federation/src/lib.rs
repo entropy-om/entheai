@@ -17,6 +17,8 @@ const WORK_STREAM: &str = "ENTHEAI_WORK";
 const WORK_SUBJECT: &str = "entheai.work.coder";
 const BUNDLES_BUCKET: &str = "entheai-bundles";
 const DURABLE: &str = "coder-workers";
+const PRESENCE_SUBJECT: &str = "entheai.presence.coder";
+const PRESENCE_PING: &str = "entheai.presence.ping";
 
 /// Resolved federation options (reuses the `[nats]` connection).
 #[derive(Debug, Clone, Default)]
@@ -196,5 +198,33 @@ impl Federation {
             Ok(Some(msg)) => serde_json::from_slice(&msg.payload).ok(),
             _ => None,
         }
+    }
+
+    /// Announce this worker is alive (core NATS, fire-and-forget).
+    pub async fn heartbeat(&self) {
+        let _ = self.client.publish(PRESENCE_SUBJECT, "1".into()).await;
+        let _ = self.client.flush().await;
+    }
+
+    /// A subscription to presence pings — a `--serve` worker heartbeats in
+    /// response so `count_workers` gets a prompt answer.
+    pub async fn subscribe_ping(&self) -> anyhow::Result<async_nats::Subscriber> {
+        Ok(self.client.subscribe(PRESENCE_PING).await?)
+    }
+
+    /// Cheap "are there workers?" — ping, then count heartbeats seen within
+    /// `window`. Returns the number of heartbeats (≈ live workers).
+    pub async fn count_workers(&self, window: Duration) -> usize {
+        let Ok(mut sub) = self.client.subscribe(PRESENCE_SUBJECT).await else {
+            return 0;
+        };
+        let _ = self.client.publish(PRESENCE_PING, "?".into()).await;
+        let _ = self.client.flush().await;
+        let mut n = 0usize;
+        let deadline = tokio::time::Instant::now() + window;
+        while let Ok(Some(_)) = tokio::time::timeout_at(deadline, sub.next()).await {
+            n += 1;
+        }
+        n
     }
 }

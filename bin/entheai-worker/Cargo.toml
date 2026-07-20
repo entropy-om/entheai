@@ -14,4 +14,5 @@ clap.workspace = true
 serde_json.workspace = true
 tempfile = "3"
 log = "0.4"
+futures = { workspace = true }
 env_logger = "0.11"

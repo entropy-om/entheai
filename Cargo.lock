@@ -1628,6 +1628,7 @@ dependencies = [
  "entheai-federation",
  "entheai-orchestrator",
  "env_logger",
+ "futures",
  "log",
  "serde_json",
  "tempfile",
