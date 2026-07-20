@@ -60,6 +60,17 @@ enabled = false
 url_env = "NATS_URL"       # e.g. nats://entheai-nats.tail2870dc.ts.net:4222
 token_env = "NATS_TOKEN"
 
+# Distributed swarm (F2, opt-in, reuses [nats]). A worker node runs
+# `entheai-worker --serve` to pull coder tasks off the JetStream work-queue,
+# materialize the repo from a git bundle, run the coder in isolation, and bundle
+# the result back; a dispatcher runs `entheai-worker --dispatch --task "…"`.
+# NOTE: a worker executes model-generated code with full tools on that node —
+# only run --serve on nodes you trust (tailnet-only; securefs hardening is F2.2).
+[federation]
+enabled = false
+role = "auto"              # "auto" | "worker" | "dispatch"
+deadline_secs = 600
+
 # MCP servers — spawned at startup; their tools appear to the agent as `<name>__<tool>`.
 # [mcp.codebase]
 # command = "codebase-memory-mcp"

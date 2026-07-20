@@ -99,6 +99,8 @@ entheai --doctor                               # install the rain-on-glass shade
 
 **Federation (opt-in).** Set `[nats] enabled = true` in `entheai.toml` (with `NATS_URL` / `NATS_TOKEN` in `.env`) and every `--fanout` run publishes its lifecycle to NATS on `entheai.fanout.<session>.*` for any tailnet subscriber to watch live. Fully fail-safe — disabled or unreachable, runs stay entirely local.
 
+With `[federation] enabled = true`, coder tasks can run on **other tailnet nodes**: a worker node runs `entheai-worker --serve` (pulls tasks off a JetStream work-queue, materializes the repo from a git bundle, runs the coder in isolation, bundles the result back); a dispatcher runs `entheai-worker --dispatch --task "…"` and applies the returned change to a `fed/…` branch. A worker executes model-generated code with full tools on that node — only run `--serve` on nodes you trust.
+
 ### Native app (minimalist Ghostty window)
 
 Prefer a dedicated, branded window? Install the app (it uses Ghostty):

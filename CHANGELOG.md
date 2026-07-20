@@ -9,6 +9,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 ### Added
 - `entheai --skills list` — list installed skills (name, description, path), the companion to `--skills add`.
 - `entheai --skills remove <name>` — remove an installed skill by name (slugified → traversal-safe, scoped to the skills dir). Completes the add/list/remove surface.
+- **Federation F2.1 — distributed swarm (opt-in `[federation]`).** New `entheai-federation` crate (JetStream work-queue + object-store git-bundles) + `entheai-worker --serve`/`--dispatch`: a coder task can run on another tailnet node — the dispatcher bundles the repo, enqueues a `WorkItem`, and applies the worker's delta to a `fed/…` branch; the worker pulls, materializes, runs the coder, and bundles the result back. Live-verified end-to-end. (`run_fanout` integration + worker hardening are F2.2.)
 
 ## [0.2.0] - 2026-07-20
 
