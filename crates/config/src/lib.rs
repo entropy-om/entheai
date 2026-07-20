@@ -93,7 +93,7 @@ fn default_max_parallel() -> usize {
 }
 
 fn default_max_turns() -> usize {
-    50
+    200
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -596,7 +596,7 @@ mod tests {
     #[test]
     fn refactor_config_defaults() {
         let cfg = Config::from_toml_str("").unwrap();
-        assert_eq!(cfg.router.max_turns, 50);
+        assert_eq!(cfg.router.max_turns, 200);
         assert!(cfg.router.orchestrator_prompt.is_none());
         assert!(cfg.router.orchestrator_prompt_append.is_none());
         assert_eq!(cfg.inference.request_timeout_secs, 120);

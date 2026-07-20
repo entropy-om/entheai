@@ -103,11 +103,16 @@ async fn main() -> anyhow::Result<()> {
         .clone()
         .or(cfg.default_model.clone())
         .unwrap_or_else(|| entheai_router::DEFAULT_ORCHESTRATOR.to_string());
+    let yolo = cli.yolo || cfg.permission.yolo;
     let agent = entheai_router::build_agent(&model_id, &cfg)?;
-    let policy = entheai_permission::Policy::new(
-        cli.yolo || cfg.permission.yolo,
-        cfg.permission.allowlist.clone(),
-    );
+    // YOLO lifts the turn cap entirely — a long autonomous run shouldn't be cut
+    // off at `[router].max_turns` (default 200).
+    let agent = if yolo {
+        agent.with_max_turns(usize::MAX)
+    } else {
+        agent
+    };
+    let policy = entheai_permission::Policy::new(yolo, cfg.permission.allowlist.clone());
 
     // Shared memory store (open before any agent run so the DB + parent dir exist
     // even when the model call fails) + a session id for scoping.
