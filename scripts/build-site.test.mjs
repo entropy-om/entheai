@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { build } from "./build-site.mjs";
+import { build, genesisHash } from "./build-site.mjs";
 
 function makeFixtureRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "site-fixture-"));
@@ -43,6 +43,41 @@ test("build() writes docs/index.html, llms.txt, and llms-full.txt", () => {
 
   const llmsFullTxt = fs.readFileSync(path.join(root, "public", "llms-full.txt"), "utf8");
   assert.match(llmsFullTxt, /It's an agent\./);
+});
+
+test("build() injects the genesis seal into the landing footer from the build-arg", () => {
+  const root = makeFixtureRoot();
+  fs.writeFileSync(
+    path.join(root, "public", "index.html"),
+    "<footer>seal <code data-genesis-seal></code></footer>",
+    "utf8"
+  );
+  const custom = "a".repeat(64);
+  const res = build({ root, genesis: custom });
+  assert.equal(res.genesisInjected, true);
+  const html = fs.readFileSync(path.join(root, "public", "index.html"), "utf8");
+  assert.match(html, new RegExp(`<code data-genesis-seal>${custom}</code>`));
+
+  // Idempotent: re-running keeps exactly one occurrence.
+  build({ root, genesis: custom });
+  const html2 = fs.readFileSync(path.join(root, "public", "index.html"), "utf8");
+  assert.equal((html2.match(new RegExp(custom, "g")) || []).length, 1);
+});
+
+test("build() skips genesis injection when public/index.html is absent", () => {
+  const root = makeFixtureRoot(); // fixture has no public/index.html
+  const res = build({ root });
+  assert.equal(res.genesisInjected, false); // no throw, graceful skip
+});
+
+test("genesisHash() reads + validates the GENESIS_HASH build-arg", () => {
+  const h = "b".repeat(64);
+  assert.equal(genesisHash({ GENESIS_HASH: h }), h);
+  assert.equal(
+    genesisHash({}),
+    "7c242080f5f821e5eaf563fe2208d60632c451687baf65f4fe8e4a0d226e3ecf"
+  );
+  assert.throws(() => genesisHash({ GENESIS_HASH: "not-hex" }), /64 hex/);
 });
 
 test("build() throws a clear error if the template is missing a marker", () => {

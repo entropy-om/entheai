@@ -11,11 +11,28 @@ const DEFAULT_SITE_TITLE = "entheai";
 const DEFAULT_SITE_SUMMARY =
   "entheai is a personal, macOS/Apple-Silicon, terminal-native hybrid coding agent written in Rust — a cloud orchestrator plans, then fans out to model-matched sub-agents that build in parallel and merge back verified.";
 
+// The Vaked Genesis Seal — SHA-256 of the genesis archive (origin:
+// peterlodri-sec/vaked-base, genesis_snapshot.md). Sourced from the GENESIS_HASH
+// build-arg (env) so the deploy can inject/rotate it; falls back to the sealed
+// default committed here.
+const DEFAULT_GENESIS_HASH =
+  "7c242080f5f821e5eaf563fe2208d60632c451687baf65f4fe8e4a0d226e3ecf";
+
+/** Resolve the genesis hash from the `GENESIS_HASH` build-arg, validated. */
+export function genesisHash(env = process.env) {
+  const h = (env.GENESIS_HASH ?? DEFAULT_GENESIS_HASH).trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(h)) {
+    throw new Error(`GENESIS_HASH must be 64 hex chars; got ${JSON.stringify(h)}`);
+  }
+  return h;
+}
+
 export function build({
   root,
   baseUrl = DEFAULT_BASE_URL,
   siteTitle = DEFAULT_SITE_TITLE,
   siteSummary = DEFAULT_SITE_SUMMARY,
+  genesis = genesisHash(),
 } = {}) {
   const publicDir = path.join(root, "public");
   const contentDir = path.join(publicDir, "docs", "content");
@@ -54,7 +71,28 @@ export function build({
   const llmsFullTxt = renderLlmsFullTxt(pages);
   fs.writeFileSync(outputLlmsFullTxt, llmsFullTxt);
 
-  return { pageCount: pages.length, outputDocsHtml, outputLlmsTxt, outputLlmsFullTxt };
+  // Inject the Vaked Genesis Seal into the landing footer from the build-arg.
+  // Idempotent — replaces the `<code data-genesis-seal>` content each build.
+  // Skipped when public/index.html is absent (e.g. the test fixture).
+  const indexPath = path.join(publicDir, "index.html");
+  let genesisInjected = false;
+  if (fs.existsSync(indexPath)) {
+    const html = fs.readFileSync(indexPath, "utf8");
+    const re = /(<code data-genesis-seal>)[0-9a-f]*(<\/code>)/;
+    if (re.test(html)) {
+      fs.writeFileSync(indexPath, html.replace(re, `$1${genesis}$2`));
+      genesisInjected = true;
+    }
+  }
+
+  return {
+    pageCount: pages.length,
+    outputDocsHtml,
+    outputLlmsTxt,
+    outputLlmsFullTxt,
+    genesis,
+    genesisInjected,
+  };
 }
 
 function main() {
@@ -64,6 +102,9 @@ function main() {
   console.log(`Built ${result.pageCount} docs pages -> ${result.outputDocsHtml}`);
   console.log(`Wrote ${result.outputLlmsTxt}`);
   console.log(`Wrote ${result.outputLlmsFullTxt}`);
+  console.log(
+    `Genesis seal ${result.genesisInjected ? "injected into" : "not found in"} the footer: ${result.genesis}`
+  );
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
