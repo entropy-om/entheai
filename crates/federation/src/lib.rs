@@ -3,6 +3,7 @@
 //! git bundles travel through the JetStream object store; results return over
 //! core NATS. Fail-safe: any NATS failure leaves the caller to run locally.
 
+pub mod executor;
 pub mod repo;
 pub mod types;
 
@@ -11,6 +12,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use tokio::io::AsyncReadExt;
 
+pub use executor::FederationExecutor;
 pub use types::{WorkItem, WorkResult};
 
 const WORK_STREAM: &str = "ENTHEAI_WORK";

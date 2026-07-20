@@ -1417,8 +1417,10 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-nats",
+ "async-trait",
  "entheai-bus",
  "entheai-config",
+ "entheai-orchestrator",
  "futures",
  "log",
  "serde",
