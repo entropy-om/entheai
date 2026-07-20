@@ -8,6 +8,8 @@ use entheai_providers::ChatMessage;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixListener;
 
+mod logging;
+
 #[cfg(target_os = "macos")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -43,6 +45,12 @@ async fn main() -> anyhow::Result<()> {
     // everything downstream (config parsing, providers, MCP spawn).
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
+
+    // Install the log backend before anything can emit. Interactive TUI sessions
+    // (no prompt, no `--memory`, no `--app`) log to a file only so the alternate
+    // screen is never corrupted; every other mode mirrors to stderr too.
+    let interactive = cli.prompt.is_none() && cli.memory.is_empty() && !cli.app;
+    logging::init(interactive);
 
     // `--app` opens a dedicated minimalist Ghostty window running plain `entheai`
     // (no `--app`, so no recursion). Short-circuit before any config-file read so

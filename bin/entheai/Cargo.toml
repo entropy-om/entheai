@@ -26,6 +26,7 @@ serde_json.workspace = true
 uuid = { version = "1", features = ["v4"] }
 sentry = { workspace = true }
 dotenvy = { workspace = true }
+log = { version = "0.4", features = ["std"] }
 
 # macOS: mimalloc as the global allocator (wired in main.rs) — better under concurrent load.
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -1185,6 +1185,7 @@ dependencies = [
  "entheai-skills",
  "entheai-tools",
  "entheai-tui",
+ "log",
  "mimalloc",
  "sentry",
  "serde_json",
