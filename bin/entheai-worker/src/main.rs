@@ -22,6 +22,9 @@ struct Cli {
     /// Run as a worker: pull WorkItems from the federation queue and process them.
     #[arg(long)]
     serve: bool,
+    /// Dispatch a single coder task to the federation queue and apply the result.
+    #[arg(long)]
+    dispatch: bool,
     /// For testing: replace the LLM coder with a shell command run in the worktree.
     #[arg(long)]
     test_coder: Option<String>,
@@ -139,6 +142,58 @@ fn truncate(s: &str) -> String {
     s.chars().take(2000).collect()
 }
 
+/// Dispatcher mode: bundle the current repo, enqueue a single `WorkItem`, await a
+/// worker's `WorkResult`, and apply its delta bundle to a fresh branch. Fail-safe:
+/// no result within the deadline means the caller should run locally instead.
+async fn run_dispatch(config: &Config, role: &str, task: &str) -> anyhow::Result<()> {
+    let opts = entheai_federation::FedOptions::from_config(&config.nats, &config.federation);
+    let fed = entheai_federation::Federation::connect(&opts)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("federation not available"))?;
+    let repo = std::env::current_dir()?;
+    let session = uuid_like();
+    let index = 0usize;
+
+    // Bundle the repo base, upload it.
+    let tmp = tempfile::tempdir()?;
+    let base_bundle = tmp.path().join("base.bundle");
+    let base_sha = entheai_federation::repo::bundle_base(&repo, &base_bundle).await?;
+    let base_key = entheai_federation::types::base_key(&session, index);
+    fed.put_bundle(&base_key, &tokio::fs::read(&base_bundle).await?).await?;
+
+    // Subscribe BEFORE dispatch so the result isn't missed.
+    let mut sub = fed.subscribe_result(&session, index).await?;
+    fed.dispatch(&entheai_federation::WorkItem {
+        session: session.clone(),
+        index,
+        role: role.into(),
+        task: task.into(),
+        base_bundle_key: base_key,
+        base_sha: base_sha.clone(),
+    })
+    .await?;
+    println!("dispatched {session}::{index} — awaiting a worker…");
+
+    match fed.await_result(&mut sub).await {
+        Some(r) if r.committed => {
+            let rb = tmp.path().join("result.bundle");
+            tokio::fs::write(&rb, fed.get_bundle(&r.result_bundle_key).await?).await?;
+            let branch = format!("fed/{session}-{index}");
+            let tip = entheai_federation::repo::apply_delta_bundle(&repo, &rb, &branch).await?;
+            println!("worker committed → branch {branch} @ {tip}");
+        }
+        Some(r) => println!("worker returned status={} (no change applied)\n{}", r.status, r.log),
+        None => println!("no worker result within the deadline — dispatch fell through (run locally)."),
+    }
+    Ok(())
+}
+
+/// A per-run identifier for the result subject. Avoids a `uuid` dep — the pid is
+/// enough to keep concurrent dispatches on distinct subjects; stays `[a-z0-9]`.
+fn uuid_like() -> String {
+    format!("d{}", std::process::id())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -149,6 +204,12 @@ async fn main() -> anyhow::Result<()> {
     if cli.serve {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
         return run_serve(&config, cli.test_coder.as_deref()).await;
+    }
+
+    if cli.dispatch {
+        let role = cli.role.clone().unwrap_or_else(|| "coder".into());
+        let task = cli.task.clone().ok_or_else(|| anyhow::anyhow!("--dispatch needs --task"))?;
+        return run_dispatch(&config, &role, &task).await;
     }
 
     // One-shot mode: --role/--task/--worktree are required here.
