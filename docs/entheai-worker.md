@@ -1,12 +1,24 @@
 # entheai-worker — Headless Remote Agent Executor
 
-**Status:** spec · **Version:** v0.3 · **Author:** entheai
+**Status:** spec — **partially implemented in v0.2.0 (F2.1); see "Implemented today" below.** · **Vision version:** v0.3 · **Author:** entheai
 
 ## Summary
 
 `entheai-worker` is the portable, headless companion binary to the main `entheai` TUI. It runs the full agent loop (`core`) plus tools, memory, and comms on any-OS peers connected over a Tailscale tailnet. The orchestrator dispatches sub-agents to workers for remote execution; the worker returns results (patches, outputs, trajectories) back to the orchestrator for join/reduce.
 
 **Think of it as:** the agent runtime without the face. Same agent loop, same tools, same memory engine — just no TUI, no viz, no Kitty shaders, no macOS-specific sandbox. Runs on Linux, macOS (Intel + Apple Silicon), and Windows (best-effort).
+
+## Implemented today (v0.2.0 — F2.1)
+
+The first working slice ships a **NATS JetStream** transport — *not* the gRPC/`comms` design sketched below, which remains the forward vision. Plan: [`docs/superpowers/plans/2026-07-20-federation-f2-distributed-swarm.md`](superpowers/plans/2026-07-20-federation-f2-distributed-swarm.md); design: [federation spec §4](superpowers/specs/2026-07-20-entheai-nats-federation-design.md).
+
+- **`entheai-worker --serve`** — connects to the `[nats]` hub, pulls `WorkItem`s off a durable **JetStream WorkQueue** (`entheai.work.coder`; exactly-one delivery + `ack_wait`/`max_deliver` leases), materializes the repo from a **git bundle** in the JetStream **object store**, runs the coder (`run_coder_once`) in an isolated clone, and bundles the delta back. `--test-coder '<shell>'` swaps the LLM step for a deterministic command (used by the E2E test).
+- **`entheai-worker --dispatch --role coder --task "…"`** — bundles the current repo, enqueues a `WorkItem`, awaits the `WorkResult` over core NATS, and applies the returned delta to a `fed/…` branch.
+- **`entheai-worker --role <r> --task <t> --worktree <path>`** — the original one-shot local mode (`run_coder_once` against a given worktree), unchanged.
+- Opt-in via `[federation]` (reuses `[nats]` creds). **Fail-safe** — no hub, no problem; the caller runs locally.
+- **Not yet (F2.2):** dispatch wired into `run_fanout`, presence/heartbeat, cross-platform sandbox hardening, and the `comms`/gRPC + `learning`/`dogfeed` pushback described below. A worker currently runs model output with full tools on its node — run `--serve` **only on trusted, tailnet-only nodes**.
+
+The sections below are the broader **v0.3 design vision**; the transport and several crates named there (`comms`, `learning`, `dogfeed`, `health`, `session`, `plugins`) are aspirational or realized differently by F2.1.
 
 ## Architecture
 

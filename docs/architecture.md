@@ -19,17 +19,26 @@ User prompt (TUI)
 ```
 Cargo.toml                          # workspace root (resolver=2)
 ├── bin/entheai/                    # CLI binary (macOS, full TUI)
-├── bin/entheai-worker/             # headless agent executor (any OS, v0.3)
+├── bin/entheai-worker/             # headless worker/dispatcher (--serve / --dispatch, F2)
+├── bin/entheai-launch/             # the .app executable → opens the native window
 ├── crates/config/                  # TOML deserialization
 ├── crates/providers/               # OpenAI-compatible client + registry
 ├── crates/core/                    # Agent loop + event bus
 ├── crates/router/                  # Model selection per role/task
-├── crates/orchestrator/            # Fan-out planning + DAG execution
+├── crates/orchestrator/            # Fan-out planning + git-worktree coder execution
+├── crates/mapper/                  # Task text + @{path} refs → sectioned, chunked input
 ├── crates/tools/                   # Built-in tools (fs, shell, search)
 ├── crates/permission/              # YOLO / allowlist / ask gate
-├── crates/tui/                     # ratatui terminal UI
+├── crates/mcp/                     # MCP client + supervisor (spawn servers at startup)
+├── crates/skills/                  # SKILL.md discovery + `--skills add <url>` from the web
 ├── crates/memory/                  # 5-namespace SQLite + vector store
-├── crates/radio/                   # In-TUI music (yt-dlp + rodio)
+├── crates/tui/                     # ratatui terminal UI
+├── crates/viz/                     # live swarm graph rendered during fan-out
+├── crates/launcher/               # native --app window: bundled Ghostty shader + --doctor
+├── crates/obsidian/                # per-session wiki-sync of the repo into an Obsidian vault
+├── crates/bus/                     # federation event bus (F1) — fan-out lifecycle → NATS
+├── crates/federation/              # distributed swarm (F2) — JetStream work-queue + git bundles
+├── crates/radio/                   # In-TUI music (yt-dlp + rodio, feature-gated)
 └── crates/companion/               # QR-code session beacon
 ```
 

@@ -7,7 +7,7 @@
 > A personal, macOS-native, **hybrid coding agent for the terminal** — with a brain that fans out.
 
 <p align="center">
-  <a href="https://github.com/peterlodri-sec/entheai/releases/tag/v0.1.0"><img src="https://img.shields.io/badge/release-v0.1.0-00e5ff" alt="release v0.1.0"></a>
+  <a href="https://github.com/peterlodri-sec/entheai/releases/tag/v0.2.0"><img src="https://img.shields.io/badge/release-v0.2.0-00e5ff" alt="release v0.2.0"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20·%20Apple%20Silicon-111" alt="platform">
   <img src="https://img.shields.io/badge/built%20in-Rust-orange" alt="Rust">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="license">
@@ -18,7 +18,7 @@
 
 Built fresh in **Rust**, taking the best ideas from [Crush](https://github.com/charmbracelet/crush) (UX + YOLO), [CodeWhale](https://github.com/Hmbown/CodeWhale) (durable, sandboxed harness), [Ruflo](https://github.com/ruvnet/ruflo) (sub-agents, memory, self-learning), and [jcode](https://jcode.sh) (a lean Rust harness with graph memory + swarm coordination).
 
-> **Status: `v0.1.0` released, built in the open.** Working today: the tiered **router** (role→model), **fan-out** (parallel coders in isolated git worktrees → verify → integrate), the agentic tool loop (read / write / **edit** / shell / search + a permission gate), an **MCP** client + supervisor, a **skills** system, live **token streaming**, the 5-namespace **memory** engine, and the **companion** beacon window. Install it in one line (below). Later layers — visualization, `Sonar`, Honcho personalization, and the `dogfeed` self-improvement flywheel — are on the roadmap. See [`docs/superpowers/`](docs/superpowers/) for the full design spec and milestone plans.
+> **Status: `v0.2.0` released, built in the open.** Working today: the tiered **router** (role→model), **fan-out** (parallel coders in isolated git worktrees → verify → integrate), the agentic tool loop (read / write / **edit** / shell / search + a permission gate), an **MCP** client + supervisor, a **skills** system (incl. `--skills add <url>` from the web), live **token streaming**, the 5-namespace **memory** engine, the **companion** beacon, a live **swarm visualization** + a shader-backed **native app** (`--app` / `--doctor`), **Obsidian wiki-sync**, and **NATS federation** — an event bus (F1) plus a distributed swarm that runs coders on other tailnet nodes (F2.1). Install it in one line (below). Later layers — `Sonar` health UI, Honcho personalization, and the `dogfeed` self-improvement flywheel — are on the roadmap. See [`docs/superpowers/`](docs/superpowers/) for the full design spec and milestone plans.
 
 ## Highlights
 
@@ -26,7 +26,8 @@ Built fresh in **Rust**, taking the best ideas from [Crush](https://github.com/c
 - **Fan-out orchestration** — effort-gated decomposition → parallel *model-matched* coders in isolated git worktrees → merge + verify (build & test).
 - **Deeply extensible** — native tools · **skills** (`SKILL.md` discovery + the `skill` tool) · **MCP** servers (spawned at startup, tools exposed to the agent).
 - **Memory that compounds** — a five-namespace store (codebase, learnings, trajectories, tool results, sub-agent scratch), wired into the loop with pre-task retrieval + tool-output spillover.
-- **Visual by design** — a `ratatui` TUI (streaming chat, inline tool progress, permission modal) plus a session **companion** beacon you can scan to pair a device over your tailnet — with shader backgrounds and a live codebase graph on the roadmap.
+- **Federation** *(opt-in)* — a NATS **event bus** streams every fan-out run to the tailnet (F1), and a **distributed swarm** runs coder sub-tasks on other nodes over a JetStream work-queue with git-bundle transport (F2.1). Fully fail-safe — off or unreachable, runs stay local.
+- **Visual by design** — a `ratatui` TUI (streaming chat, inline tool progress, permission modal, a live **swarm graph** during fan-out), a session **companion** beacon you can scan to pair a device over your tailnet, and a minimalist **native app** (`--app`) with a rain-on-glass shader behind the text.
 - **Self-improving** *(roadmap)* — a low-overhead flywheel feeds real agent trajectories to a growing dataset.
 - **macOS / Apple Silicon only** — and it leans all the way into it (mimalloc, native codegen, Seatbelt, terminal graphics).
 
@@ -126,21 +127,29 @@ A Rust workspace of small, focused crates.
 | `orchestrator` | Fan-out: decompose → parallel coders in git worktrees → verify → integrate. |
 | `mapper` | Structures a task's text + `@{path}`/bare-path file references into sectioned, chunked input before fan-out decomposition (root-scoped, no filesystem escape). |
 | `mcp` | Model Context Protocol client + supervisor. |
-| `skills` | `SKILL.md` discovery + the `skill` tool. |
+| `skills` | `SKILL.md` discovery + the `skill` tool; `--skills add <url>` installs a skill from the web. |
 | `memory` | 5-namespace SQLite + vector store, wired into the loop. |
+| `obsidian` | Per-session wiki-sync of the repo into an Obsidian vault (docs mirror + architecture generator + MCP nudge). |
+| `viz` | Live `ratatui` swarm graph rendered during fan-out. |
+| `launcher` | The native `--app` window — bundled Ghostty shader/config + the `--doctor` installer. |
+| `radio` | Optional in-TUI audio player (feature-gated). |
+| `bus` | Federation **event bus** (F1) — publishes the fan-out lifecycle to NATS. |
+| `federation` | Distributed **swarm** (F2) — JetStream work-queue + object-store git-bundles. |
 | `tui` | `ratatui` chat — streaming, inline tool progress, permission modal. |
 | `companion` | Session-beacon window (QR device pairing over the tailnet). |
 | `entheai` *(bin)* | The CLI that wires it all together. |
+| `entheai-worker` *(bin)* | Federation worker / dispatcher (`--serve` / `--dispatch`). |
+| `entheai-launch` *(bin)* | The `.app` executable that opens the native window. |
 
-Roadmap crates (per the design spec): `viz`, `dogfeed`, `compaction`, `honcho`, `sonar`, `comms`, `plugins` — plus [`entheai-brain`](docs/superpowers/specs/), the self-hosted second-brain API.
+Roadmap crates (per the design spec): `dogfeed`, `compaction`, `honcho`, `sonar`, `comms`, `plugins` — plus [`entheai-brain`](docs/superpowers/specs/), the self-hosted second-brain API.
 
 ## Roadmap
 
 | | |
 |---|---|
 | **v0.1** | Router · fan-out · tools + permission · MCP · skills · streaming · memory · companion. **Released ✅** |
-| **v0.2** | Codebase-memory MCP auto-index; visualization (shaders + live graph); durable sessions; `Sonar` health UI. |
-| **v0.3** | Full self-learning scoring; `dogfeed` flywheel → HF; Tailscale federation. |
+| **v0.2** | Live swarm **visualization** + shader **native app**; **Obsidian wiki-sync**; **NATS federation** — event bus (F1) + distributed swarm (F2.1); `--skills add <url>`; `--memory` inspection; portable headless build. **Released ✅** |
+| **v0.3** | Federation **F2.2** (dispatch inside `run_fanout` + worker hardening) & **F3** shared state; `Sonar` health UI; durable sessions; `dogfeed` flywheel → HF. |
 | **v0.4+** | Honcho personalization; pluggable topologies; more providers. |
 | **v1.0** | Config freeze, perf passes, docs. |
 
