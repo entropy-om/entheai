@@ -9,10 +9,13 @@ entheai-core = { path = "../core" }
 entheai-providers = { path = "../providers" }
 entheai-tools = { path = "../tools" }
 entheai-permission = { path = "../permission" }
-entheai-radio = { path = "../radio" }
+# radio with default-features off: its `audio` feature is enabled here only via
+# the `desktop` feature below, so a headless TUI drops the audio system libs.
+entheai-radio = { path = "../radio", default-features = false }
 entheai-config = { path = "../config" }
 entheai-orchestrator = { path = "../orchestrator" }
-entheai-companion = { path = "../companion" }
+# companion for the lightweight `state` protocol only — never the GUI window.
+entheai-companion = { path = "../companion", default-features = false }
 entheai-viz = { path = "../viz" }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
@@ -21,3 +24,10 @@ futures = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
+
+[features]
+# `desktop` (default) turns on the in-TUI audio radio. `--no-default-features`
+# builds a headless TUI with no audio system libs (the radio stub still answers
+# commands, silently).
+default = ["desktop"]
+desktop = ["entheai-radio/audio"]

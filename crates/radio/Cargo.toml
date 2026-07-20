@@ -7,11 +7,21 @@ rust-version.workspace = true
 [dependencies]
 # Audio output + decoding. `symphonia-aac` + `symphonia-isomp4` cover the m4a
 # files yt-dlp extracts; defaults add mp3/flac/vorbis/wav for local files.
-rodio = { version = "0.20", features = ["symphonia-aac", "symphonia-isomp4"] }
+# Optional (behind `audio`, default-on): rodio → cpal → ALSA on Linux is the
+# only system-library dependency here, so gating it lets the core build headless.
+rodio = { version = "0.20", features = ["symphonia-aac", "symphonia-isomp4"], optional = true }
 tokio = { workspace = true, features = ["sync"] }
 # Hard timeout + kill for the blocking yt-dlp child (download() runs on a
 # dedicated std thread, not in async context — see lib.rs).
 wait-timeout = "0.2"
+
+[features]
+# `audio` (default) links the real rodio player. Without it the crate keeps the
+# same public API (Command/Event/Track/Radio) but the player thread is a silent
+# stub — downloads still queue, playback is a no-op — so the TUI is unchanged and
+# the build needs no audio system libs.
+default = ["audio"]
+audio = ["dep:rodio"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }

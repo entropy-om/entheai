@@ -26,7 +26,10 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 wiremock = "0.6"
 walkdir = "2"
 mimalloc = { version = "0.1", default-features = false }
-sentry = "0.48.5"
+# rustls transport (not native-tls) so the binary needs no system OpenSSL — keeps
+# the build portable/headless (reqwest already rustls-only above). Preserves every
+# default sentry feature except swapping the TLS backend.
+sentry = { version = "0.48.5", default-features = false, features = ["backtrace", "contexts", "debug-images", "panic", "release-health", "reqwest", "rustls"] }
 dotenvy = "0.15"
 rusqlite = { version = "0.32", features = ["bundled"] }
 

@@ -126,6 +126,7 @@ impl Drop for Radio {
 }
 
 /// Everything the player thread mutates, bundled so handlers stay small.
+#[cfg(feature = "audio")]
 struct Player {
     /// Audio device + sink, opened lazily on first play.
     audio: Option<(rodio::OutputStream, rodio::Sink)>,
@@ -136,6 +137,7 @@ struct Player {
     download_timeout: Duration,
 }
 
+#[cfg(feature = "audio")]
 impl Player {
     fn emit(&self, ev: Event) {
         let _ = self.events.send(ev);
@@ -240,6 +242,7 @@ impl Player {
     }
 }
 
+#[cfg(feature = "audio")]
 fn player_thread(
     rx: std_mpsc::Receiver<Msg>,
     dl_tx: std_mpsc::Sender<Msg>,
@@ -272,6 +275,53 @@ fn player_thread(
             Ok(Msg::Downloaded(Err(e))) => p.emit(Event::Error(e)),
             Err(std_mpsc::RecvTimeoutError::Timeout) => p.advance(),
             Err(std_mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
+/// Audio-disabled stub player (built when the `audio` feature is off). Keeps the
+/// same command protocol so the UI never blocks: `Add` still downloads + queues
+/// (yt-dlp is audio-free), but playback is a silent no-op because this build
+/// links no audio backend.
+#[cfg(not(feature = "audio"))]
+fn player_thread(
+    rx: std_mpsc::Receiver<Msg>,
+    dl_tx: std_mpsc::Sender<Msg>,
+    events: tokio_mpsc::UnboundedSender<Event>,
+    cache_dir: PathBuf,
+    download_timeout_secs: u64,
+) {
+    let timeout = download_timeout(download_timeout_secs);
+    let mut queue: VecDeque<Track> = VecDeque::new();
+    let emit = |ev: Event| {
+        let _ = events.send(ev);
+    };
+    while let Ok(msg) = rx.recv() {
+        match msg {
+            Msg::Cmd(Command::Add(url)) => {
+                emit(Event::Fetching { url: url.clone() });
+                let tx = dl_tx.clone();
+                let dir = cache_dir.clone();
+                std::thread::Builder::new()
+                    .name("entheai-radio-dl".into())
+                    .spawn(move || {
+                        let _ = tx.send(Msg::Downloaded(download(&url, &dir, timeout)));
+                    })
+                    .ok();
+            }
+            Msg::Cmd(Command::Stop) => {
+                queue.clear();
+                emit(Event::Stopped);
+            }
+            Msg::Cmd(Command::TogglePause) | Msg::Cmd(Command::Next) => {}
+            Msg::Cmd(Command::Shutdown) => return,
+            Msg::Downloaded(Ok(track)) => {
+                emit(Event::Queued {
+                    title: track.title.clone(),
+                });
+                queue.push_back(track);
+            }
+            Msg::Downloaded(Err(e)) => emit(Event::Error(e)),
         }
     }
 }

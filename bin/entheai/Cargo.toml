@@ -11,8 +11,11 @@ entheai-router = { path = "../../crates/router" }
 entheai-orchestrator = { path = "../../crates/orchestrator" }
 entheai-tools = { path = "../../crates/tools" }
 entheai-permission = { path = "../../crates/permission" }
-entheai-tui = { path = "../../crates/tui" }
-entheai-companion = { path = "../../crates/companion" }
+entheai-tui = { path = "../../crates/tui", default-features = false }
+# companion for the `state` protocol only; the window runs as a separate child
+# process (spawned by path), so the bin never links winit. `default-features =
+# false` keeps the GUI stack out of the core binary's dependency graph.
+entheai-companion = { path = "../../crates/companion", default-features = false }
 entheai-mcp = { path = "../../crates/mcp" }
 entheai-skills = { path = "../../crates/skills" }
 entheai-memory = { path = "../../crates/memory" }
@@ -26,6 +29,13 @@ uuid = { version = "1", features = ["v4"] }
 sentry = { workspace = true }
 dotenvy = { workspace = true }
 log = { version = "0.4", features = ["std"] }
+
+[features]
+# `desktop` (default) enables the in-TUI audio radio (via the TUI's own feature).
+# Build with `--no-default-features` for a fully headless/portable binary that
+# links no GUI or audio system libraries (openssl is already gone via rustls).
+default = ["desktop"]
+desktop = ["entheai-tui/desktop"]
 
 # macOS: mimalloc as the global allocator (wired in main.rs) — better under concurrent load.
 [target.'cfg(target_os = "macos")'.dependencies]
