@@ -124,10 +124,13 @@ async fn main() -> anyhow::Result<()> {
                     &entheai_bus::BusOptions::from_config(&cfg.nats),
                 )
                 .await;
-                let (events, _bus_session) =
+                let (events, bus_session) =
                     entheai_bus::tee(bus, session_id.clone(), None);
                 let answer =
                     entheai_orchestrator::run_fanout(&cfg, &root, &prompt, events, pool).await?;
+                // Drain + flush the tee before teardown so the final events
+                // (e.g. `done`) actually reach subscribers. No-op when NATS off.
+                bus_session.finish().await;
                 println!("{answer}");
             } else {
                 let mut prompter = entheai_permission::StdinPrompter;

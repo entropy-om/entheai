@@ -7,9 +7,33 @@
 mod event;
 pub use event::BusEvent;
 
+use std::time::Duration;
+
 use entheai_orchestrator::FanoutEvent;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
+
+/// Redact `user:pass@` userinfo from a URL before logging. The documented setup
+/// keeps the token in `NATS_TOKEN` (not the URL), but a user who embeds
+/// credentials in `NATS_URL` must not have them leak into logs.
+fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
+    let Some(scheme_end) = url.find("://") else {
+        return std::borrow::Cow::Borrowed(url);
+    };
+    let host_start = scheme_end + 3;
+    // Only treat an `@` before the first `/` (i.e. in the authority) as userinfo.
+    let authority_end = url[host_start..]
+        .find('/')
+        .map_or(url.len(), |i| host_start + i);
+    match url[host_start..authority_end].find('@') {
+        Some(rel) => std::borrow::Cow::Owned(format!(
+            "{}***@{}",
+            &url[..host_start],
+            &url[host_start + rel + 1..]
+        )),
+        None => std::borrow::Cow::Borrowed(url),
+    }
+}
 
 /// Connection options resolved from the `[nats]` config + environment.
 #[derive(Debug, Clone, Default)]
@@ -60,14 +84,24 @@ impl Bus {
         };
         match connect.connect(url.clone()).await {
             Ok(client) => {
-                log::info!("nats: federation bus connected to {url}");
+                log::info!("nats: federation bus connected to {}", redact_url(&url));
                 Some(Bus { client })
             }
             Err(e) => {
-                log::warn!("nats: connect to {url} failed ({e}) — federation off");
+                log::warn!(
+                    "nats: connect to {} failed ({e}) — federation off",
+                    redact_url(&url)
+                );
                 None
             }
         }
+    }
+
+    /// Flush buffered publishes to the socket. Core-NATS `publish` only buffers;
+    /// call this before dropping the client so in-flight events (e.g. the final
+    /// `done`) actually reach the server. Best-effort — errors are ignored.
+    pub async fn flush(&self) {
+        let _ = self.client.flush().await;
     }
 
     /// Publish one fan-out event as JSON to `entheai.fanout.<session>.<suffix>`.
@@ -99,6 +133,17 @@ pub struct BusSession {
 impl BusSession {
     fn inert() -> Self {
         Self { task: None }
+    }
+
+    /// Graceful completion for the normal path: the caller has finished the run
+    /// (so the tee's sender is already dropped), so wait for the tee task to
+    /// drain its remaining events and flush — bounded, so a slow/dead hub can't
+    /// hang shutdown. Taking the task here means the subsequent `Drop` is a
+    /// no-op; `Drop`'s `abort()` remains the cancel/panic fallback.
+    pub async fn finish(mut self) {
+        if let Some(task) = self.task.take() {
+            let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+        }
     }
 }
 
@@ -134,6 +179,10 @@ pub fn tee(
             }
             bus.publish_event(&session, &ev).await;
         }
+        // Sender dropped (run finished): flush buffered publishes to the socket
+        // before this task — and its `Client` clone — drop, so the final events
+        // (`integrating`/`done`) aren't lost. `BusSession::finish` awaits this.
+        bus.flush().await;
     });
     (Some(tee_tx), BusSession { task: Some(task) })
 }
@@ -194,6 +243,16 @@ mod tests {
     async fn tee_with_no_bus_and_no_downstream_is_none() {
         let (returned, _session) = tee(None, "sess".into(), None);
         assert!(returned.is_none());
+    }
+
+    #[test]
+    fn redact_url_strips_userinfo_only() {
+        assert_eq!(redact_url("nats://host:4222"), "nats://host:4222");
+        assert_eq!(redact_url("nats://user:pass@host:4222"), "nats://***@host:4222");
+        assert_eq!(redact_url("nats://tok@host:4222/x"), "nats://***@host:4222/x");
+        // An `@` in the path (after the authority) is not userinfo — leave it.
+        assert_eq!(redact_url("nats://host:4222/a@b"), "nats://host:4222/a@b");
+        assert_eq!(redact_url("not-a-url"), "not-a-url");
     }
 
     #[test]

@@ -107,12 +107,33 @@ mod tests {
     }
 
     #[test]
-    fn from_fanout_event_preserves_fields() {
-        let fe = FanoutEvent::CoderFinished { index: 2, committed: true, status: "verified".into() };
-        assert_eq!(
-            BusEvent::from(&fe),
-            BusEvent::CoderFinished { index: 2, committed: true, status: "verified".into() }
-        );
+    fn from_fanout_event_preserves_fields_for_every_variant() {
+        let cases = [
+            (FanoutEvent::Fallback, BusEvent::Fallback),
+            (
+                FanoutEvent::Decomposed { tasks: vec![("coder".into(), "t".into())] },
+                BusEvent::Decomposed { tasks: vec![("coder".into(), "t".into())] },
+            ),
+            (
+                FanoutEvent::CoderStarted { index: 1, role: "explore".into(), task: "look".into() },
+                BusEvent::CoderStarted { index: 1, role: "explore".into(), task: "look".into() },
+            ),
+            (
+                FanoutEvent::CoderFinished { index: 2, committed: true, status: "verified".into() },
+                BusEvent::CoderFinished { index: 2, committed: true, status: "verified".into() },
+            ),
+            (
+                FanoutEvent::Integrating { branches: 3 },
+                BusEvent::Integrating { branches: 3 },
+            ),
+            (
+                FanoutEvent::Done { integration_branch: Some("b".into()), merged: 2, conflicted: 1 },
+                BusEvent::Done { integration_branch: Some("b".into()), merged: 2, conflicted: 1 },
+            ),
+        ];
+        for (fe, expected) in &cases {
+            assert_eq!(&BusEvent::from(fe), expected, "mapping mismatch for {fe:?}");
+        }
     }
 
     #[test]

@@ -489,10 +489,13 @@ async fn event_loop<P: Provider + 'static>(
                                     Some(ftx),
                                 );
                                 tokio::spawn(async move {
-                                    let _bus_session = bus_session;
                                     let res =
                                         entheai_orchestrator::run_fanout(&config, &root, &text, events, pool)
                                             .await;
+                                    // Drain + flush the tee before dropping it so
+                                    // the final events (e.g. `done`) reach
+                                    // subscribers. No-op when NATS is off.
+                                    bus_session.finish().await;
                                     let _ = result_tx.send(res.map_err(|e| e.to_string())).await;
                                 });
                             } else {
