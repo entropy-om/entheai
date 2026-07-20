@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/config", "crates/providers", "crates/core", "crates/tools", "crates/permission", "crates/tui", "crates/memory", "crates/radio", "crates/companion", "crates/router", "crates/orchestrator", "crates/mapper", "crates/mcp", "crates/skills", "crates/viz", "crates/launcher", "crates/obsidian", "bin/entheai", "bin/entheai-worker", "bin/entheai-launch"]
+members = ["crates/config", "crates/providers", "crates/core", "crates/tools", "crates/permission", "crates/tui", "crates/memory", "crates/radio", "crates/companion", "crates/router", "crates/orchestrator", "crates/mapper", "crates/mcp", "crates/skills", "crates/viz", "crates/launcher", "crates/obsidian", "crates/bus", "bin/entheai", "bin/entheai-worker", "bin/entheai-launch"]
 
 [workspace.package]
 # Single source of truth for every crate's version (all inherit via
@@ -32,6 +32,9 @@ mimalloc = { version = "0.1", default-features = false }
 sentry = { version = "0.48.5", default-features = false, features = ["backtrace", "contexts", "debug-images", "panic", "release-health", "reqwest", "rustls"] }
 dotenvy = "0.15"
 rusqlite = { version = "0.32", features = ["bundled"] }
+# NATS client for the federation event bus (F1). rustls-based (no system
+# OpenSSL) so it preserves the portable/headless build.
+async-nats = "0.49"
 
 # Perf-first (spec §9): optimize release builds hard. NOTE: do NOT set panic="abort"
 # — sub-agents (later plans) run as tokio tasks and we must catch their panics.
