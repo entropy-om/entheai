@@ -21,6 +21,9 @@ pub struct AddedSkill {
 
 const BODY_CAP: usize = 1024 * 1024; // 1 MiB
 const REQ_TIMEOUT: Duration = Duration::from_secs(15);
+/// Cap on manifest entries processed — a single `add` shouldn't fan out to an
+/// unbounded number of fetches/writes from a hostile manifest.
+const MAX_MANIFEST_SKILLS: usize = 64;
 
 /// Slugify to a safe directory name: lowercase, non-`[a-z0-9]` runs → `-`,
 /// trimmed, collapsed, capped at 64. Structurally strips `/`, `.`, `..`, so a
@@ -91,8 +94,14 @@ fn write_skill(
         });
     }
     std::fs::create_dir_all(&skill_dir)?;
+    // Sanitize frontmatter values: a remote-controlled `name`/`description` with a
+    // newline could otherwise inject extra frontmatter lines.
+    let one_line = |s: &str| s.replace(['\n', '\r'], " ");
     let doc = format!(
-        "---\nname: {name}\ndescription: {description}\nsource: {source}\n---\n\n{body}\n"
+        "---\nname: {}\ndescription: {}\nsource: {}\n---\n\n{body}\n",
+        one_line(name),
+        one_line(description),
+        one_line(source),
     );
     std::fs::write(&path, doc)?;
     Ok(AddedSkill {
@@ -174,6 +183,38 @@ struct ManifestSkill {
     skill_md_url: Option<String>,
 }
 
+/// Fetch + parse a manifest entry's `skill_md_url`. Restricted to the manifest's
+/// own host (an SSRF guard: a site's manifest may only reference its own SKILL.md
+/// files, never an internal address or a third-party host) and http/https, with a
+/// success-status check so an error page is never written as a skill body.
+async fn fetch_skill_md(
+    client: &reqwest::Client,
+    base: &reqwest::Url,
+    entry: &ManifestSkill,
+    skill_md_url: &str,
+) -> anyhow::Result<(String, String)> {
+    let u = reqwest::Url::parse(skill_md_url)
+        .map_err(|e| anyhow::anyhow!("bad skill_md_url {skill_md_url:?}: {e}"))?;
+    if !matches!(u.scheme(), "http" | "https") {
+        anyhow::bail!("skill_md_url must be http/https (got {:?})", u.scheme());
+    }
+    if u.host_str() != base.host_str() {
+        anyhow::bail!(
+            "skill_md_url host {:?} differs from the manifest host {:?} — cross-origin not allowed",
+            u.host_str(),
+            base.host_str()
+        );
+    }
+    let resp = client.get(u).send().await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("skill_md_url returned HTTP {}", resp.status());
+    }
+    let md = read_capped(resp, BODY_CAP).await?;
+    let (_n, d, b) = crate::parse_skill_md(&md, &entry.name);
+    let desc = if entry.description.is_empty() { d } else { entry.description.clone() };
+    Ok((desc, b))
+}
+
 /// Fetch a skill (or skills) from `url` via layered discovery and write them
 /// under `skills_dir`. Returns what was written (incl. skip-if-exists). Errors
 /// only on a bad URL or when no tier yields anything.
@@ -191,25 +232,42 @@ pub async fn add_from_url(url: &str, skills_dir: &Path) -> anyhow::Result<Vec<Ad
         if resp.status().is_success() {
             if let Ok(text) = read_capped(resp, BODY_CAP).await {
                 if let Ok(manifest) = serde_json::from_str::<Manifest>(&text) {
+                    if manifest.skills.len() > MAX_MANIFEST_SKILLS {
+                        log::warn!(
+                            "skills: manifest lists {} entries — only the first {} are processed",
+                            manifest.skills.len(),
+                            MAX_MANIFEST_SKILLS
+                        );
+                    }
                     let mut added = Vec::new();
-                    for s in &manifest.skills {
+                    // A single bad entry (missing fields, unreachable/error/cross-origin
+                    // skill_md_url, unslugifiable name) is skipped with a warning rather
+                    // than aborting the batch and orphaning earlier writes.
+                    for s in manifest.skills.iter().take(MAX_MANIFEST_SKILLS) {
                         let (desc, body) = match (&s.body, &s.skill_md_url) {
                             (Some(b), _) => (s.description.clone(), b.clone()),
-                            (None, Some(u)) => {
-                                let r = client.get(u).send().await?;
-                                let md = read_capped(r, BODY_CAP).await?;
-                                let (_n, d, b) = crate::parse_skill_md(&md, &s.name);
-                                let d = if s.description.is_empty() { d } else { s.description.clone() };
-                                (d, b)
-                            }
+                            (None, Some(u)) => match fetch_skill_md(&client, &parsed, s, u).await {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    log::warn!("skills: manifest entry {:?}: {e} — skipping", s.name);
+                                    continue;
+                                }
+                            },
                             (None, None) => {
                                 log::warn!("skills: manifest entry {:?} has neither body nor skill_md_url — skipping", s.name);
                                 continue;
                             }
                         };
-                        let mut a = write_skill(skills_dir, &s.name, &desc, &body, url)?;
-                        a.tier = "well-known";
-                        added.push(a);
+                        match write_skill(skills_dir, &s.name, &desc, &body, url) {
+                            Ok(mut a) => {
+                                a.tier = "well-known";
+                                added.push(a);
+                            }
+                            Err(e) => {
+                                log::warn!("skills: manifest entry {:?}: {e} — skipping", s.name);
+                                continue;
+                            }
+                        }
                     }
                     if !added.is_empty() {
                         return Ok(added);
@@ -353,6 +411,48 @@ mod tests {
         assert!(dir.path().join("alpha/SKILL.md").exists());
         assert!(dir.path().join("beta/SKILL.md").exists());
         assert!(std::fs::read_to_string(dir.path().join("beta/SKILL.md")).unwrap().contains("do beta"));
+    }
+
+    #[tokio::test]
+    async fn tier1_skips_bad_entry_installs_good_and_never_writes_error_page() {
+        let server = MockServer::start().await;
+        let manifest = r#"{"skills":[
+            {"name":"Good","description":"g","body":"do good"},
+            {"name":"Bad","description":"b","skill_md_url":"__BASE__/missing.md"}
+        ]}"#.replace("__BASE__", &server.uri());
+        Mock::given(method("GET")).and(path("/.well-known/skills.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(manifest))
+            .mount(&server).await;
+        // 404 with an HTML error page — must NOT be written as Bad's instructions.
+        Mock::given(method("GET")).and(path("/missing.md"))
+            .respond_with(ResponseTemplate::new(404).set_body_raw("<h1>not found</h1>", "text/html"))
+            .mount(&server).await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let added = add_from_url(&server.uri(), dir.path()).await.unwrap();
+        assert_eq!(added.len(), 1, "only the good entry installs");
+        assert_eq!(added[0].slug, "good");
+        assert!(dir.path().join("good/SKILL.md").exists());
+        assert!(!dir.path().join("bad/SKILL.md").exists(), "the 404 page must not become a skill");
+    }
+
+    #[tokio::test]
+    async fn tier1_rejects_cross_origin_skill_md_url() {
+        let server = MockServer::start().await;
+        // skill_md_url points at a different host → rejected; no manifest skill
+        // installed → falls through to llms.txt.
+        let manifest = r#"{"skills":[{"name":"X","description":"x","skill_md_url":"http://169.254.169.254/latest/meta-data"}]}"#;
+        Mock::given(method("GET")).and(path("/.well-known/skills.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(manifest))
+            .mount(&server).await;
+        Mock::given(method("GET")).and(path("/llms.txt"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("# Fell Through\n\n> ok"))
+            .mount(&server).await;
+        let dir = tempfile::tempdir().unwrap();
+        let added = add_from_url(&server.uri(), dir.path()).await.unwrap();
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].tier, "llms.txt");
+        assert_eq!(added[0].slug, "fell-through");
     }
 
     #[tokio::test]
