@@ -103,16 +103,16 @@ pub trait Provider: Send + Sync {
     async fn stream_chat(
         &self,
         model: &str,
-        messages: Vec<ChatMessage>,
+        messages: &[ChatMessage],
     ) -> Result<BoxStream<'static, Result<StreamEvent, ProviderError>>, ProviderError>;
 
     /// Non-streaming completion. `tools` is a list of OpenAI function-tool JSON
-    /// schemas; pass an empty Vec for no tools. Returns the assistant message.
+    /// schemas; pass an empty slice for no tools. Returns the assistant message.
     async fn complete(
         &self,
         model: &str,
-        messages: Vec<ChatMessage>,
-        tools: Vec<serde_json::Value>,
+        messages: &[ChatMessage],
+        tools: &[serde_json::Value],
     ) -> Result<AssistantResponse, ProviderError>;
 
     /// Streaming completion. Sends each text delta to `token_tx` (if provided) as
@@ -122,8 +122,8 @@ pub trait Provider: Send + Sync {
     async fn stream_complete(
         &self,
         model: &str,
-        messages: Vec<ChatMessage>,
-        tools: Vec<serde_json::Value>,
+        messages: &[ChatMessage],
+        tools: &[serde_json::Value],
         token_tx: Option<futures::channel::mpsc::UnboundedSender<String>>,
     ) -> Result<AssistantResponse, ProviderError> {
         let resp = self.complete(model, messages, tools).await?;
@@ -308,7 +308,7 @@ impl Provider for OpenAiCompatProvider {
     async fn stream_chat(
         &self,
         model: &str,
-        messages: Vec<ChatMessage>,
+        messages: &[ChatMessage],
     ) -> Result<BoxStream<'static, Result<StreamEvent, ProviderError>>, ProviderError> {
         let body = serde_json::json!({
             "model": model,
@@ -337,8 +337,8 @@ impl Provider for OpenAiCompatProvider {
     async fn complete(
         &self,
         model: &str,
-        messages: Vec<ChatMessage>,
-        tools: Vec<serde_json::Value>,
+        messages: &[ChatMessage],
+        tools: &[serde_json::Value],
     ) -> Result<AssistantResponse, ProviderError> {
         let mut body = serde_json::json!({
             "model": model,
@@ -346,7 +346,7 @@ impl Provider for OpenAiCompatProvider {
             "stream": false,
         });
         if !tools.is_empty() {
-            body["tools"] = serde_json::Value::Array(tools);
+            body["tools"] = serde_json::json!(tools);
         }
         let resp = self.post_chat(body).await?;
         // `Response::json`/`text` surface a reqwest transport error (not a serde error),
@@ -371,8 +371,8 @@ impl Provider for OpenAiCompatProvider {
     async fn stream_complete(
         &self,
         model: &str,
-        messages: Vec<ChatMessage>,
-        tools: Vec<serde_json::Value>,
+        messages: &[ChatMessage],
+        tools: &[serde_json::Value],
         token_tx: Option<futures::channel::mpsc::UnboundedSender<String>>,
     ) -> Result<AssistantResponse, ProviderError> {
         let mut body = serde_json::json!({
@@ -381,7 +381,7 @@ impl Provider for OpenAiCompatProvider {
             "stream": true,
         });
         if !tools.is_empty() {
-            body["tools"] = serde_json::Value::Array(tools);
+            body["tools"] = serde_json::json!(tools);
         }
         let resp = self.post_chat(body).await?;
 
@@ -517,7 +517,7 @@ mod openai_tests {
 
         let p = OpenAiCompatProvider::new(server.uri(), None);
         let mut stream = p
-            .stream_chat("m", vec![ChatMessage::user("hi")])
+            .stream_chat("m", &[ChatMessage::user("hi")])
             .await
             .unwrap();
 
@@ -546,7 +546,7 @@ mod openai_tests {
             .await;
 
         let p = OpenAiCompatProvider::new(server.uri(), None);
-        let result = p.stream_chat("m", vec![ChatMessage::user("hi")]).await;
+        let result = p.stream_chat("m", &[ChatMessage::user("hi")]).await;
 
         assert!(result.is_err());
         let msg = format!("{}", result.err().unwrap());
@@ -587,7 +587,7 @@ mod stream_complete_tests {
         let p = OpenAiCompatProvider::new(server.uri(), None);
         let (tx, rx) = futures::channel::mpsc::unbounded();
         let resp = p
-            .stream_complete("m", vec![ChatMessage::user("hi")], vec![], Some(tx))
+            .stream_complete("m", &[ChatMessage::user("hi")], &[], Some(tx))
             .await
             .unwrap();
 
@@ -616,7 +616,7 @@ mod stream_complete_tests {
 
         let p = OpenAiCompatProvider::new(server.uri(), None);
         let resp = p
-            .stream_complete("m", vec![ChatMessage::user("hi")], vec![], None)
+            .stream_complete("m", &[ChatMessage::user("hi")], &[], None)
             .await
             .unwrap();
 
@@ -705,7 +705,7 @@ mod complete_tests {
 
         let p = OpenAiCompatProvider::new(server.uri(), None);
         let resp = p
-            .complete("m", vec![ChatMessage::user("hi")], vec![])
+            .complete("m", &[ChatMessage::user("hi")], &[])
             .await
             .unwrap();
         assert_eq!(resp.content, "");
@@ -728,7 +728,7 @@ mod complete_tests {
 
         let p = OpenAiCompatProvider::new(server.uri(), None);
         let resp = p
-            .complete("m", vec![ChatMessage::user("hi")], vec![])
+            .complete("m", &[ChatMessage::user("hi")], &[])
             .await
             .unwrap();
         assert_eq!(resp.content, "hello there");
@@ -748,7 +748,7 @@ mod complete_tests {
             .await;
 
         let p = OpenAiCompatProvider::new(server.uri(), None);
-        let result = p.complete("m", vec![ChatMessage::user("hi")], vec![]).await;
+        let result = p.complete("m", &[ChatMessage::user("hi")], &[]).await;
         assert!(result.is_err());
         let msg = format!("{}", result.err().unwrap());
         assert!(
@@ -783,7 +783,7 @@ mod inference_tests {
                 retries: 0,
             });
         let err = provider
-            .complete("m", vec![ChatMessage::user("hi")], vec![])
+            .complete("m", &[ChatMessage::user("hi")], &[])
             .await
             .unwrap_err();
         assert!(
@@ -814,7 +814,7 @@ mod inference_tests {
                 retries: 0,
             });
         let resp = provider
-            .complete("m", vec![ChatMessage::user("hi")], vec![])
+            .complete("m", &[ChatMessage::user("hi")], &[])
             .await
             .unwrap();
         assert_eq!(resp.content, "ok");
@@ -846,7 +846,7 @@ mod inference_tests {
                 retries: 2,
             });
         let resp = provider
-            .complete("m", vec![ChatMessage::user("hi")], vec![])
+            .complete("m", &[ChatMessage::user("hi")], &[])
             .await
             .unwrap();
         assert_eq!(resp.content, "recovered");

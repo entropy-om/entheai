@@ -58,7 +58,7 @@ impl<P: Provider> Agent<P> {
         messages: Vec<ChatMessage>,
         sink: &mut impl TokenSink,
     ) -> Result<String, CoreError> {
-        let mut stream = self.provider.stream_chat(&self.model, messages).await?;
+        let mut stream = self.provider.stream_chat(&self.model, &messages).await?;
         let mut full = String::new();
         while let Some(ev) = stream.next().await {
             match ev? {
@@ -86,12 +86,9 @@ impl<P: Provider> Agent<P> {
             let _ = tx.send(AgentEvent::Thinking);
         }
         let (ttx, mut trx) = futures::channel::mpsc::unbounded::<String>();
-        let completion = self.provider.stream_complete(
-            &self.model,
-            messages.to_vec(),
-            schemas.to_vec(),
-            Some(ttx),
-        );
+        let completion = self
+            .provider
+            .stream_complete(&self.model, messages, schemas, Some(ttx));
         tokio::pin!(completion);
         loop {
             tokio::select! {
@@ -337,7 +334,7 @@ mod tests {
         async fn stream_chat(
             &self,
             _model: &str,
-            _messages: Vec<ChatMessage>,
+            _messages: &[ChatMessage],
         ) -> Result<
             BoxStream<'static, Result<StreamEvent, entheai_providers::ProviderError>>,
             entheai_providers::ProviderError,
@@ -354,8 +351,8 @@ mod tests {
         async fn complete(
             &self,
             _model: &str,
-            _messages: Vec<ChatMessage>,
-            _tools: Vec<serde_json::Value>,
+            _messages: &[ChatMessage],
+            _tools: &[serde_json::Value],
         ) -> Result<entheai_providers::AssistantResponse, entheai_providers::ProviderError>
         {
             Ok(entheai_providers::AssistantResponse::default())
@@ -398,7 +395,7 @@ mod tests {
         async fn stream_chat(
             &self,
             _m: &str,
-            _msgs: Vec<ChatMessage>,
+            _msgs: &[ChatMessage],
         ) -> Result<
             BoxStream<'static, Result<StreamEvent, entheai_providers::ProviderError>>,
             entheai_providers::ProviderError,
@@ -408,8 +405,8 @@ mod tests {
         async fn complete(
             &self,
             _m: &str,
-            _msgs: Vec<ChatMessage>,
-            _tools: Vec<serde_json::Value>,
+            _msgs: &[ChatMessage],
+            _tools: &[serde_json::Value],
         ) -> Result<AssistantResponse, entheai_providers::ProviderError> {
             let mut n = self.calls.lock().unwrap();
             *n += 1;
@@ -489,7 +486,7 @@ mod tests {
         async fn stream_chat(
             &self,
             _m: &str,
-            _msgs: Vec<ChatMessage>,
+            _msgs: &[ChatMessage],
         ) -> Result<
             BoxStream<'static, Result<StreamEvent, entheai_providers::ProviderError>>,
             entheai_providers::ProviderError,
@@ -499,8 +496,8 @@ mod tests {
         async fn complete(
             &self,
             _m: &str,
-            _msgs: Vec<ChatMessage>,
-            _tools: Vec<serde_json::Value>,
+            _msgs: &[ChatMessage],
+            _tools: &[serde_json::Value],
         ) -> Result<AssistantResponse, entheai_providers::ProviderError> {
             Ok(AssistantResponse {
                 content: String::new(),
@@ -616,7 +613,7 @@ mod tests {
         async fn stream_chat(
             &self,
             _m: &str,
-            _msgs: Vec<ChatMessage>,
+            _msgs: &[ChatMessage],
         ) -> Result<
             BoxStream<'static, Result<StreamEvent, entheai_providers::ProviderError>>,
             entheai_providers::ProviderError,
@@ -626,10 +623,10 @@ mod tests {
         async fn complete(
             &self,
             _m: &str,
-            msgs: Vec<ChatMessage>,
-            _tools: Vec<serde_json::Value>,
+            msgs: &[ChatMessage],
+            _tools: &[serde_json::Value],
         ) -> Result<AssistantResponse, entheai_providers::ProviderError> {
-            self.seen.lock().unwrap().push(msgs);
+            self.seen.lock().unwrap().push(msgs.to_vec());
             let mut responses = self.responses.lock().unwrap();
             Ok(responses.remove(0))
         }
