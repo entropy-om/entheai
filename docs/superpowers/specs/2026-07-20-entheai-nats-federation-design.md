@@ -8,17 +8,25 @@ a central event bus + coordination substrate. Three layers, shipped as independe
 > Nothing here is built yet. This spec exists to agree the shape (subjects, streams, worker
 > protocol, auth, failure modes) before code. Each slice gets its own plan + TDD build.
 
-## 0. The substrate (verified)
+## 0. The substrate (LIVE — provisioned 2026-07-20)
 
-`crabcc-nats.tail2870dc.ts.net` (`100.73.72.35`) — **NATS 2.14.2**, tailnet-only:
-- client `:4222` open, HTTP monitoring `:8222` open, cluster `:6222` closed (single node).
-- **`jetstream: true`** — durable streams, work-queues, KV, object store all available.
-- **`auth_required: true`** — connections need credentials (see §7).
-- `max_payload: 8 MB`, `headers: true`, `api_lvl: 4`.
+Dedicated hub **`entheai-nats.tail2870dc.ts.net`** (tailnet `100.103.159.94`), a Hetzner
+**cx53… (actually cpx52: 12 vCPU / 24 GB, fsn1)** box running **NATS 2.14.2 + JetStream**,
+tailnet-only (Hetzner cloud firewall drops the public `:4222`/`:8222`; reachable only over
+WireGuard). Provisioned via `hcloud` + a cloud-init (`scratchpad/hetzner/nats-cloud-init.yaml`);
+**verified** end-to-end (token-authed pub/sub round-trip over the tailnet). Replaces the earlier
+`crabcc-nats` (retired — no longer used).
+
+- **Auth:** token (`authorization { token }`); the token was generated on-box (`openssl rand`) and
+  lives in entheai's gitignored `.env` as `NATS_TOKEN` (+ `NATS_URL`). Clients send it in the
+  CONNECT `auth_token` field.
+- **JetStream** on (`store_dir=/var/lib/nats/jetstream`, 40 GB file store) — durable streams,
+  work-queues, KV, object store available.
+- `max_payload: 8 MB`.
 
 **Client:** [`async-nats`](https://docs.rs/async-nats) (official Tokio client, JetStream + KV +
 object-store support). One new workspace dep; TLS is not needed on the tailnet (WireGuard already
-encrypts), so we connect plaintext over the tailnet IP/MagicDNS.
+encrypts), so we connect plaintext to `NATS_URL` with the `NATS_TOKEN`.
 
 ## 1. Design principles
 
@@ -134,8 +142,8 @@ index) so the federation learns collectively.
 ```toml
 [nats]
 enabled = false                        # opt-in; off by default
-url = "nats://crabcc-nats.tail2870dc.ts.net:4222"
-creds_env = "NATS_CREDS"               # path to a .creds file, resolved from .env (never inline)
+url_env = "NATS_URL"                   # nats://entheai-nats.tail2870dc.ts.net:4222 (from .env)
+token_env = "NATS_TOKEN"               # token, from .env — never inline in this tracked file
 # name = "<node id>"                    # defaults to hostname
 
 [federation]                            # F2
@@ -144,8 +152,9 @@ role = "auto"                           # "dispatch" | "worker" | "auto" (both)
 repo_transport = "bundle"               # "bundle" | "remote"
 ```
 
-`.env` (gitignored): `NATS_CREDS=/path/to/entheai.creds` (or an inline JWT/nkey via a
-`creds_token_env` variant). Nothing secret in the tracked `entheai.toml`.
+`.env` (gitignored, already populated): `NATS_URL=nats://entheai-nats.tail2870dc.ts.net:4222` and
+`NATS_TOKEN=<token>`. Nothing secret in the tracked `entheai.toml`. (Migrate token → nkey/JWT +
+per-subject permissions before F2 goes wide — §7.)
 
 ## 7. Auth + security
 
@@ -167,10 +176,11 @@ repo_transport = "bundle"               # "bundle" | "remote"
 | worker crashes mid-task | lease (`AckWait`) expires → redelivered; after `MaxDeliver` → local |
 | object-store bundle missing/corrupt | that coder marked failed, others integrate; branch kept |
 
-## 9. Open questions (need your call)
+## 9. Open questions
 
-1. **Creds** — where's the `.creds`/nkey for crabcc-nats? (path on the tailnet nodes / an env var
-   name / should I request one). Blocks all real wiring.
+1. ~~Creds~~ — **RESOLVED.** Token auth; `NATS_URL` + `NATS_TOKEN` in entheai's gitignored `.env`,
+   verified working over the tailnet. (Future hardening: migrate to nkey/JWT + subject permissions
+   per §7 before F2 goes wide.)
 2. **Repo transport (F2)** — bundle-over-NATS (self-contained) vs shared git remote (lighter)?
    Is there already a shared bare repo / does every node have `origin` (GitHub) creds?
 3. **Worker fleet** — which nodes should run `entheai-worker`? (crabcc-ccx33, nixai-base, dev-cx53…)
