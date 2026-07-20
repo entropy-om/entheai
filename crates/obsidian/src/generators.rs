@@ -162,19 +162,37 @@ fn rewrite_line(line: &str, doc_dir: &Path, assets: &mut Vec<AssetRef>) -> Strin
 
 /// Rewrite one doc: protect fenced code blocks (``` / ~~~) and inline code
 /// spans (`...`) verbatim; rewrite links/images only in the remaining text.
+/// A fence closes only on a line starting with the SAME marker that opened it
+/// (``` and ~~~ are not interchangeable), so e.g. a ~~~ line inside a
+/// ```-fenced block is ordinary fenced content, not a close.
 fn rewrite(md: &str, doc_dir: &Path, assets: &mut Vec<AssetRef>) -> String {
     let mut result = String::with_capacity(md.len());
-    let mut in_fence = false;
+    let mut fence_marker: Option<char> = None;
     for line in md.split_inclusive('\n') {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_fence = !in_fence;
-            result.push_str(line);
-            continue;
-        }
-        if in_fence {
-            result.push_str(line);
-            continue;
+        match fence_marker {
+            None => {
+                if trimmed.starts_with("```") {
+                    fence_marker = Some('`');
+                    result.push_str(line);
+                    continue;
+                } else if trimmed.starts_with("~~~") {
+                    fence_marker = Some('~');
+                    result.push_str(line);
+                    continue;
+                }
+            }
+            Some(marker) => {
+                let closes = match marker {
+                    '`' => trimmed.starts_with("```"),
+                    _ => trimmed.starts_with("~~~"),
+                };
+                if closes {
+                    fence_marker = None;
+                }
+                result.push_str(line);
+                continue;
+            }
         }
         result.push_str(&rewrite_line(line, doc_dir, assets));
     }
@@ -598,6 +616,31 @@ mod tests {
             .unwrap();
         assert!(specs.markdown.contains("[[2026-07-19-x-design]]"));
         assert!(out.notes.iter().any(|n| n.rel_path == *"Research.md"));
+    }
+
+    #[test]
+    fn tilde_line_inside_backtick_fence_does_not_close_it() {
+        let ctx = RepoContext {
+            repo_name: "e".into(),
+            docs: vec![doc(
+                "docs/x.md",
+                "```\n~~~\n[still code](tui.md)\n```\n[real link](tui.md)\n",
+            )],
+            ..Default::default()
+        };
+        let mut out = RenderOutput::default();
+        docs_mirror(&ctx, &mut out);
+        let n = &out.notes[0];
+        assert!(
+            n.markdown.contains("[still code](tui.md)"),
+            "content inside the backtick fence (after a ~~~ line) stays verbatim: {}",
+            n.markdown
+        );
+        assert!(
+            n.markdown.contains("[[tui|real link]]"),
+            "the real link after the fence closes is rewritten: {}",
+            n.markdown
+        );
     }
 
     #[test]

@@ -79,10 +79,21 @@ async fn run(opts: ObsidianOptions, root: PathBuf, home: PathBuf) -> anyhow::Res
     let subtree = vault.join(&opts.subtree);
     let mut writer = writer::VaultWriter::new(subtree.clone());
 
-    // Seed once (lazy: apply() creates nothing if the render is empty).
-    apply(&opts, &root, &mut writer)?;
+    // Seed once (lazy: apply() creates nothing if the render is empty). Runs
+    // off the runtime: apply() is a blocking scan+render+write pipeline, so it
+    // must not execute inline on a Tokio worker thread (P6).
+    let opts_c = opts.clone();
+    let root_c = root.clone();
+    let (w, (res, changed)) = tokio::task::spawn_blocking(move || {
+        let res = apply(&opts_c, &root_c, &mut writer);
+        let changed = writer.last_changed().to_vec();
+        (writer, (res, changed))
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("obsidian apply task panicked: {e}"))?;
+    writer = w;
+    res?;
     if opts.mcp_nudge {
-        let changed: Vec<PathBuf> = writer.last_changed().to_vec();
         nudge::best_effort(opts.mcp_port, &subtree, &changed).await;
     }
 
@@ -95,12 +106,21 @@ async fn run(opts: ObsidianOptions, root: PathBuf, home: PathBuf) -> anyhow::Res
         tx,
     )?;
     while rx.recv().await.is_some() {
-        if let Err(e) = apply(&opts, &root, &mut writer) {
+        let opts_c = opts.clone();
+        let root_c = root.clone();
+        let (w, (res, changed)) = tokio::task::spawn_blocking(move || {
+            let res = apply(&opts_c, &root_c, &mut writer);
+            let changed = writer.last_changed().to_vec();
+            (writer, (res, changed))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("obsidian apply task panicked: {e}"))?;
+        writer = w;
+        if let Err(e) = res {
             log::warn!("obsidian: apply failed: {e}");
             continue;
         }
         if opts.mcp_nudge {
-            let changed: Vec<PathBuf> = writer.last_changed().to_vec();
             nudge::best_effort(opts.mcp_port, &subtree, &changed).await;
         }
     }
