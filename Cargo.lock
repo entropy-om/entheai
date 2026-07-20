@@ -1541,6 +1541,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "crossterm",
+ "entheai-bus",
  "entheai-companion",
  "entheai-config",
  "entheai-core",

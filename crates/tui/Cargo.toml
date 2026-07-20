@@ -14,6 +14,7 @@ entheai-permission = { path = "../permission" }
 entheai-radio = { path = "../radio", default-features = false }
 entheai-config = { path = "../config" }
 entheai-orchestrator = { path = "../orchestrator" }
+entheai-bus = { path = "../bus" }
 # companion for the lightweight `state` protocol only — never the GUI window.
 entheai-companion = { path = "../companion", default-features = false }
 entheai-viz = { path = "../viz" }

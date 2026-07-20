@@ -327,6 +327,15 @@ async fn event_loop<P: Provider + 'static>(
     system_prompt: Option<String>,
     companion_tx: Option<tokio::sync::mpsc::UnboundedSender<StateChange>>,
 ) -> anyhow::Result<()> {
+    // Federation event bus (F1): connect once per TUI session, fail-safe. Cloned
+    // into each fan-out submit's tee. `None` when `[nats]` is off/unreachable →
+    // the tee is a pure identity and the UI event flow is unchanged. Read
+    // `config.nats` here, before `config` is moved into the `Arc` below.
+    let bus = entheai_bus::Bus::connect(
+        &entheai_bus::BusOptions::from_config(&config.nats),
+    )
+    .await;
+
     // Arc so each spawned run task can share the agent/registry/policy/config.
     let agent = Arc::new(agent);
     let registry = Arc::new(registry);
@@ -468,9 +477,21 @@ async fn event_loop<P: Provider + 'static>(
                                 let (ftx, frx) =
                                     mpsc::unbounded_channel::<entheai_orchestrator::FanoutEvent>();
                                 fanout_rx = Some(frx);
+                                // Tee the UI event stream to the NATS bus (F1).
+                                // Fresh per-run session id scopes the subjects;
+                                // with the bus off this returns `Some(ftx)`
+                                // unchanged. The BusSession is moved into the
+                                // spawned task so it lives exactly as long as the
+                                // run, then its Drop aborts the tee.
+                                let (events, bus_session) = entheai_bus::tee(
+                                    bus.clone(),
+                                    entheai_bus::new_session_id(),
+                                    Some(ftx),
+                                );
                                 tokio::spawn(async move {
+                                    let _bus_session = bus_session;
                                     let res =
-                                        entheai_orchestrator::run_fanout(&config, &root, &text, Some(ftx), pool)
+                                        entheai_orchestrator::run_fanout(&config, &root, &text, events, pool)
                                             .await;
                                     let _ = result_tx.send(res.map_err(|e| e.to_string())).await;
                                 });
