@@ -1623,7 +1623,6 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
- "entheai-bus",
  "entheai-config",
  "entheai-federation",
  "entheai-orchestrator",
