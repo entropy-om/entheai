@@ -75,12 +75,12 @@ The workspace release profile is already tuned: `lto = "fat"`, `codegen-units = 
 
 | # | Path · runs | Was | Fix → | Status |
 |---|---|---|---|---|
-| 1 | tui `LineCache::get_or_build` (`lib.rs:1071`) · **per token** | O(n²)/turn — key `(len, last_msg_len, width)` churns every token → re-wraps the whole scrollback | cache lines **per message** keyed by `(msg_idx, text_len, width)`; re-wrap only the streaming msg → O(Δ)/token | fixing |
-| 2 | tui draw `lines.to_vec()` (`lib.rs:411`) · **per frame** | deep-clones the whole wrapped history every draw (borrow-checker appeasement) — compounds #1 | render the `Paragraph` from a borrowed `&[Line]` → O(1) extra | fixing |
-| 3 | companion glow loop (`render.rs:167`) · **per pixel/frame** | `sqrt` + `smooth_falloff` per pixel every frame — invariant for the fixed 180×180 window | precompute a `glow_factor` LUT once per (W,H); per frame = `LUT[i]·pulse` + 3 `lerp_u8` | fixing |
+| 1 | tui `LineCache::get_or_build` (`lib.rs:1071`) · **per token** | O(n²)/turn — key `(len, last_msg_len, width)` churns every token → re-wraps the whole scrollback | per-message flat-buffer cache; re-wrap only the streaming suffix → O(Δ)/token | ✓ `bc08257` |
+| 2 | tui draw `lines.to_vec()` (`lib.rs:411`) · **per frame** | deep-clones the whole wrapped history every draw — compounds #1 | render from a content-**borrowing** line vec (zero byte-copies/frame) | ✓ `bc08257` |
+| 3 | companion glow loop (`render.rs:167`) · **per pixel/frame** | `sqrt` + `smooth_falloff` per pixel every frame — invariant for the fixed 180×180 window | precomputed `glow_lut` on `AnimationState`, built once per (W,H) | ✓ `fd49c8d` |
 | 4 | obsidian `apply()` (`lib.rs:111`) · **per FS tick** | re-scans + re-renders the WHOLE repo each tick; discards the debouncer's changed-path set | incremental: thread changed paths / mtime-cache `SourceDoc`s; rebuild aggregate notes only on set change | **deferred (large)** — debounced ~500ms so lower-frequency; `spawn_blocking` keeps it off the runtime meanwhile |
-| 5 | companion `name.to_uppercase()` (`render.rs:240`) · **per frame** | heap-allocs a `String` every frame (`glyph_3x5` re-uppercases anyway) | uppercase once at startup / drop it | fixing |
-| 6 | core `stream_turn` (`lib.rs:91`) · **per turn** | `schemas.to_vec()` clones every tool schema each turn (invariant); `messages.to_vec()` O(n²)/task | `Arc<[Value]>` schemas → O(1) clone/turn (borrow-in-trait = larger follow-up) | fixing |
+| 5 | companion `name.to_uppercase()` (`render.rs:240`) · **per frame** | heap-allocs a `String` every frame (`glyph_3x5` re-uppercases anyway) | dropped — `glyph_3x5` handles casing | ✓ `fd49c8d` |
+| 6 | core `stream_turn` (`lib.rs:91`) · **per turn** | `schemas.to_vec()` + `messages.to_vec()` every turn → O(n²)/task, forced by the owned-`Vec` provider trait | `Provider` trait now **borrows** `&[ChatMessage]`/`&[Value]` — zero clones on the request path | ✓ `38ea3a7` |
 
 ### Patterns observed (fold into review)
 
