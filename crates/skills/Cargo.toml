@@ -13,6 +13,7 @@ anyhow = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 regex = "1"
+log = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

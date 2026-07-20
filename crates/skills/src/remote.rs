@@ -6,6 +6,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serde::Deserialize;
+
 /// One skill written to disk by `add_from_url`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AddedSkill {
@@ -155,6 +157,111 @@ fn html_to_text(html: &str) -> String {
     decoded.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+#[derive(Debug, Deserialize)]
+struct Manifest {
+    #[serde(default)]
+    skills: Vec<ManifestSkill>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManifestSkill {
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    skill_md_url: Option<String>,
+}
+
+/// Fetch a skill (or skills) from `url` via layered discovery and write them
+/// under `skills_dir`. Returns what was written (incl. skip-if-exists). Errors
+/// only on a bad URL or when no tier yields anything.
+pub async fn add_from_url(url: &str, skills_dir: &Path) -> anyhow::Result<Vec<AddedSkill>> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| anyhow::anyhow!("invalid URL {url:?}: {e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        anyhow::bail!("only http/https URLs are supported (got {:?})", parsed.scheme());
+    }
+    let host = parsed.host_str().unwrap_or("skill").to_string();
+    let client = reqwest::Client::builder().timeout(REQ_TIMEOUT).build()?;
+
+    // Tier 1: entheai-native manifest.
+    let manifest_url = parsed.join("/.well-known/skills.json")?;
+    if let Ok(resp) = client.get(manifest_url.clone()).send().await {
+        if resp.status().is_success() {
+            if let Ok(text) = read_capped(resp, BODY_CAP).await {
+                if let Ok(manifest) = serde_json::from_str::<Manifest>(&text) {
+                    let mut added = Vec::new();
+                    for s in &manifest.skills {
+                        let (desc, body) = match (&s.body, &s.skill_md_url) {
+                            (Some(b), _) => (s.description.clone(), b.clone()),
+                            (None, Some(u)) => {
+                                let r = client.get(u).send().await?;
+                                let md = read_capped(r, BODY_CAP).await?;
+                                let (_n, d, b) = crate::parse_skill_md(&md, &s.name);
+                                let d = if s.description.is_empty() { d } else { s.description.clone() };
+                                (d, b)
+                            }
+                            (None, None) => {
+                                log::warn!("skills: manifest entry {:?} has neither body nor skill_md_url — skipping", s.name);
+                                continue;
+                            }
+                        };
+                        let mut a = write_skill(skills_dir, &s.name, &desc, &body, url)?;
+                        a.tier = "well-known";
+                        added.push(a);
+                    }
+                    if !added.is_empty() {
+                        return Ok(added);
+                    }
+                }
+            }
+        }
+    }
+
+    // Tier 2: llms.txt.
+    let llms_url = parsed.join("/llms.txt")?;
+    if let Ok(resp) = client.get(llms_url.clone()).send().await {
+        if resp.status().is_success() {
+            if let Ok(text) = read_capped(resp, BODY_CAP).await {
+                if !text.trim().is_empty() {
+                    let (name, desc, body) = synthesize_from_llms_txt(&text, &host, llms_url.as_str());
+                    let mut a = write_skill(skills_dir, &name, &desc, &body, url)?;
+                    a.tier = "llms.txt";
+                    return Ok(vec![a]);
+                }
+            }
+        }
+    }
+
+    // Tier 3: the page itself (last resort).
+    if let Ok(resp) = client.get(parsed.clone()).send().await {
+        if resp.status().is_success() {
+            let is_html = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|c| c.contains("html"))
+                .unwrap_or(false);
+            let text = read_capped(resp, BODY_CAP).await?;
+            if !text.trim().is_empty() {
+                let body = if is_html {
+                    format!("> auto-extracted from {url} (best-effort, may be noisy).\n\n{}", html_to_text(&text))
+                } else {
+                    format!("> Added from {url}.\n\n{text}")
+                };
+                let mut a = write_skill(skills_dir, &host, &format!("Docs from {host}"), &body, url)?;
+                a.tier = "page";
+                return Ok(vec![a]);
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "no skill found at {url} (tried {manifest_url}, {llms_url}, and the page itself)"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,5 +323,74 @@ mod tests {
         let out = html_to_text(html);
         assert!(!out.contains('<') && !out.contains("evil"));
         assert!(out.contains("Hi") && out.contains("A & B"));
+    }
+
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn tier1_manifest_wins_and_installs_all_skills() {
+        let server = MockServer::start().await;
+        let manifest = r#"{"skills":[
+            {"name":"Alpha","description":"a","body":"do alpha"},
+            {"name":"Beta","description":"b","skill_md_url":"__BASE__/beta.md"}
+        ]}"#.replace("__BASE__", &server.uri());
+        Mock::given(method("GET")).and(path("/.well-known/skills.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(manifest))
+            .mount(&server).await;
+        Mock::given(method("GET")).and(path("/beta.md"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("---\nname: Beta\ndescription: b\n---\ndo beta"))
+            .mount(&server).await;
+        // llms.txt also present — must be ignored because tier 1 matched.
+        Mock::given(method("GET")).and(path("/llms.txt"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("# Should Not Win"))
+            .mount(&server).await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let added = add_from_url(&server.uri(), dir.path()).await.unwrap();
+        assert_eq!(added.len(), 2);
+        assert!(added.iter().all(|a| a.tier == "well-known"));
+        assert!(dir.path().join("alpha/SKILL.md").exists());
+        assert!(dir.path().join("beta/SKILL.md").exists());
+        assert!(std::fs::read_to_string(dir.path().join("beta/SKILL.md")).unwrap().contains("do beta"));
+    }
+
+    #[tokio::test]
+    async fn tier2_llms_txt_when_no_manifest() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/llms.txt"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("# Docs\n\n> Great docs.\n\n- [X](/x)"))
+            .mount(&server).await;
+        let dir = tempfile::tempdir().unwrap();
+        let added = add_from_url(&server.uri(), dir.path()).await.unwrap();
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].tier, "llms.txt");
+        assert_eq!(added[0].slug, "docs");
+        assert!(std::fs::read_to_string(&added[0].path).unwrap().contains("Great docs."));
+    }
+
+    #[tokio::test]
+    async fn tier3_page_extract_when_nothing_else() {
+        let server = MockServer::start().await;
+        // `set_body_string` unconditionally forces mime="text/plain" at
+        // generate_response() time, overriding any `insert_header("content-type", ..)`
+        // regardless of call order (wiremock 0.6.5). Use `set_body_raw(body, mime)`,
+        // which sets both atomically, to actually get a `text/html` response.
+        Mock::given(method("GET")).and(path("/"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_raw("<h1>Hello</h1><p>World</p>", "text/html"))
+            .mount(&server).await;
+        let dir = tempfile::tempdir().unwrap();
+        let added = add_from_url(&server.uri(), dir.path()).await.unwrap();
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].tier, "page");
+        let body = std::fs::read_to_string(&added[0].path).unwrap();
+        assert!(body.contains("Hello") && body.contains("auto-extracted"));
+    }
+
+    #[tokio::test]
+    async fn rejects_non_http_scheme() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(add_from_url("file:///etc/passwd", dir.path()).await.is_err());
     }
 }

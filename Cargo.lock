@@ -1518,6 +1518,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "entheai-tools",
+ "log",
  "regex",
  "reqwest 0.12.28",
  "serde",
