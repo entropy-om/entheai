@@ -135,6 +135,83 @@ impl WorktreePool {
     }
 }
 
+/// Blocking `git -C <dir> <args...>`, used only from [`WorktreeGuard::drop`] — a
+/// `Drop` impl can't be async. Best-effort: the result is discarded, since
+/// cleanup-on-drop must never panic or fail the surrounding operation.
+fn run_git_blocking(dir: &Path, args: &[&str]) {
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output();
+}
+
+/// RAII owner of the worktrees created for one fan-out session. Guarantees that
+/// EVERY exit after worktree creation — a normal return, a `?` early-return, or a
+/// panic — removes the worktree DIRECTORIES it owns (so they never leak into the
+/// user's real repo across runs) and the pool's temp dir.
+///
+/// Branch deletion is deliberately conditional: only branches passed to
+/// [`WorktreeGuard::mark_merged`] (the ones actually merged onto the integration
+/// branch, whose commits therefore survive via that merge) are `git branch -D`'d.
+/// Every other tracked branch — a coder that conflicted, failed verify, timed
+/// out, or made no changes — is KEPT so its commit stays reachable and
+/// recoverable, matching what the fan-out report tells the user.
+pub struct WorktreeGuard {
+    pool: WorktreePool,
+    worktrees: Vec<Worktree>,
+    merged: std::collections::HashSet<String>,
+}
+
+impl WorktreeGuard {
+    /// Take ownership of `pool`; no worktrees are tracked until [`create`] runs.
+    ///
+    /// [`create`]: WorktreeGuard::create
+    pub fn new(pool: WorktreePool) -> Self {
+        Self {
+            pool,
+            worktrees: Vec::new(),
+            merged: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Create a worktree (delegating to the owned pool) and track it for
+    /// cleanup-on-drop. Same semantics as [`WorktreePool::create`].
+    pub async fn create(&mut self, index: usize) -> anyhow::Result<Worktree> {
+        let wt = self.pool.create(index).await?;
+        self.worktrees.push(wt.clone());
+        Ok(wt)
+    }
+
+    /// Mark branch names as merged — only these are `git branch -D`'d on drop.
+    /// Call once with the integration result's `merged` set; every other tracked
+    /// branch is kept alive.
+    pub fn mark_merged(&mut self, branches: impl IntoIterator<Item = String>) {
+        self.merged.extend(branches);
+    }
+}
+
+impl Drop for WorktreeGuard {
+    fn drop(&mut self) {
+        for wt in &self.worktrees {
+            let path_str = wt.path.to_string_lossy().into_owned();
+            // Remove the worktree DIRECTORY for every tracked worktree...
+            run_git_blocking(
+                &self.pool.root,
+                &["worktree", "remove", "--force", path_str.as_str()],
+            );
+            // ...but only delete the BRANCH if it was merged (see the type docs):
+            // unmerged branches are kept so their work stays recoverable.
+            if self.merged.contains(&wt.branch) {
+                run_git_blocking(&self.pool.root, &["branch", "-D", &wt.branch]);
+            }
+        }
+        // Every worktree dir is gone now, so the pool's temp dir is empty — drop
+        // it too, otherwise each run leaks an empty temp dir even on success.
+        let _ = std::fs::remove_dir_all(&self.pool.dir);
+    }
+}
+
 /// Stage everything and commit in `path`. Returns true iff a commit was actually made
 /// (false when there were no changes). Uses `-c user.email=... -c user.name=...` inline so
 /// it works even if the repo has no committer configured.
@@ -479,5 +556,154 @@ mod tests {
 
         pool.remove(&wt0).await.expect("remove 0");
         pool.remove(&wt1).await.expect("remove 1");
+    }
+
+    /// True if `branch` appears as an exact entry in `git branch --list` output
+    /// (which prefixes the current branch with `* ` and indents the rest).
+    fn branch_listed(list: &str, branch: &str) -> bool {
+        list.lines()
+            .map(|l| l.trim_start_matches('*').trim())
+            .any(|l| l == branch)
+    }
+
+    // Bug 1: cleanup must delete a branch that was merged (its work survives via
+    // the integration merge) but KEEP one that conflicted (its commit is only
+    // reachable through its own branch), while removing both worktree dirs.
+    #[tokio::test]
+    async fn guard_deletes_merged_branch_but_keeps_conflicted_one() {
+        let repo = init_repo().await;
+        let root = repo.path();
+        let base = resolve_base(root, "HEAD").await.expect("base");
+        let session = "guard-bug1";
+        let pool_dir = std::env::temp_dir().join(format!("entheai-wt-{session}"));
+
+        let merged_branch;
+        let conflicted_branch;
+        let wt0_path;
+        let wt1_path;
+        {
+            let pool = WorktreePool::new(root, session, "HEAD")
+                .await
+                .expect("pool new");
+            let mut guard = WorktreeGuard::new(pool);
+
+            // Both edit line two of base.txt differently → wt0 merges, wt1 conflicts.
+            let wt0 = guard.create(0).await.expect("create 0");
+            tokio::fs::write(wt0.path.join("base.txt"), "line one\nMERGED\nline three\n")
+                .await
+                .expect("write 0");
+            assert!(commit_all(&wt0.path, "change from 0")
+                .await
+                .expect("commit 0"));
+
+            let wt1 = guard.create(1).await.expect("create 1");
+            tokio::fs::write(
+                wt1.path.join("base.txt"),
+                "line one\nCONFLICT\nline three\n",
+            )
+            .await
+            .expect("write 1");
+            assert!(commit_all(&wt1.path, "change from 1")
+                .await
+                .expect("commit 1"));
+
+            let integration = integrate(
+                root,
+                &base,
+                "entheai/guard-bug1/integration",
+                &[wt0.branch.clone(), wt1.branch.clone()],
+            )
+            .await
+            .expect("integrate");
+            assert_eq!(
+                integration.merged.len(),
+                1,
+                "merged: {:?}",
+                integration.merged
+            );
+            assert_eq!(
+                integration.conflicted.len(),
+                1,
+                "conflicted: {:?}",
+                integration.conflicted
+            );
+
+            // Thread the merged set into the guard — exactly what run_fanout does.
+            guard.mark_merged(integration.merged.iter().cloned());
+            merged_branch = integration.merged[0].clone();
+            conflicted_branch = integration.conflicted[0].clone();
+            wt0_path = wt0.path.clone();
+            wt1_path = wt1.path.clone();
+        } // guard drops here → cleanup runs
+
+        // Both worktree DIRECTORIES are gone, and so is the pool temp dir (Bug 5).
+        assert!(!wt0_path.exists(), "wt0 dir should be removed");
+        assert!(!wt1_path.exists(), "wt1 dir should be removed");
+        assert!(!pool_dir.exists(), "pool temp dir should be removed");
+
+        // The merged branch was deleted; the conflicted (unmerged) branch KEPT.
+        let branches = git_ok(root, &["branch", "--list"]).await;
+        assert!(
+            !branch_listed(&branches, &merged_branch),
+            "merged branch should be deleted; branches:\n{branches}"
+        );
+        assert!(
+            branch_listed(&branches, &conflicted_branch),
+            "conflicted branch must be kept so its work is recoverable; branches:\n{branches}"
+        );
+    }
+
+    // Bug 3: on an early-return/error path (integrate never ran → nothing marked
+    // merged) the guard must still remove every worktree dir + the pool temp dir,
+    // while keeping all branches (their commits could carry recoverable work).
+    #[tokio::test]
+    async fn guard_removes_worktree_dirs_on_drop_without_marking_merged() {
+        let repo = init_repo().await;
+        let root = repo.path();
+        let session = "guard-bug3";
+        let pool_dir = std::env::temp_dir().join(format!("entheai-wt-{session}"));
+
+        let wt0_path;
+        let wt1_path;
+        let branch0;
+        let branch1;
+        {
+            let pool = WorktreePool::new(root, session, "HEAD")
+                .await
+                .expect("pool new");
+            let mut guard = WorktreeGuard::new(pool);
+            let wt0 = guard.create(0).await.expect("create 0");
+            let wt1 = guard.create(1).await.expect("create 1");
+            // Give wt0 a real commit so its branch would carry work to recover.
+            tokio::fs::write(wt0.path.join("work.txt"), "unmerged work\n")
+                .await
+                .expect("write work.txt");
+            assert!(commit_all(&wt0.path, "unmerged work")
+                .await
+                .expect("commit"));
+            wt0_path = wt0.path.clone();
+            wt1_path = wt1.path.clone();
+            branch0 = wt0.branch.clone();
+            branch1 = wt1.branch.clone();
+            // No mark_merged: mimics returning early at/before integrate.
+        } // guard drops here → cleanup runs
+
+        assert!(!wt0_path.exists(), "wt0 dir should be removed on drop");
+        assert!(!wt1_path.exists(), "wt1 dir should be removed on drop");
+        assert!(
+            !pool_dir.exists(),
+            "pool temp dir should be removed on drop"
+        );
+
+        // Nothing was merged, so both branches must survive.
+        let branches = git_ok(root, &["branch", "--list"]).await;
+        assert!(
+            branch_listed(&branches, &branch0),
+            "unmerged branch with work must be kept; branches:\n{branches}"
+        );
+        assert!(
+            branch_listed(&branches, &branch1),
+            "unmerged branch must be kept; branches:\n{branches}"
+        );
     }
 }

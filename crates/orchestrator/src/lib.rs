@@ -443,6 +443,10 @@ pub struct CoderOutcome {
     pub integrated: bool,
     /// Hit a merge conflict at integrate time (overrides `integrated`).
     pub conflicted: bool,
+    /// The coder timed out or was killed mid-run — its partial work was
+    /// deliberately NOT committed or integrated (Bug 2). Takes precedence over
+    /// every other status when the report is rendered.
+    pub timed_out: bool,
 }
 
 /// Fan-out entrypoint (v2): decompose → one isolated `git worktree` + coder
@@ -507,11 +511,19 @@ pub async fn run_fanout(
     let base = worktree::resolve_base(root, "HEAD").await?;
     let wt_pool = worktree::WorktreePool::new(root, &session, &base).await?;
 
+    // A scope guard owns every worktree created below and, on EVERY exit from
+    // here on — normal return, a `?` early-return, or a panic — removes their
+    // directories plus the pool's temp dir, so worktrees never leak into the
+    // user's real repo across runs. It deletes only branches later marked merged
+    // (`guard.mark_merged`); unmerged coder branches (conflicted / verify-failed /
+    // timed-out / no-change) are kept alive for recovery.
+    let mut guard = worktree::WorktreeGuard::new(wt_pool);
+
     // 2. Create one worktree per sub-task, sequentially (git worktree creation
     // isn't safe to parallelize against the same root repo).
     let mut wts: Vec<(worktree::Worktree, SubTask)> = Vec::with_capacity(subtasks.len());
     for (i, st) in subtasks.into_iter().enumerate() {
-        let wt = wt_pool.create(i).await?;
+        let wt = guard.create(i).await?;
         wts.push((wt, st));
     }
 
@@ -537,7 +549,12 @@ pub async fn run_fanout(
         worker_ids.push((id, wt, st));
     }
 
+    // A coder that timed out (via `coder_timeout_secs`) or was killed (via
+    // `/workers`) comes back as a `None` join. Its worktree holds whatever
+    // half-written files the cancelled agent left, so it must NOT be committed or
+    // integrated (Bug 2); record its index here so step 4 skips it.
     let mut runs: Vec<CoderRun> = Vec::with_capacity(worker_ids.len());
+    let mut timed_out: std::collections::HashSet<usize> = std::collections::HashSet::new();
     for (id, wt, st) in worker_ids {
         let run = match pool.join(id).await {
             Some(run) => run,
@@ -546,6 +563,7 @@ pub async fn run_fanout(
                     Some(WorkerStatus::Killed) => "coder killed (stopped via /workers)",
                     _ => "coder timed out",
                 };
+                timed_out.insert(wt.index);
                 CoderRun {
                     index: wt.index,
                     role: st.role,
@@ -556,6 +574,11 @@ pub async fn run_fanout(
                 }
             }
         };
+        // Reap now that we've joined this worker AND read its final status —
+        // otherwise the long-lived pool grows by `subtasks.len()` every run and
+        // `/workers` keeps listing finished coders (Bug 4). Workers not yet joined
+        // stay tracked, so `/workers` still shows in-flight coders during the run.
+        pool.reap(id);
         runs.push(run);
     }
 
@@ -565,6 +588,34 @@ pub async fn run_fanout(
     let mut outcomes: Vec<CoderOutcome> = Vec::with_capacity(runs.len());
     let mut eligible_branches: Vec<String> = Vec::new();
     for run in runs {
+        // Bug 2: a timed-out/killed coder left partial, unverified work in its
+        // worktree. Do NOT commit or integrate it — `commit_all` would snapshot
+        // half-written files and, with `[fanout].verify` defaulting to Skipped,
+        // they'd land on the integration branch marked "integrated ✓". Report it
+        // as failed and move on; its branch is never eligible, so the guard keeps
+        // it (unmerged).
+        if timed_out.contains(&run.index) {
+            if let Some(tx) = &events {
+                let _ = tx.send(FanoutEvent::CoderFinished {
+                    index: run.index,
+                    committed: false,
+                    status: "timed out — not integrated".to_string(),
+                });
+            }
+            outcomes.push(CoderOutcome {
+                index: run.index,
+                role: run.role,
+                task: run.task,
+                branch: run.branch,
+                output: run.output,
+                committed: false,
+                verify: VerifyStatus::NoChanges,
+                integrated: false,
+                conflicted: false,
+                timed_out: true,
+            });
+            continue;
+        }
         let committed = worktree::commit_all(
             &run.path,
             &format!("entheai fan-out [{}]: {}", run.role, run.task),
@@ -608,6 +659,7 @@ pub async fn run_fanout(
             verify,
             integrated,
             conflicted: false,
+            timed_out: false,
         });
     }
 
@@ -630,6 +682,12 @@ pub async fn run_fanout(
             &eligible_branches,
         )
         .await?;
+        // Bug 1: only branches that actually merged are safe to delete on cleanup
+        // (their commits survive via the integration merge). Mark them so the
+        // guard `-D`s exactly those; everything else — including branches that
+        // verified clean but then CONFLICTED here — is kept alive for recovery,
+        // matching the "left on branch …" lines the report prints below.
+        guard.mark_merged(integration.merged.iter().cloned());
         for outcome in outcomes.iter_mut() {
             if integration.conflicted.contains(&outcome.branch) {
                 outcome.integrated = false;
@@ -639,10 +697,11 @@ pub async fn run_fanout(
         Some(integration)
     };
 
-    // 6. Cleanup worktrees (best-effort; keep the integration branch for review).
-    for (wt, _) in &wts {
-        let _ = wt_pool.remove(wt).await;
-    }
+    // 6. Worktree/branch cleanup is owned by `guard`: it runs when the guard
+    // drops at the end of this function (and on any early-return/panic above),
+    // removing every worktree DIRECTORY but deleting only merged branches (Bug 1),
+    // and dropping the pool temp dir (Bug 5). The integration branch lives in the
+    // root repo, not a worktree, so it is untouched and kept for review.
 
     if let Some(tx) = &events {
         let _ = tx.send(FanoutEvent::Done {
@@ -682,14 +741,19 @@ pub fn format_v2_report(
 
     for o in sorted {
         s.push_str(&format!("\n### [{}] {}\n", o.role, o.task));
-        let status = if o.conflicted {
+        let status = if o.timed_out {
+            "timed out — not integrated".to_string()
+        } else if o.conflicted {
             format!("merge conflict — left on branch {}", o.branch)
         } else if !o.committed {
             "no changes".to_string()
         } else if o.integrated {
             "integrated ✓".to_string()
         } else if let VerifyStatus::Failed(msg) = &o.verify {
-            format!("changes not integrated (verify failed: {msg})")
+            format!(
+                "changes not integrated (verify failed: {msg}) — left on branch {}",
+                o.branch
+            )
         } else {
             format!("changes on branch {} (unverified)", o.branch)
         };
@@ -917,6 +981,7 @@ mod tests {
             verify,
             integrated,
             conflicted: false,
+            timed_out: false,
         }
     }
 
@@ -986,6 +1051,33 @@ mod tests {
             None,
         );
 
+        assert!(report.contains("No changes were integrated."));
+    }
+
+    #[test]
+    fn format_v2_report_marks_timed_out_run_as_not_integrated() {
+        // Bug 2: a timed-out/killed coder must be reported as failed and must NOT
+        // show up as integrated, even though nothing about verify changed.
+        let outcomes = vec![CoderOutcome {
+            index: 0,
+            role: "coder".to_string(),
+            task: "long task".to_string(),
+            branch: "entheai/sess/coder-0".to_string(),
+            output: "error: coder timed out".to_string(),
+            committed: false,
+            verify: VerifyStatus::NoChanges,
+            integrated: false,
+            conflicted: false,
+            timed_out: true,
+        }];
+
+        let report = format_v2_report("Do the thing", "0123456789abcdef", "sess", &outcomes, None);
+
+        assert!(
+            report.contains("timed out — not integrated"),
+            "report:\n{report}"
+        );
+        assert!(!report.contains("integrated ✓"), "report:\n{report}");
         assert!(report.contains("No changes were integrated."));
     }
 }

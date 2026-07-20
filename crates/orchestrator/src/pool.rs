@@ -203,6 +203,19 @@ impl WorkerPool {
         }
     }
 
+    /// Drop worker `id`'s tracking entry and captured output entirely. The
+    /// orchestrator calls this right after it `join`s a worker (and reads its
+    /// final `status`), so the pool doesn't accumulate a `WorkerHandle` + output
+    /// per coder for every fan-out run — it's long-lived (the TUI's `/workers`
+    /// holds it), so without reaping it would grow without bound and keep listing
+    /// finished coders. No-op for an unknown id. Reaping only ALREADY-joined
+    /// (finished) workers this way leaves still-in-flight coders listed during a
+    /// run, so `/workers` behaviour is unchanged while the run is live.
+    pub(crate) fn reap(&self, id: WorkerId) {
+        self.workers.lock().unwrap().remove(&id);
+        self.outputs.lock().unwrap().remove(&id);
+    }
+
     /// Snapshot of every tracked worker (regardless of status).
     pub fn list(&self) -> Vec<WorkerSummary> {
         self.workers
@@ -342,6 +355,52 @@ mod tests {
     async fn stop_on_unknown_id_returns_false() {
         let pool = WorkerPool::new(4);
         assert!(!pool.stop(999));
+    }
+
+    #[tokio::test]
+    async fn reap_removes_a_finished_workers_entry_and_output() {
+        let pool = WorkerPool::new(4);
+        let id = pool.spawn("coder", "add x", Duration::from_secs(5), async {
+            fake_run(0, "coder", "add x", "did the thing")
+        });
+        let run = pool.join(id).await.expect("expected a completed run");
+        assert_eq!(run.output, "did the thing");
+
+        // Before reap the worker is still tracked (this is the leak: nothing ever
+        // removed it after join).
+        assert!(pool.status(id).is_some());
+        assert!(pool.output_snapshot(id).is_some());
+
+        pool.reap(id);
+
+        // After reap it's gone from every map and absent from `list()`.
+        assert!(pool.status(id).is_none());
+        assert!(pool.output_snapshot(id).is_none());
+        assert!(pool.list().iter().all(|s| s.id != id));
+    }
+
+    #[tokio::test]
+    async fn reap_leaves_other_workers_tracked() {
+        // Reaping one finished worker must not disturb another that's still
+        // tracked — mirrors run_fanout reaping coders one at a time while others
+        // are still in flight, so `/workers` keeps showing the live ones.
+        let pool = WorkerPool::new(4);
+        let a = pool.spawn("coder", "a", Duration::from_secs(5), async {
+            fake_run(0, "coder", "a", "a done")
+        });
+        let b = pool.spawn("coder", "b", Duration::from_secs(5), async {
+            fake_run(1, "coder", "b", "b done")
+        });
+        pool.join(a).await;
+        pool.reap(a);
+        assert!(pool.status(a).is_none());
+        assert!(
+            pool.list().iter().any(|s| s.id == b),
+            "unreaped worker b must still be listed"
+        );
+        pool.join(b).await;
+        pool.reap(b);
+        assert!(pool.list().is_empty());
     }
 
     #[tokio::test]
