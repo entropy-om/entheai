@@ -24,6 +24,9 @@ pub async fn bundle_base(repo: &Path, out: &Path) -> anyhow::Result<String> {
     git_ok(repo, &["branch", "-f", "fed-base", &base_sha]).await?;
     let out_s = out.to_string_lossy();
     git_ok(repo, &["bundle", "create", &out_s, "fed-base"]).await?;
+    // The bundle is self-contained now; don't leave a `fed-base` branch littering
+    // the dispatcher's real repo (best-effort — a failure here is harmless).
+    let _ = git(repo, &["branch", "-D", "fed-base"]).await;
     Ok(base_sha)
 }
 
@@ -91,6 +94,9 @@ mod tests {
         // Dispatcher bundles base.
         let base_bundle = tmp.path().join("base.bundle");
         let base_sha = bundle_base(&dispatcher, &base_bundle).await.unwrap();
+        // bundle_base must not leave a `fed-base` branch in the dispatcher's repo.
+        let (has_fed_base, _) = git(&dispatcher, &["rev-parse", "--verify", "fed-base"]).await.unwrap();
+        assert!(!has_fed_base, "fed-base branch should be cleaned up after bundling");
 
         // Worker materializes, changes a file, delta-bundles.
         let work = tmp.path().join("work");
