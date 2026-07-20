@@ -386,6 +386,9 @@ async fn event_loop<P: Provider + 'static>(
     let tick_ms = config.viz.tick_ms.max(16);
     let mut ticker = tokio::time::interval(Duration::from_millis(tick_ms));
     let mut line_cache = LineCache::default();
+    // Env banner (folders · seeded machine id · ip) — computed once, shown on the
+    // status bar's second row every frame.
+    let env_line = env_status_line(&root);
     // Redraw gate: only `terminal.draw` when something visible changed, so an
     // idle session (no keys, no running task) doesn't repaint every tick.
     let mut dirty = true;
@@ -414,7 +417,9 @@ async fn event_loop<P: Provider + 'static>(
                 }
             }
             let scroll = app.scroll;
-            terminal.draw(|frame| render(frame, &app, lines, scroll, plan_rows, swarm_rows))?;
+            terminal.draw(|frame| {
+                render(frame, &app, lines, scroll, plan_rows, swarm_rows, &env_line)
+            })?;
             dirty = false;
         }
 
@@ -706,7 +711,7 @@ async fn event_loop<P: Provider + 'static>(
     Ok(())
 }
 
-const STATUS_ROWS: u16 = 1;
+const STATUS_ROWS: u16 = 2; // row 1: entheai · model · state (+ ctx/tokens); row 2: env banner
 const PROGRESS_ROWS: u16 = 1;
 const INPUT_ROWS: u16 = 3;
 
@@ -1191,6 +1196,82 @@ fn borrow_history<'a>(lines: &'a [Line<'static>]) -> Vec<Line<'a>> {
         .collect()
 }
 
+/// One-time environment banner for the status bar's second row: the current +
+/// starting folder, a stable (hostname-seeded) machine id, and the local IP.
+/// Computed ONCE at startup — never per frame.
+fn env_status_line(root: &std::path::Path) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let abbr = |p: &std::path::Path| -> String {
+        let s = p.display().to_string();
+        match (!home.is_empty(), s.strip_prefix(&home)) {
+            (true, Some(rest)) => format!("~{rest}"),
+            _ => s,
+        }
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| root.to_path_buf());
+    let host = env_hostname();
+    let mid = seeded_machine_id(&host);
+    let ip = primary_ip().unwrap_or_else(|| "offline".to_string());
+    format!(
+        "📁 {}  ·  ⌂ start {}  ·  🖥 {host}·{mid}  ·  {ip}",
+        abbr(&cwd),
+        abbr(root)
+    )
+}
+
+fn env_hostname() -> String {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "localhost".to_string())
+}
+
+/// A stable machine id SEEDED from the hostname — FNV-1a → 6 hex chars. Same on
+/// this machine every run; no hardware PII.
+fn seeded_machine_id(host: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in host.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{:06x}", h & 0xff_ffff)
+}
+
+/// Primary local IPv4 via the connect-a-UDP-socket trick — sends nothing, needs
+/// no crate; `local_addr` reflects the OS-chosen source IP for the route.
+fn primary_ip() -> Option<String> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("8.8.8.8:80").ok()?;
+    Some(sock.local_addr().ok()?.ip().to_string())
+}
+
+/// The two-row status bar: row 1 = `entheai · model · state` (left) + `ctx …/…`
+/// (right); row 2 = the env banner (folders, machine id, ip).
+fn render_status_bar(frame: &mut Frame, app: &App, env_line: &str, status_area: Rect) {
+    frame.render_widget(Paragraph::new(status_line(app)), status_area);
+    frame.render_widget(
+        Paragraph::new(context_line(app)).alignment(ratatui::layout::Alignment::Right),
+        status_area,
+    );
+    if status_area.height >= 2 {
+        let row2 = Rect {
+            x: status_area.x,
+            y: status_area.y + 1,
+            width: status_area.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                env_line.to_string(),
+                Style::default().add_modifier(Modifier::DIM),
+            )),
+            row2,
+        );
+    }
+}
+
 fn render(
     frame: &mut Frame,
     app: &App,
@@ -1198,6 +1279,7 @@ fn render(
     scroll: u16,
     plan_rows: u16,
     swarm_rows: u16,
+    env_line: &str,
 ) {
     let area = frame.area();
 
@@ -1211,12 +1293,7 @@ fn render(
             Constraint::Length(INPUT_ROWS),
         ])
         .areas(area);
-        frame.render_widget(Paragraph::new(status_line(app)), status_area);
-        // Right-aligned context/token readout in the same top bar.
-        frame.render_widget(
-            Paragraph::new(context_line(app)).alignment(ratatui::layout::Alignment::Right),
-            status_area,
-        );
+        render_status_bar(frame, app, env_line, status_area);
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" swarm — Ctrl-V to exit ");
@@ -1245,13 +1322,9 @@ fn render(
         ])
         .areas(area);
 
-    // Status bar: entheai · <model> · <state>
-    frame.render_widget(Paragraph::new(status_line(app)), status_area);
-    // Right-aligned context/token readout in the same top bar.
-    frame.render_widget(
-        Paragraph::new(context_line(app)).alignment(ratatui::layout::Alignment::Right),
-        status_area,
-    );
+    // Status bar (2 rows): row 1 = entheai · model · state (+ ctx/tokens right);
+    // row 2 = the env banner (folders · machine id · ip).
+    render_status_bar(frame, app, env_line, status_area);
 
     // Plan pane: boxless, dim-prefixed rows (one per todo item); collapses to
     // zero height (via `plan_rows`) when there's no live plan.
