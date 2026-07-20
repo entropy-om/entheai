@@ -1339,6 +1339,7 @@ dependencies = [
  "entheai-bus",
  "entheai-companion",
  "entheai-config",
+ "entheai-federation",
  "entheai-launcher",
  "entheai-mcp",
  "entheai-memory",

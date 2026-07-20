@@ -139,8 +139,25 @@ async fn main() -> anyhow::Result<()> {
                 .await;
                 let (events, bus_session) =
                     entheai_bus::tee(bus, session_id.clone(), None);
+                // Federation dispatch (F2.2): when `[federation]` is on and a
+                // worker is serving, coders run on the fleet; otherwise run_fanout
+                // runs them locally. Connect failure → None → local (fail-safe).
+                let fed_exec: Option<std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>> =
+                    if cfg.federation.enabled {
+                        entheai_federation::Federation::connect(
+                            &entheai_federation::FedOptions::from_config(&cfg.nats, &cfg.federation),
+                        )
+                        .await
+                        .map(|f| {
+                            entheai_federation::FederationExecutor::new(f, root.clone())
+                                as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>
+                        })
+                    } else {
+                        None
+                    };
                 let answer =
-                    entheai_orchestrator::run_fanout(&cfg, &root, &prompt, events, pool, None).await?;
+                    entheai_orchestrator::run_fanout(&cfg, &root, &prompt, events, pool, fed_exec)
+                        .await?;
                 // Drain + flush the tee before teardown so the final events
                 // (e.g. `done`) actually reach subscribers. No-op when NATS off.
                 bus_session.finish().await;
