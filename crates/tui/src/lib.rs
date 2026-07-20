@@ -408,7 +408,6 @@ async fn event_loop<P: Provider + 'static>(
                 }
             }
             let scroll = app.scroll;
-            let lines = lines.to_vec();
             terminal.draw(|frame| render(frame, &app, lines, scroll, plan_rows, swarm_rows))?;
             dirty = false;
         }
@@ -1025,65 +1024,149 @@ fn wrap_str(s: &str, width: usize) -> Vec<String> {
         .collect()
 }
 
-/// Build the fully wrapped, styled history as one `Line` per visual row.
-fn build_history_lines(messages: &[Msg], width: u16) -> Vec<Line<'static>> {
+/// Wrap and style ONE message into its visual rows. Prefixes only the first
+/// visual line and honors explicit newlines, padding filled rows to full width.
+/// This is the exact per-message body of the old `build_history_lines`, lifted
+/// out so [`LineCache`] can re-wrap a single (streaming) message without
+/// touching the rest of the scrollback while staying byte-identical to a full
+/// rebuild.
+fn wrap_message(m: &Msg, width: u16) -> Vec<Line<'static>> {
     let w = width.max(1) as usize;
+    let (prefix, style, fill) = m.role.style();
     let mut lines: Vec<Line<'static>> = Vec::new();
-    for m in messages {
-        let (prefix, style, fill) = m.role.style();
-        // Prefix only the first visual line; honor explicit newlines in the text.
-        let mut first = true;
-        for logical in m.text.split('\n') {
-            let content = if first {
-                format!("{prefix}{logical}")
+    // Prefix only the first visual line; honor explicit newlines in the text.
+    let mut first = true;
+    for logical in m.text.split('\n') {
+        let content = if first {
+            format!("{prefix}{logical}")
+        } else {
+            logical.to_string()
+        };
+        first = false;
+        for row in wrap_str(&content, w) {
+            let row = if fill {
+                // Pad to full width so the row's background reads as a block.
+                let pad = w.saturating_sub(row.chars().count());
+                format!("{row}{}", " ".repeat(pad))
             } else {
-                logical.to_string()
+                row
             };
-            first = false;
-            for row in wrap_str(&content, w) {
-                let row = if fill {
-                    // Pad to full width so the row's background reads as a block.
-                    let pad = w.saturating_sub(row.chars().count());
-                    format!("{row}{}", " ".repeat(pad))
-                } else {
-                    row
-                };
-                lines.push(Line::styled(row, style));
-            }
+            lines.push(Line::styled(row, style));
         }
     }
     lines
 }
 
-/// Caches the wrapped, styled history lines built by [`build_history_lines`],
-/// rebuilding only when the message count, the last message's text length, or
-/// the wrap width changes. The last-message-length signal is a cheap proxy for
-/// "the in-progress streaming bubble grew" without hashing the whole history
-/// every frame.
+/// Build the fully wrapped, styled history as one `Line` per visual row.
+///
+/// This is the reference full-rebuild: [`LineCache`] produces byte-identical
+/// output incrementally (per message), so this stays the ground truth the cache
+/// is tested against. Only the tests need it now that the live path wraps
+/// per-message through [`LineCache`], so it is gated to test builds.
+#[cfg(test)]
+fn build_history_lines(messages: &[Msg], width: u16) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for m in messages {
+        lines.extend(wrap_message(m, width));
+    }
+    lines
+}
+
+/// Per-message wrap record: the byte length of the source text these lines were
+/// wrapped from (the change signal) and where they start in the flattened
+/// `lines` buffer. During a turn only the streaming (last) message's `text_len`
+/// grows, so only it is re-wrapped.
+struct CachedMsg {
+    text_len: usize,
+    line_start: usize,
+}
+
+/// Caches the wrapped, styled history lines **per message**. A streamed token
+/// only mutates the last message, so `get_or_build` re-wraps just that one
+/// message (O(Δ)) and reuses every finalized message's already-wrapped lines —
+/// instead of re-wrapping the whole scrollback on every token (which made a turn
+/// O(messages × tokens)). The flattened `lines` buffer is returned by borrow so
+/// the draw loop never deep-clones the whole history per frame.
 #[derive(Default)]
 struct LineCache {
-    key: Option<(usize, usize, u16)>, // (msg count, last-msg len, width)
+    width: u16,
+    per_msg: Vec<CachedMsg>,
     lines: Vec<Line<'static>>,
     rebuilds: usize,
 }
 
 impl LineCache {
     fn get_or_build(&mut self, messages: &[Msg], width: u16) -> &[Line<'static>] {
-        let last_len = messages.last().map(|m| m.text.len()).unwrap_or(0);
-        let key = (messages.len(), last_len, width);
-        if self.key != Some(key) {
-            self.lines = build_history_lines(messages, width);
-            self.key = Some(key);
+        // A width change invalidates every wrap; start clean.
+        if self.width != width {
+            self.width = width;
+            self.per_msg.clear();
+            self.lines.clear();
+        }
+        // Find the first message whose cached wrap is stale — a message was
+        // removed/replaced, or (the mid-turn common case) the last message's text
+        // grew. Only integer length compares here; no wrapping.
+        let common = messages.len().min(self.per_msg.len());
+        let mut diverge = common;
+        // `zip` yields exactly `common` pairs (stops at the shorter slice).
+        for (i, (cached, msg)) in self.per_msg.iter().zip(messages).enumerate() {
+            if cached.text_len != msg.text.len() {
+                diverge = i;
+                break;
+            }
+        }
+        let mut changed = false;
+        // Drop the stale suffix: the changed message and everything after it, or
+        // trailing cached messages that no longer exist.
+        if diverge < self.per_msg.len() {
+            self.lines.truncate(self.per_msg[diverge].line_start);
+            self.per_msg.truncate(diverge);
+            changed = true;
+        }
+        // Re-wrap only the missing suffix (the changed message plus any appended
+        // messages); every earlier message keeps its already-wrapped lines.
+        for msg in &messages[self.per_msg.len()..] {
+            let line_start = self.lines.len();
+            self.lines.extend(wrap_message(msg, width));
+            self.per_msg.push(CachedMsg {
+                text_len: msg.text.len(),
+                line_start,
+            });
+            changed = true;
+        }
+        if changed {
             self.rebuilds += 1;
         }
         &self.lines
     }
 }
 
+/// Re-borrow the cache's history lines as a `Text`/`Vec<Line>` that points at
+/// the cache's string content instead of deep-cloning it. `Paragraph`/`Text`
+/// must own their `Vec<Line>`, but each `Line`/`Span` can borrow its bytes, so
+/// this is an O(lines) shallow rebuild with **zero string allocations or byte
+/// copies** — replacing the old per-frame deep clone of the entire scrollback.
+fn borrow_history<'a>(lines: &'a [Line<'static>]) -> Vec<Line<'a>> {
+    lines
+        .iter()
+        .map(|l| {
+            let spans: Vec<Span<'a>> = l
+                .spans
+                .iter()
+                .map(|s| Span::styled(s.content.as_ref(), s.style))
+                .collect();
+            let mut line = Line::from(spans);
+            line.style = l.style;
+            line.alignment = l.alignment;
+            line
+        })
+        .collect()
+}
+
 fn render(
     frame: &mut Frame,
     app: &App,
-    lines: Vec<Line<'static>>,
+    lines: &[Line<'static>],
     scroll: u16,
     plan_rows: u16,
     swarm_rows: u16,
@@ -1138,8 +1221,13 @@ fn render(
         frame.render_widget(plan, plan_area);
     }
 
-    // History (pre-wrapped, so scroll offset is exact).
-    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), history_area);
+    // History (pre-wrapped, so scroll offset is exact). `borrow_history` hands
+    // the paragraph lines that borrow the cache's strings, so no per-frame deep
+    // clone of the scrollback.
+    frame.render_widget(
+        Paragraph::new(borrow_history(lines)).scroll((scroll, 0)),
+        history_area,
+    );
 
     // Inline swarm pane during a fan-out (collapses to zero height when idle,
     // disabled, or in the full-screen swarm view — see `swarm_rows`).
@@ -1434,6 +1522,76 @@ mod tests {
         });
         c.get_or_build(&msgs, 40); // changed -> rebuild
         assert_eq!(c.rebuilds, 2);
+    }
+
+    #[test]
+    fn line_cache_matches_full_rebuild_while_streaming() {
+        let width = 24u16;
+        let mut msgs = vec![
+            Msg {
+                role: Role::User,
+                text: "hello there dear friend".into(),
+            },
+            Msg {
+                role: Role::Tool,
+                text: "ran a command\nwith two logical lines".into(),
+            },
+            // The in-progress streaming bubble starts empty.
+            Msg {
+                role: Role::Assistant,
+                text: String::new(),
+            },
+        ];
+        let mut cache = LineCache::default();
+
+        // Initial incremental build equals a naive full re-wrap.
+        assert_eq!(
+            cache.get_or_build(&msgs, width),
+            build_history_lines(&msgs, width).as_slice()
+        );
+
+        // Stream tokens into the last message. After EVERY token the incremental
+        // cache must still equal a from-scratch re-wrap of every message.
+        for tok in [
+            "The ",
+            "quick ",
+            "brown fox ",
+            "jumps over the ",
+            "very lazy sleeping dog",
+        ] {
+            let last = msgs.len() - 1;
+            msgs[last].text.push_str(tok);
+            let got = cache.get_or_build(&msgs, width).to_vec();
+            assert_eq!(got, build_history_lines(&msgs, width));
+        }
+
+        // O(Δ) contract: 1 initial build + 5 single-message re-wraps, NOT a whole
+        // -history rebuild per token.
+        assert_eq!(cache.rebuilds, 6);
+
+        // A width change invalidates and rebuilds against the new wrap width.
+        let narrow = 9u16;
+        assert_eq!(
+            cache.get_or_build(&msgs, narrow),
+            build_history_lines(&msgs, narrow).as_slice()
+        );
+        // Re-querying at the same (new) width does no extra work.
+        let before = cache.rebuilds;
+        cache.get_or_build(&msgs, narrow);
+        assert_eq!(cache.rebuilds, before);
+
+        // Finalize the turn and append a fresh message: output stays correct and
+        // only the appended message is wrapped.
+        let before = cache.rebuilds;
+        msgs.push(Msg {
+            role: Role::User,
+            text: "and the next question".into(),
+        });
+        assert_eq!(
+            cache.get_or_build(&msgs, narrow),
+            build_history_lines(&msgs, narrow).as_slice()
+        );
+        assert_eq!(cache.rebuilds, before + 1);
     }
 
     #[test]
