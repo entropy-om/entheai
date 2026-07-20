@@ -43,6 +43,19 @@ max_parallel = 4                         # cap on concurrently-running sub-agent
 # [fanout]
 # verify = "cargo test"
 
+# ── Federation event bus (entheai-bus, F1) ───────────────────────────────────
+# Opt-in + fail-safe: with enabled = false (default) or an unreachable hub,
+# entheai runs entirely locally — federation never blocks a run. When enabled,
+# every `--fanout` run publishes its lifecycle to NATS on the subjects
+# `entheai.fanout.<session>.{decomposed,coder.started,coder.finished,integrating,done}`
+# so any tailnet subscriber can watch runs live. The URL and token are read from
+# these env vars (populated from the gitignored .env) — never inline secrets in
+# this tracked file.
+[nats]
+enabled = false
+url_env = "NATS_URL"       # e.g. nats://entheai-nats.tail2870dc.ts.net:4222
+token_env = "NATS_TOKEN"
+
 # MCP servers — spawned at startup; their tools appear to the agent as `<name>__<tool>`.
 # [mcp.codebase]
 # command = "codebase-memory-mcp"
