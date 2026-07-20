@@ -7,7 +7,6 @@ rust-version.workspace = true
 [dependencies]
 entheai-tools = { path = "../tools" }
 serde_json.workspace = true
-anyhow.workspace = true
 async-trait.workspace = true
 
 [dev-dependencies]

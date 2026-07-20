@@ -7,7 +7,6 @@ rust-version.workspace = true
 [dependencies]
 entheai-config = { path = "../../crates/config" }
 entheai-providers = { path = "../../crates/providers" }
-entheai-core = { path = "../../crates/core" }
 entheai-router = { path = "../../crates/router" }
 entheai-orchestrator = { path = "../../crates/orchestrator" }
 entheai-tools = { path = "../../crates/tools" }

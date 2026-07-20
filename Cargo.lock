@@ -1173,7 +1173,6 @@ dependencies = [
  "dotenvy",
  "entheai-companion",
  "entheai-config",
- "entheai-core",
  "entheai-launcher",
  "entheai-mcp",
  "entheai-memory",
@@ -1212,7 +1211,6 @@ dependencies = [
 name = "entheai-config"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "serde",
  "thiserror 2.0.18",
  "toml",
@@ -1222,7 +1220,6 @@ dependencies = [
 name = "entheai-core"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "entheai-memory",
  "entheai-permission",
@@ -1262,10 +1259,8 @@ dependencies = [
 name = "entheai-mcp"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "entheai-tools",
- "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
@@ -1298,7 +1293,6 @@ dependencies = [
  "log",
  "notify-debouncer-mini",
  "regex",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1313,7 +1307,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "entheai-config",
- "entheai-core",
  "entheai-mapper",
  "entheai-permission",
  "entheai-providers",
@@ -1339,7 +1332,6 @@ dependencies = [
 name = "entheai-providers"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "eventsource-stream",
  "futures",
@@ -1374,7 +1366,6 @@ dependencies = [
 name = "entheai-skills"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "entheai-tools",
  "serde_json",
@@ -1386,9 +1377,7 @@ dependencies = [
 name = "entheai-tools"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
- "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
