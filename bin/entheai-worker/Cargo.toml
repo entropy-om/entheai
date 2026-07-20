@@ -7,7 +7,12 @@ rust-version.workspace = true
 [dependencies]
 entheai-config = { path = "../../crates/config" }
 entheai-orchestrator = { path = "../../crates/orchestrator" }
-tokio = { workspace = true }
+entheai-federation = { path = "../../crates/federation" }
+entheai-bus = { path = "../../crates/bus" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "io-util", "fs", "time"] }
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true
+tempfile = "3"
+log = "0.4"
+env_logger = "0.11"
