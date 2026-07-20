@@ -55,6 +55,11 @@ fn path_arg(args: &serde_json::Value) -> Result<String, ToolError> {
         .ok_or_else(|| ToolError::MissingArg("path".into()))
 }
 
+/// Upper bound on how much of a file `read_file` will load into memory at once,
+/// consistent with `run_shell`'s output cap — an unbounded `read_to_string` on an
+/// arbitrarily large in-workspace file would otherwise be an uncapped allocation.
+const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
+
 pub struct ReadFile {
     root: PathBuf,
 }
@@ -85,6 +90,13 @@ impl Tool for ReadFile {
     async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
         let rel = path_arg(&args)?;
         let path = resolve_in_root(&self.root, &rel)?;
+        let size = tokio::fs::metadata(&path).await?.len();
+        if size > MAX_FILE_BYTES {
+            return Err(ToolError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("file too large ({size} bytes; > {MAX_FILE_BYTES} byte limit)"),
+            )));
+        }
         Ok(tokio::fs::read_to_string(&path).await?)
     }
 }
@@ -188,5 +200,38 @@ impl Tool for EditFile {
         let updated = content.replacen(old_str, new_str, 1);
         tokio::fs::write(&full, updated).await?;
         Ok(format!("edited {path}: 1 replacement"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn read_file_reads_normal_file_fine() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("small.txt"), "hello world").unwrap();
+        let tool = ReadFile::new(dir.path());
+        let out = tool
+            .call(serde_json::json!({ "path": "small.txt" }))
+            .await
+            .unwrap();
+        assert_eq!(out, "hello world");
+    }
+
+    #[tokio::test]
+    async fn read_file_rejects_file_over_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = vec![b'a'; (MAX_FILE_BYTES + 1) as usize];
+        std::fs::write(dir.path().join("big.txt"), &big).unwrap();
+        let tool = ReadFile::new(dir.path());
+        let err = tool
+            .call(serde_json::json!({ "path": "big.txt" }))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("too large"),
+            "expected a 'too large' error, got: {err}"
+        );
     }
 }
