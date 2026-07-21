@@ -16,7 +16,7 @@ The first working slice ships a **NATS JetStream** transport — *not* the gRPC/
 - **`entheai-worker --dispatch --role coder --task "…"`** — bundles the current repo, enqueues a `WorkItem`, awaits the `WorkResult` over core NATS, and applies the returned delta to a `fed/…` branch.
 - **`entheai-worker --role <r> --task <t> --worktree <path>`** — the original one-shot local mode (`run_coder_once` against a given worktree), unchanged.
 - Opt-in via `[federation]` (reuses `[nats]` creds). **Fail-safe** — no hub, no problem; the caller runs locally.
-- **In progress (F2.3):** worker sandbox hardening — Linux Landlock + seccomp + drop-root (the lead platform, landing via task A3); macOS `sandbox_init` best-effort today. The `comms`/gRPC + `learning`/`dogfeed` pushback described below stays aspirational. Until the Linux backend lands, a worker runs model output with full tools on its node — run `--serve` **only on trusted, tailnet-only nodes**.
+- **Shipped (F2.3):** worker sandbox hardening — Linux Landlock + seccomp + drop-root (production, jail-proven) and macOS `sandbox_init` (best-effort). The `comms`/gRPC + `learning`/`dogfeed` pushback described below is still aspirational. Even confined, a worker runs model output with full tools + open network (and inherits provider/NATS env keys) — run `--serve` **only on trusted, tailnet-only nodes**.
 
 The sections below are the broader **v0.3 design vision**; the transport and several crates named there (`comms`, `learning`, `dogfeed`, `health`, `session`, `plugins`) are aspirational or realized differently by F2.1.
 
@@ -140,14 +140,14 @@ is irreversible for that process. The posture is set by `[federation] sandbox`
 
 | Platform | Strategy |
 |---|---|
-| Linux | Landlock filesystem jail + seccomp syscall denylist + drop-root. This is the **intended, lead platform**, landing in **F2.3 (task A3)** — the Linux backend is currently a stub, so `entheai_sandbox::availability()` reports *unavailable* (and `strict` refuses) until A3 lands. |
-| macOS | Best-effort `sandbox_init` (Seatbelt) profile. Available today. |
+| Linux | Landlock filesystem jail + seccomp syscall denylist + drop-root — the **production backend**. `availability()` reports *available* on any Landlock-capable kernel; jail-proven by a forked self-test (`cargo test -p entheai-sandbox -- --ignored`) that verifies an out-of-worktree read is denied by Landlock and `unshare(2)` is blocked by seccomp. |
+| macOS | Best-effort `sandbox_init` (Seatbelt) profile. For local `--serve` testing, not production. |
 | other | No confinement backend — `availability()` reports unavailable. |
 
 **Filesystem confinement** differs by backend — the strength is not the same:
 
-- **Linux (lead platform, task A3):** default-**deny**. The coder's worktree is the
-  single read-write directory; every other path is denied except a read-only
+- **Linux (production backend):** default-**deny** via Landlock. The coder's worktree
+  is the single read-write directory; every other path is denied except a read-only
   allow-list — the toolchain (`/usr`, `/lib*`, `/bin`, plus `~/.cargo` and `~/.rustup`
   when a `[fanout] verify` command is configured), CA certs (`/etc/ssl`,
   `/etc/ca-certificates`), `/etc/resolv.conf`, `/etc/hosts`, and `/tmp`.
