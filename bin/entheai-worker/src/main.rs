@@ -121,6 +121,11 @@ async fn run_serve(
     config_path: &str,
     test_coder: Option<&str>,
 ) -> anyhow::Result<()> {
+    // Own the coder-run inputs so they can move into per-claim `'static` tasks: an
+    // `Arc<Config>` (Config is Clone), plus owned config_path/test_coder.
+    let config = std::sync::Arc::new(config.clone());
+    let config_path = config_path.to_string();
+    let test_coder = test_coder.map(|s| s.to_string());
     let opts = entheai_federation::FedOptions::from_config(&config.nats, &config.federation);
     let fed = entheai_federation::Federation::connect(&opts).await.ok_or_else(|| {
         anyhow::anyhow!("federation not available (check [federation].enabled + [nats] creds)")
@@ -178,78 +183,262 @@ async fn run_serve(
         });
     }
 
+    // Bounded concurrency: run up to N coders at once, each in its own detached
+    // worktree off a shared, per-node cached base repo. A `Semaphore` caps how many
+    // run together; a `BaseCache` shares one bare repo per base commit; an in-flight
+    // counter drives presence (Working while any coder runs, Idle at zero).
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(
+        config.federation.max_concurrent_coders.max(1),
+    ));
+    let cache = std::sync::Arc::new(entheai_federation::base_cache::BaseCache::new(
+        config.federation.base_cache_count(),
+    ));
+    let inflight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
     loop {
+        // Acquire a permit BEFORE claiming, so we only ever claim what we can
+        // process — a claimed item is never left held-but-idle waiting for a slot.
+        let permit = sem
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("semaphore is never closed");
         let claimed = match fed.claim(std::time::Duration::from_secs(20)).await {
             Ok(Some(c)) => c,
-            Ok(None) => continue,
+            Ok(None) => {
+                drop(permit);
+                continue;
+            }
             // A transient JetStream error must not kill a long-running worker.
             Err(e) => {
                 log::warn!("claim failed ({e}) — retrying");
+                drop(permit);
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 continue;
             }
         };
-        let item = claimed.item.clone();
-        log::info!("claimed work {}::{} role={}", item.session, item.index, item.role);
-        // Reflect Working state in presence while the coder runs; back to Idle after
-        // (including the error path, since a failed process_one still returns here).
-        presence.set(entheai_federation::WorkerState::Working {
-            task: item.task.clone(),
-        });
-        let result = process_one(&fed, config, config_path, &item, test_coder).await.unwrap_or_else(|e| {
-            entheai_federation::WorkResult {
-                session: item.session.clone(),
-                index: item.index,
-                status: "error".into(),
-                committed: false,
-                result_bundle_key: String::new(),
-                log: format!("error: {e}"),
+        log::info!(
+            "claimed work {}::{} role={}",
+            claimed.item.session,
+            claimed.item.index,
+            claimed.item.role
+        );
+
+        let (fed_c, cfg_c, cfgp_c, tc_c) = (
+            fed.clone(),
+            config.clone(),
+            config_path.clone(),
+            test_coder.clone(),
+        );
+        let (cache_c, presence_c, inflight_c) =
+            (cache.clone(), presence.clone(), inflight.clone());
+        tokio::spawn(async move {
+            let _permit = permit; // held for the task's lifetime → frees a slot on completion
+            // Reflect Working while any coder runs; the last to finish sets Idle.
+            inflight_c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            presence_c.set(entheai_federation::WorkerState::Working {
+                task: claimed.item.task.clone(),
+            });
+            let result = process_one(
+                &fed_c,
+                &cfg_c,
+                &cfgp_c,
+                &claimed.item,
+                tc_c.as_deref(),
+                &cache_c,
+            )
+            .await
+            .unwrap_or_else(|e| error_result(&claimed.item, e));
+            if inflight_c.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                presence_c.set(entheai_federation::WorkerState::Idle);
             }
+            fed_c.publish_result(&result).await.ok();
+            claimed.ack().await;
         });
-        presence.set(entheai_federation::WorkerState::Idle);
-        fed.publish_result(&result).await.ok();
-        claimed.ack().await;
     }
 }
 
-/// Process one claimed work item end-to-end: fetch the base bundle, materialize a
-/// worktree, run the coder (or a test shell command), and — if the coder changed
-/// anything — upload the delta bundle and report `committed`.
+/// The error-path [`WorkResult`] (extracted from the old inline `unwrap_or_else`
+/// body). `base` is left empty here — the fast-path hit/miss/degraded tag is only
+/// known inside `process_one`, and an `Err` return means we never got that far.
+fn error_result(
+    item: &entheai_federation::WorkItem,
+    e: anyhow::Error,
+) -> entheai_federation::WorkResult {
+    entheai_federation::WorkResult {
+        session: item.session.clone(),
+        index: item.index,
+        status: "error".into(),
+        committed: false,
+        result_bundle_key: String::new(),
+        log: format!("error: {e}"),
+        base: String::new(),
+    }
+}
+
+/// Process one claimed work item end-to-end. Fast path: get the shared bare repo
+/// from the per-node cache and attach a detached worktree; on ANY failure of that
+/// path (error or a 20s deadline) fall back to today's full clone and tag the
+/// result `degraded`. Run the coder, and — if it changed anything — upload the
+/// delta bundle and report `committed`. The worktree is always removed and the
+/// cache hold always released before returning (even on a coder failure), so a
+/// live base is never left pinned in-use.
 async fn process_one(
     fed: &entheai_federation::Federation,
     config: &Config,
     config_path: &str,
     item: &entheai_federation::WorkItem,
     test_coder: Option<&str>,
+    cache: &std::sync::Arc<entheai_federation::base_cache::BaseCache>,
 ) -> anyhow::Result<entheai_federation::WorkResult> {
+    // `tmp` owns the worktree dir + the fallback clone dir; the shared bare repo
+    // lives in the persistent cache, NOT under `tmp`. `bare_used` is Some(path) on
+    // the fast path (so we remove the worktree + release the cache hold after),
+    // None on the fallback clone (nothing shared to detach).
     let tmp = tempfile::tempdir()?;
-    let base_bundle = tmp.path().join("base.bundle");
-    tokio::fs::write(&base_bundle, fed.get_bundle(&item.base_bundle_key).await?).await?;
     let work = tmp.path().join("work");
-    entheai_federation::repo::materialize_from_bundle(&base_bundle, &work).await?;
+    let (bare_used, base_outcome): (Option<PathBuf>, String) = match tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        prepare_worktree(fed, item, &work, cache),
+    )
+    .await
+    {
+        Ok(Ok((bare, tag))) => (Some(bare), tag), // tag = "hit" | "miss"
+        Ok(Err(e)) => {
+            fallback_full_clone(fed, item, tmp.path(), &work).await?;
+            (None, format!("degraded:{e}"))
+        }
+        Err(_) => {
+            fallback_full_clone(fed, item, tmp.path(), &work).await?;
+            (None, "degraded:timeout".into())
+        }
+    };
+    if base_outcome.starts_with("degraded") {
+        // The loud, structured signal: the fast path failed and we fell back.
+        log::warn!(
+            "worker {}::{}: shared-base fast path {base_outcome} — fell back to full clone",
+            item.session,
+            item.index
+        );
+    }
 
-    // Coder step: real LLM by default (run in a confined `--sandbox-run` child); a
-    // shell command in test mode (unchanged).
-    let log = match test_coder {
+    // Run the coder + bundle the delta, capturing the outcome WITHOUT early-return
+    // so the worktree/refcount cleanup below runs on every path (incl. failure).
+    let built: anyhow::Result<entheai_federation::WorkResult> = async {
+        let log = run_coder(config, config_path, item, test_coder, &work, tmp.path()).await?;
+        let result_bundle = tmp.path().join("result.bundle");
+        match entheai_federation::repo::commit_and_bundle_delta(
+            &work,
+            &item.base_sha,
+            &format!("fed: {}", item.task),
+            &result_bundle,
+        )
+        .await?
+        {
+            Some(_new_sha) => {
+                let key = entheai_federation::types::result_key(&item.session, item.index);
+                fed.put_bundle(&key, &tokio::fs::read(&result_bundle).await?).await?;
+                Ok(entheai_federation::WorkResult {
+                    session: item.session.clone(),
+                    index: item.index,
+                    status: "committed".into(),
+                    committed: true,
+                    result_bundle_key: key,
+                    log: truncate(&log),
+                    base: base_outcome.clone(),
+                })
+            }
+            None => Ok(entheai_federation::WorkResult {
+                session: item.session.clone(),
+                index: item.index,
+                status: "no-change".into(),
+                committed: false,
+                result_bundle_key: String::new(),
+                log: truncate(&log),
+                base: base_outcome.clone(),
+            }),
+        }
+    }
+    .await;
+
+    // Fast-path cleanup: detach the shared-base worktree and drop this coder's
+    // cache hold. Runs unconditionally — a coder error must NOT leak the worktree
+    // or leave the base pinned in-use forever.
+    if let Some(bare) = &bare_used {
+        let _ = entheai_federation::repo::remove_worktree(bare, &work).await;
+        cache.release(&item.base_sha).await;
+    }
+    built
+}
+
+/// Fast path: cached shared bare repo + a detached worktree at `work`. Returns the
+/// shared bare-repo path (so the caller can remove the worktree afterward) and
+/// "hit" if the base was already cached, else "miss". A successful
+/// `get_or_materialize` takes one cache hold; if attaching the worktree then fails
+/// we release it here so the balanced-hold invariant holds for the caller (the
+/// caller releases exactly once, only when this returned Ok).
+async fn prepare_worktree(
+    fed: &entheai_federation::Federation,
+    item: &entheai_federation::WorkItem,
+    work: &Path,
+    cache: &std::sync::Arc<entheai_federation::base_cache::BaseCache>,
+) -> anyhow::Result<(PathBuf, String)> {
+    let existed = cache.bare_exists(&item.base_sha); // cheap pre-check for the tag
+    let bare = cache
+        .get_or_materialize(fed, &item.base_sha, &item.base_bundle_key)
+        .await?;
+    if let Err(e) = entheai_federation::repo::add_worktree(&bare, work).await {
+        cache.release(&item.base_sha).await;
+        return Err(e);
+    }
+    Ok((bare, if existed { "hit".into() } else { "miss".into() }))
+}
+
+/// Slow path (today's behavior): download the bundle + full clone into `work`.
+async fn fallback_full_clone(
+    fed: &entheai_federation::Federation,
+    item: &entheai_federation::WorkItem,
+    tmp: &Path,
+    work: &Path,
+) -> anyhow::Result<()> {
+    let base_bundle = tmp.join("base.bundle");
+    tokio::fs::write(&base_bundle, fed.get_bundle(&item.base_bundle_key).await?).await?;
+    entheai_federation::repo::materialize_from_bundle(&base_bundle, work).await?;
+    Ok(())
+}
+
+/// Run the coder against `work`: a real LLM by default (in a confined
+/// `--sandbox-run` child), or a shell command in test mode. Returns the captured
+/// log; bails on a coder failure / strict-refusal (the caller still runs cleanup
+/// before propagating). `tmp` holds the task file (sibling of `work`).
+async fn run_coder(
+    config: &Config,
+    config_path: &str,
+    item: &entheai_federation::WorkItem,
+    test_coder: Option<&str>,
+    work: &Path,
+    tmp: &Path,
+) -> anyhow::Result<String> {
+    match test_coder {
         Some(cmd) => {
             let out = tokio::process::Command::new("sh")
                 .arg("-c")
                 .arg(cmd)
-                .current_dir(&work)
+                .current_dir(work)
                 .output()
                 .await?;
-            format!(
+            Ok(format!(
                 "test-coder rc={}: {}",
                 out.status.code().unwrap_or(-1),
                 String::from_utf8_lossy(&out.stdout)
-            )
+            ))
         }
         None => {
             // Re-exec ourselves as a confined child that runs exactly one coder
             // against `work`, mutating it in place. Confinement is applied in the
             // child while it is still single-threaded, before its async runtime
             // starts (see `run_sandboxed_coder_blocking`).
-            let task_file = tmp.path().join("task.txt");
+            let task_file = tmp.join("task.txt");
             std::fs::write(&task_file, &item.task)?;
             let exe = std::env::current_exe()?;
             let deadline = std::time::Duration::from_secs(config.fanout.coder_timeout_secs);
@@ -262,7 +451,7 @@ async fn process_one(
             cmd.kill_on_drop(true)
                 .arg("--sandbox-run")
                 .arg("--work")
-                .arg(&work)
+                .arg(work)
                 .arg("--role")
                 .arg(&item.role)
                 .arg("--task-file")
@@ -279,39 +468,8 @@ async fn process_one(
             } else if !status.success() {
                 anyhow::bail!("coder child failed: {status}");
             }
-            format!("coder ran in a confined child (role={})", item.role)
+            Ok(format!("coder ran in a confined child (role={})", item.role))
         }
-    };
-
-    let result_bundle = tmp.path().join("result.bundle");
-    match entheai_federation::repo::commit_and_bundle_delta(
-        &work,
-        &item.base_sha,
-        &format!("fed: {}", item.task),
-        &result_bundle,
-    )
-    .await?
-    {
-        Some(_new_sha) => {
-            let key = entheai_federation::types::result_key(&item.session, item.index);
-            fed.put_bundle(&key, &tokio::fs::read(&result_bundle).await?).await?;
-            Ok(entheai_federation::WorkResult {
-                session: item.session.clone(),
-                index: item.index,
-                status: "committed".into(),
-                committed: true,
-                result_bundle_key: key,
-                log: truncate(&log),
-            })
-        }
-        None => Ok(entheai_federation::WorkResult {
-            session: item.session.clone(),
-            index: item.index,
-            status: "no-change".into(),
-            committed: false,
-            result_bundle_key: String::new(),
-            log: truncate(&log),
-        }),
     }
 }
 

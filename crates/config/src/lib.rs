@@ -677,6 +677,30 @@ mod tests {
 
         assert!(toml::from_str::<Config>("[federation]\nsandbox = \"bogus\"\n").is_err());
     }
+
+    #[test]
+    fn federation_max_concurrent_coders_defaults_to_4_and_parses() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(cfg.federation.max_concurrent_coders, 4);
+
+        let cfg: Config =
+            toml::from_str("[federation]\nmax_concurrent_coders = 3\n").unwrap();
+        assert_eq!(cfg.federation.max_concurrent_coders, 3);
+    }
+
+    #[test]
+    fn base_cache_count_stays_above_concurrency() {
+        // The cache cap must always exceed max_concurrent_coders so an in-use base
+        // is never the least-recent eviction target (belt to the in-use guard).
+        let cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(cfg.federation.base_cache_count(), 4 * 2 + 4); // 12 by default
+        assert!(cfg.federation.base_cache_count() > cfg.federation.max_concurrent_coders);
+
+        let cfg: Config =
+            toml::from_str("[federation]\nmax_concurrent_coders = 16\n").unwrap();
+        assert_eq!(cfg.federation.base_cache_count(), 16 * 2 + 4);
+        assert!(cfg.federation.base_cache_count() > cfg.federation.max_concurrent_coders);
+    }
 }
 
 /// Memory configuration per the SOTA memory design spec.
@@ -903,6 +927,21 @@ pub struct FederationConfig {
     /// Coder confinement posture on this worker (see crates/sandbox).
     #[serde(default)]
     pub sandbox: entheai_sandbox::SandboxMode,
+    /// How many coders a serving worker runs concurrently. Coders are
+    /// model-wait-bound, so several share one node cheaply — each in its own
+    /// detached worktree off a single cached base repo. Default: 4.
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent_coders: usize,
+}
+
+impl FederationConfig {
+    /// LRU capacity for the per-node base-repo cache. Deliberately kept
+    /// comfortably above `max_concurrent_coders` so a base a live coder is still
+    /// attached to is never the least-recent eviction target; combined with the
+    /// in-use guard on `BaseCache`, eviction of an in-use base is impossible.
+    pub fn base_cache_count(&self) -> usize {
+        self.max_concurrent_coders * 2 + 4
+    }
 }
 
 impl Default for FederationConfig {
@@ -912,9 +951,11 @@ impl Default for FederationConfig {
             role: default_fed_role(),
             deadline_secs: default_fed_deadline_secs(),
             sandbox: entheai_sandbox::SandboxMode::default(),
+            max_concurrent_coders: default_max_concurrent(),
         }
     }
 }
 
 fn default_fed_role() -> String { "auto".to_string() }
 fn default_fed_deadline_secs() -> u64 { 600 }
+fn default_max_concurrent() -> usize { 4 }

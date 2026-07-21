@@ -26,6 +26,12 @@ pub struct WorkResult {
     pub result_bundle_key: String,
     /// The coder's captured output/log (truncated).
     pub log: String,
+    /// Base-repo outcome tag the orchestrator reads: "hit" (base was cached),
+    /// "miss" (materialized fresh into the cache), or "degraded:<reason>" (the
+    /// shared-base fast path failed and the worker fell back to a full clone).
+    /// `#[serde(default)]` keeps older workers' results (no `base`) deserializable.
+    #[serde(default)]
+    pub base: String,
 }
 
 /// Core-NATS subject a worker publishes its result on / the dispatcher awaits.
@@ -61,8 +67,16 @@ mod tests {
 
     #[test]
     fn work_result_json_round_trips() {
-        let r = WorkResult { session: "s".into(), index: 1, status: "committed".into(), committed: true, result_bundle_key: result_key("s", 1), log: "ok".into() };
+        let r = WorkResult { session: "s".into(), index: 1, status: "committed".into(), committed: true, result_bundle_key: result_key("s", 1), log: "ok".into(), base: "hit".into() };
         let j = serde_json::to_vec(&r).unwrap();
         assert_eq!(serde_json::from_slice::<WorkResult>(&j).unwrap(), r);
+    }
+
+    #[test]
+    fn work_result_base_defaults_when_absent() {
+        // An older worker's result (no `base` field) must still deserialize.
+        let legacy = r#"{"session":"s","index":1,"status":"committed","committed":true,"result_bundle_key":"result/s/1","log":"ok"}"#;
+        let r: WorkResult = serde_json::from_str(legacy).unwrap();
+        assert_eq!(r.base, "");
     }
 }
