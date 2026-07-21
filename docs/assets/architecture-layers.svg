@@ -1,0 +1,211 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 940" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">
+  <defs>
+    <radialGradient id="bg" cx="30%" cy="0%" r="120%">
+      <stop offset="0%" stop-color="#12131f"/>
+      <stop offset="55%" stop-color="#0b0d16"/>
+      <stop offset="100%" stop-color="#07080f"/>
+    </radialGradient>
+    <linearGradient id="core" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00e5ff" stop-opacity="0.14"/>
+      <stop offset="100%" stop-color="#00e5ff" stop-opacity="0.04"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 Z" fill="#00e5ff" opacity="0.75"/>
+    </marker>
+    <marker id="arrowUp" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 Z" fill="#e8b06a" opacity="0.8"/>
+    </marker>
+    <style>
+      .lbl{fill:#8fa3b0;font-size:12px;letter-spacing:2px}
+      .layer{fill:#cfe4ee;font-size:19px;font-weight:700;letter-spacing:1px}
+      .sub{fill:#6b7d8a;font-size:11px}
+      .chip{fill:#cde3ee;font-size:13px}
+      .chipdim{fill:#7f93a0;font-size:11px}
+      .band{rx:14;ry:14;fill:#101625;stroke:#1e2b3d;stroke-width:1}
+      .box{rx:9;ry:9;fill:#0e1a26;stroke:#22506a;stroke-width:1.2}
+      .boxc{rx:9;ry:9;fill:#0c1e28;stroke:#1e6a7d;stroke-width:1.4}
+      .flow{fill:#5f7484;font-size:11px;letter-spacing:1px}
+    </style>
+  </defs>
+
+  <rect width="1280" height="940" fill="url(#bg)"/>
+
+  <!-- brand mark: broken orbit -->
+  <g transform="translate(1196,54)">
+    <circle r="5.5" fill="#ffe9c2"/>
+    <g stroke="#3fe0ef" stroke-width="4.5" stroke-linecap="round" fill="none" opacity="0.9">
+      <path d="M0,-30 A30,30 0 0 1 21,-21"/><path d="M30,0 A30,30 0 0 1 21,21"/>
+      <path d="M0,30 A30,30 0 0 1 -21,21"/><path d="M-30,0 A30,30 0 0 1 -21,-21"/>
+    </g>
+  </g>
+
+  <!-- title -->
+  <text x="56" y="52" fill="#e8b06a" font-size="34" font-weight="700" letter-spacing="1">entheai</text>
+  <text x="58" y="76" class="sub" font-size="13">architecture layers — how the pieces connect · a hybrid, self-improving terminal coding agent</text>
+
+  <!-- vertical flow rails -->
+  <line x1="1150" y1="150" x2="1150" y2="864" stroke="#1c3242" stroke-width="1" stroke-dasharray="2 5"/>
+  <text x="1160" y="150" class="flow" transform="rotate(90 1160 150)">request  ↓  fan-out</text>
+  <line x1="86" y1="864" x2="86" y2="150" stroke="#3a2c17" stroke-width="1" stroke-dasharray="2 5"/>
+  <text x="76" y="864" class="flow" fill="#7a5f36" transform="rotate(-90 76 864)">results  ↑  integrate</text>
+
+  <!-- ============ LAYER 1: Interface ============ -->
+  <g transform="translate(0,102)">
+    <rect x="110" y="0" width="1024" height="128" class="band"/>
+    <text x="130" y="30" class="lbl">01</text>
+    <text x="130" y="52" class="layer">Interface</text>
+    <text x="130" y="72" class="sub">what you see + drive</text>
+    <g>
+      <rect x="330" y="20" width="238" height="88" class="box"/>
+      <text x="349" y="46" class="chip">TUI · ratatui</text>
+      <text x="349" y="68" class="chipdim">chat · streaming · status bar</text>
+      <text x="349" y="86" class="chipdim">slash /help /fanout /fleet · Esc·Esc</text>
+
+      <rect x="588" y="20" width="238" height="88" class="box"/>
+      <text x="607" y="46" class="chip">Companion</text>
+      <text x="607" y="68" class="chipdim">beacon window · glow pulse</text>
+      <text x="607" y="86" class="chipdim">phone QR · session state</text>
+
+      <rect x="846" y="20" width="270" height="88" class="box"/>
+      <text x="865" y="46" class="chip">Native app · Ghostty</text>
+      <text x="865" y="68" class="chipdim">rain-on-glass shader (text-aware)</text>
+      <text x="865" y="86" class="chipdim">env banner · token/context readout</text>
+    </g>
+  </g>
+
+  <!-- ============ LAYER 2: Agent core ============ -->
+  <g transform="translate(0,250)">
+    <rect x="110" y="0" width="1024" height="150" class="band" fill="url(#core)"/>
+    <text x="130" y="30" class="lbl">02</text>
+    <text x="130" y="52" class="layer">Agent core</text>
+    <text x="130" y="72" class="sub">the model ↔ tool loop</text>
+    <g>
+      <rect x="330" y="18" width="180" height="60" class="boxc"/>
+      <text x="346" y="42" class="chip">core</text>
+      <text x="346" y="62" class="chipdim">loop · streaming SSE</text>
+
+      <rect x="524" y="18" width="180" height="60" class="boxc"/>
+      <text x="540" y="42" class="chip">providers</text>
+      <text x="540" y="62" class="chipdim">DeepSeek·OpenRouter·HF·local</text>
+
+      <rect x="718" y="18" width="180" height="60" class="boxc"/>
+      <text x="734" y="42" class="chip">tools</text>
+      <text x="734" y="62" class="chipdim">read/write/edit/search/shell</text>
+
+      <rect x="912" y="18" width="204" height="60" class="boxc"/>
+      <text x="928" y="42" class="chip">permission</text>
+      <text x="928" y="62" class="chipdim">policy · prompter · grant</text>
+
+      <rect x="330" y="86" width="180" height="48" class="box"/>
+      <text x="346" y="115" class="chip">router <tspan class="chipdim">role→model</tspan></text>
+      <rect x="524" y="86" width="180" height="48" class="box"/>
+      <text x="540" y="115" class="chip">skills <tspan class="chipdim">SKILL.md</tspan></text>
+      <rect x="718" y="86" width="180" height="48" class="box"/>
+      <text x="734" y="115" class="chip">mcp <tspan class="chipdim">server tools</tspan></text>
+      <rect x="912" y="86" width="204" height="48" class="box"/>
+      <text x="928" y="115" class="chip">mapper <tspan class="chipdim">@{path} context</tspan></text>
+    </g>
+  </g>
+
+  <!-- ============ LAYER 3: Orchestration + memory ============ -->
+  <g transform="translate(0,420)">
+    <rect x="110" y="0" width="1024" height="128" class="band"/>
+    <text x="130" y="30" class="lbl">03</text>
+    <text x="130" y="52" class="layer">Orchestration</text>
+    <text x="130" y="72" class="sub">decompose · learn</text>
+    <g>
+      <rect x="330" y="20" width="330" height="88" class="box"/>
+      <text x="349" y="46" class="chip">orchestrator · fan-out</text>
+      <text x="349" y="68" class="chipdim">decompose → parallel coders</text>
+      <text x="349" y="86" class="chipdim">→ integrate (git worktrees, conflict-aware)</text>
+
+      <rect x="680" y="20" width="280" height="88" class="box"/>
+      <text x="699" y="46" class="chip">memory <tspan class="chipdim">· Rahul</tspan></text>
+      <text x="699" y="68" class="chipdim">SQLite + vectors · retrieval</text>
+      <text x="699" y="86" class="chipdim">trajectory / learning record</text>
+
+      <rect x="980" y="20" width="136" height="88" class="box" stroke-dasharray="4 4"/>
+      <text x="998" y="46" class="chip" font-size="12">research</text>
+      <text x="998" y="66" class="chipdim">phi custom</text>
+      <text x="998" y="82" class="chipdim">head + sampling</text>
+      <text x="998" y="98" class="chipdim" fill="#5a6b77">(exploratory)</text>
+    </g>
+  </g>
+
+  <!-- ============ LAYER 4: Federation ============ -->
+  <g transform="translate(0,568)">
+    <rect x="110" y="0" width="1024" height="128" class="band"/>
+    <text x="130" y="30" class="lbl">04</text>
+    <text x="130" y="52" class="layer">Federation</text>
+    <text x="130" y="72" class="sub">run coders off-machine</text>
+    <g>
+      <rect x="330" y="20" width="180" height="88" class="box"/>
+      <text x="346" y="46" class="chip">bus</text>
+      <text x="346" y="68" class="chipdim">NATS event stream</text>
+      <text x="346" y="86" class="chipdim">fanout.* lifecycle</text>
+
+      <rect x="524" y="20" width="180" height="88" class="box"/>
+      <text x="540" y="46" class="chip">federation</text>
+      <text x="540" y="68" class="chipdim">JetStream work-queue</text>
+      <text x="540" y="86" class="chipdim">object-store bundles</text>
+
+      <rect x="718" y="20" width="222" height="88" class="boxc"/>
+      <text x="734" y="46" class="chip">worker · --serve</text>
+      <text x="734" y="68" class="chipdim">confined --sandbox-run coders</text>
+      <text x="734" y="86" class="chipdim">concurrent · shared-base cache</text>
+
+      <rect x="954" y="20" width="162" height="88" class="box"/>
+      <text x="970" y="46" class="chip">viz</text>
+      <text x="970" y="68" class="chipdim">swarm graph</text>
+      <text x="970" y="86" class="chipdim">/fleet roster</text>
+    </g>
+  </g>
+
+  <!-- ============ LAYER 5: Infra ============ -->
+  <g transform="translate(0,716)">
+    <rect x="110" y="0" width="1024" height="120" class="band" fill="#0c1119"/>
+    <text x="130" y="30" class="lbl">05</text>
+    <text x="130" y="50" class="layer" font-size="17">Infrastructure</text>
+    <text x="130" y="70" class="sub">where it runs</text>
+    <g font-size="12">
+      <rect x="330" y="22" width="150" height="74" class="box"/>
+      <text x="346" y="48" class="chip" font-size="12">NATS hub</text>
+      <text x="346" y="68" class="chipdim">Hetzner · JetStream</text>
+      <text x="346" y="85" class="chipdim">token · tailnet-only</text>
+
+      <rect x="496" y="22" width="184" height="74" class="box"/>
+      <text x="512" y="48" class="chip" font-size="12">workers · Linux</text>
+      <text x="512" y="68" class="chipdim">Landlock + seccomp</text>
+      <text x="512" y="85" class="chipdim">drop-root · jail-proven</text>
+
+      <rect x="696" y="22" width="150" height="74" class="box"/>
+      <text x="712" y="48" class="chip" font-size="12">LLM providers</text>
+      <text x="712" y="68" class="chipdim">pooled HTTP/2</text>
+      <text x="712" y="85" class="chipdim">open egress</text>
+
+      <rect x="862" y="22" width="254" height="74" class="box"/>
+      <text x="878" y="48" class="chip" font-size="12">Obsidian sync · entheai.com</text>
+      <text x="878" y="68" class="chipdim">per-session vault mirror</text>
+      <text x="878" y="85" class="chipdim">public site · Cloudflare</text>
+    </g>
+  </g>
+
+  <!-- down arrows (request / fan-out) between core→orch→fed→infra -->
+  <g stroke="#1e6a7d" stroke-width="1.6" marker-end="url(#arrow)" opacity="0.85">
+    <line x1="622" y1="230" x2="622" y2="250"/>
+    <line x1="622" y1="400" x2="622" y2="420"/>
+    <line x1="622" y1="548" x2="622" y2="568"/>
+    <line x1="828" y1="696" x2="828" y2="716"/>
+  </g>
+  <!-- up arrow (results / integrate) fed→orch -->
+  <g stroke="#7a5f36" stroke-width="1.6" marker-end="url(#arrowUp)" opacity="0.85">
+    <line x1="700" y1="568" x2="700" y2="548"/>
+  </g>
+  <!-- memory <-> core retrieval -->
+  <line x1="820" y1="420" x2="820" y2="400" stroke="#7a5f36" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#arrowUp)" opacity="0.7"/>
+
+  <!-- footer flow legend -->
+  <text x="58" y="906" class="sub" font-size="12">
+    <tspan fill="#3fe0ef">↓ request</tspan> user → TUI → core loop → fan-out → dispatch → confined coders on a shared base  ·  <tspan fill="#e8b06a">↑ result</tspan> deltas bundle back → integrate → answer
+  </text>
+</svg>
