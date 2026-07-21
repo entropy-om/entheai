@@ -48,7 +48,7 @@ pub async fn materialize_from_bundle(bundle: &Path, dest: &Path) -> anyhow::Resu
 }
 
 /// After a coder changed files in `worktree`: stage+commit; if nothing changed
-/// return Ok(None); else bundle `base_sha..fed-work` to `out` and return the
+/// return Ok(None); else bundle `base_sha..HEAD` to `out` and return the
 /// new sha.
 pub async fn commit_and_bundle_delta(worktree: &Path, base_sha: &str, msg: &str, out: &Path) -> anyhow::Result<Option<String>> {
     git_ok(worktree, &["add", "-A"]).await?;
@@ -57,7 +57,7 @@ pub async fn commit_and_bundle_delta(worktree: &Path, base_sha: &str, msg: &str,
     git_ok(worktree, &["commit", "-m", msg]).await?;
     let new_sha = git_ok(worktree, &["rev-parse", "HEAD"]).await?.trim().to_string();
     let out_s = out.to_string_lossy();
-    let range = format!("{base_sha}..fed-work");
+    let range = format!("{base_sha}..HEAD");
     git_ok(worktree, &["bundle", "create", &out_s, &range]).await?;
     Ok(Some(new_sha))
 }
@@ -66,9 +66,42 @@ pub async fn commit_and_bundle_delta(worktree: &Path, base_sha: &str, msg: &str,
 /// bundle into a fresh local branch `branch`. Returns the fetched tip sha.
 pub async fn apply_delta_bundle(repo: &Path, bundle: &Path, branch: &str) -> anyhow::Result<String> {
     let bundle_s = bundle.to_string_lossy();
-    let refspec = format!("fed-work:refs/heads/{branch}");
+    let refspec = format!("HEAD:refs/heads/{branch}");
     git_ok(repo, &["fetch", &bundle_s, &refspec]).await?;
     Ok(git_ok(repo, &["rev-parse", branch]).await?.trim().to_string())
+}
+
+/// Clone a base bundle into a SHARED BARE repo at `bare` (a `*.git` dir). No
+/// working tree — coders attach worktrees off it and share this object store.
+pub async fn materialize_bare(bundle: &Path, bare: &Path) -> anyhow::Result<()> {
+    let (bundle_s, bare_s) = (bundle.to_string_lossy(), bare.to_string_lossy());
+    let out = tokio::process::Command::new("git")
+        .args(["clone", "--bare", "-b", "entheai-fed-base", &bundle_s, &bare_s])
+        .output().await?;
+    if !out.status.success() {
+        anyhow::bail!("git clone --bare failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    Ok(())
+}
+
+/// Add a detached worktree at `work` off the shared bare repo `bare`, checked out
+/// at `entheai-fed-base`. Detached => no branch, so concurrent worktrees never
+/// collide. Sets a commit identity so the coder's commit succeeds.
+pub async fn add_worktree(bare: &Path, work: &Path) -> anyhow::Result<()> {
+    let work_s = work.to_string_lossy();
+    git_ok(bare, &["worktree", "add", "--detach", &work_s, "entheai-fed-base"]).await?;
+    git_ok(work, &["config", "user.email", "worker@entheai"]).await?;
+    git_ok(work, &["config", "user.name", "entheai-worker"]).await?;
+    Ok(())
+}
+
+/// Remove a coder's worktree (and prune the admin entry) after its task. Keeps
+/// the shared bare repo cached. Best-effort — a failure here is not fatal.
+pub async fn remove_worktree(bare: &Path, work: &Path) -> anyhow::Result<()> {
+    let work_s = work.to_string_lossy();
+    let _ = git(bare, &["worktree", "remove", "--force", &work_s]).await;
+    let _ = git(bare, &["worktree", "prune"]).await;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -113,6 +146,43 @@ mod tests {
         // The new file exists on that branch.
         let show = git_ok(&dispatcher, &["show", "fed/test:NEW.md"]).await.unwrap();
         assert_eq!(show, "from worker\n");
+    }
+
+    #[tokio::test]
+    async fn shared_bare_two_worktrees_round_trip_independently() {
+        let tmp = tempfile::tempdir().unwrap();
+        let disp = tmp.path().join("disp");
+        tokio::fs::create_dir_all(&disp).await.unwrap();
+        init_repo(&disp).await;
+
+        let base_bundle = tmp.path().join("base.bundle");
+        let base_sha = bundle_base(&disp, &base_bundle).await.unwrap();
+
+        // One shared bare repo; two detached worktrees (two concurrent coders).
+        let bare = tmp.path().join("shared.git");
+        materialize_bare(&base_bundle, &bare).await.unwrap();
+        let w1 = tmp.path().join("w1");
+        let w2 = tmp.path().join("w2");
+        add_worktree(&bare, &w1).await.unwrap();
+        add_worktree(&bare, &w2).await.unwrap();
+
+        tokio::fs::write(w1.join("A.md"), "from-1\n").await.unwrap();
+        tokio::fs::write(w2.join("B.md"), "from-2\n").await.unwrap();
+        let r1 = tmp.path().join("r1.bundle");
+        let r2 = tmp.path().join("r2.bundle");
+        assert!(commit_and_bundle_delta(&w1, &base_sha, "c1", &r1).await.unwrap().is_some());
+        assert!(commit_and_bundle_delta(&w2, &base_sha, "c2", &r2).await.unwrap().is_some());
+
+        apply_delta_bundle(&disp, &r1, "fed/1").await.unwrap();
+        apply_delta_bundle(&disp, &r2, "fed/2").await.unwrap();
+        assert_eq!(git_ok(&disp, &["show", "fed/1:A.md"]).await.unwrap(), "from-1\n");
+        assert_eq!(git_ok(&disp, &["show", "fed/2:B.md"]).await.unwrap(), "from-2\n");
+
+        // The worktree's .git is a pointer FILE (shared object store), not a dir.
+        assert!(tokio::fs::metadata(w1.join(".git")).await.unwrap().is_file());
+
+        remove_worktree(&bare, &w1).await.unwrap();
+        remove_worktree(&bare, &w2).await.unwrap();
     }
 
     #[tokio::test]
