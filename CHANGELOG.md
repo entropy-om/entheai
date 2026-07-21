@@ -6,6 +6,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+### Added
+- **Federation F2.3 — worker confinement + fleet visibility.** Each coder now runs in a self-sandboxing `entheai-worker --sandbox-run` child (new `entheai-sandbox` crate), governed by `[federation] sandbox = "strict" | "permissive" | "off"` (default `permissive`): **macOS** applies a best-effort `sandbox_init` filesystem profile today; **Linux** Landlock + seccomp + drop-root is the lead platform and lands next (the backend is currently a stub, so `availability()` reports unavailable on Linux until it ships). Network stays open (the coder needs the LLM). Plus: the interactive TUI now offloads fan-out coders to the fleet (`FederationExecutor` wired in), presence heartbeats carry node identity, and a read-only `/fleet` command lists the remote swarm.
+
+### Migration
+- The project moved to the **`entropy-om`** GitHub organization: `github.com/entropy-om/entheai`, tapped as `brew tap entropy-om/entheai`. The old `peterlodri-sec/entheai` URLs redirect.
+
 ## [0.2.1] - 2026-07-21
 
 Interactive polish + a portable native-app fix, on top of the F2.1/F2.2
