@@ -41,13 +41,26 @@ pub fn entheai_config_dir() -> PathBuf {
 /// The `ghostty` argument vector for an isolated, branded window running
 /// `entheai`. `--config-default-files=false` keeps the user's own Ghostty
 /// config from bleeding in.
-pub fn build_args(config_path: &Path, entheai_path: &Path) -> Vec<String> {
+///
+/// The inner command is wrapped in `sh -c 'cd <cwd> && exec <entheai>'` so the
+/// window roots in the directory `entheai --app` was invoked from. Ghostty's
+/// macOS login-shell wrapper otherwise resets cwd to `$HOME`, which hides the
+/// project's `.env` (provider keys → 401) and points the agent at the wrong tree.
+pub fn build_args(config_path: &Path, entheai_path: &Path, cwd: &Path) -> Vec<String> {
+    let inner = format!("cd {} && exec {}", sh_quote(cwd), sh_quote(entheai_path));
     vec![
         "--config-default-files=false".to_string(),
         format!("--config-file={}", config_path.display()),
         "-e".to_string(),
-        entheai_path.display().to_string(),
+        "/bin/sh".to_string(),
+        "-c".to_string(),
+        inner,
     ]
+}
+
+/// POSIX single-quote a path for safe interpolation into an `sh -c` string.
+fn sh_quote(p: &Path) -> String {
+    format!("'{}'", p.display().to_string().replace('\'', r"'\''"))
 }
 
 /// Testable core: return the first `<app>/Contents/MacOS/ghostty` that exists
@@ -97,7 +110,10 @@ pub fn launch() -> anyhow::Result<()> {
         anyhow::anyhow!("Ghostty is required. Install it: brew install --cask ghostty")
     })?;
     let entheai = resolve_entheai();
-    let args = build_args(&config_path, &entheai);
+    // The directory `entheai --app` was invoked from — the window roots here so
+    // it inherits the project's `.env` and code.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let args = build_args(&config_path, &entheai, &cwd);
     // Spawn detached — Ghostty runs as its own window; the launcher can exit.
     std::process::Command::new(&ghostty).args(&args).spawn()?;
     Ok(())
@@ -239,15 +255,28 @@ mod tests {
     fn build_args_is_exact() {
         let cfg = Path::new("/Users/x/.config/entheai/ghostty-minimal.conf");
         let entheai = Path::new("/usr/local/bin/entheai");
-        let args = build_args(cfg, entheai);
+        let cwd = Path::new("/Users/x/projects/demo");
+        let args = build_args(cfg, entheai, cwd);
         assert_eq!(
             args,
             vec![
                 "--config-default-files=false".to_string(),
                 "--config-file=/Users/x/.config/entheai/ghostty-minimal.conf".to_string(),
                 "-e".to_string(),
-                "/usr/local/bin/entheai".to_string(),
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "cd '/Users/x/projects/demo' && exec '/usr/local/bin/entheai'".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn sh_quote_escapes_embedded_single_quotes() {
+        // A directory whose name contains a single quote must not break the
+        // `sh -c` string.
+        assert_eq!(
+            sh_quote(Path::new("/tmp/it's here")),
+            r"'/tmp/it'\''s here'"
         );
     }
 
@@ -270,13 +299,20 @@ mod tests {
         let cfg = "font-family = Berkeley Mono\nbackground = 05070d\n";
         let (t1, a1) = merge_shader_block(cfg, "/s/rain.glsl");
         assert_eq!(a1, ConfigAction::Added);
-        assert!(t1.contains("font-family = Berkeley Mono"), "user config kept");
+        assert!(
+            t1.contains("font-family = Berkeley Mono"),
+            "user config kept"
+        );
         assert!(t1.contains("custom-shader = /s/rain.glsl"));
         // re-run with the same shader path → no change
         let (t2, a2) = merge_shader_block(&t1, "/s/rain.glsl");
         assert_eq!(a2, ConfigAction::AlreadyCurrent);
         assert_eq!(t1, t2);
-        assert_eq!(t2.matches(BLOCK_BEGIN).count(), 1, "exactly one managed block");
+        assert_eq!(
+            t2.matches(BLOCK_BEGIN).count(),
+            1,
+            "exactly one managed block"
+        );
     }
 
     #[test]
