@@ -354,19 +354,25 @@ async fn event_loop<P: Provider + 'static>(
     // is serving, fan-out coders run on the fleet; otherwise `run_fanout` runs
     // them locally. Connect failure → `None` → local (fail-safe). Cloned into
     // each fan-out submit below.
+    //
+    // We connect ONCE and retain the `Federation` handle (`fleet_fed`, cheap
+    // Arc-backed clone) so the read-only `/fleet` command (C2) can list the live
+    // roster without a second connect. `fed_exec` is derived from the same handle
+    // and stays behaviorally identical to B1: `None` when federation is off or the
+    // connect failed, otherwise the `FederationExecutor` over that connection.
+    let fleet_fed: Option<entheai_federation::Federation> = if config.federation.enabled {
+        entheai_federation::Federation::connect(
+            &entheai_federation::FedOptions::from_config(&config.nats, &config.federation),
+        )
+        .await
+    } else {
+        None
+    };
     let fed_exec: Option<std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>> =
-        if config.federation.enabled {
-            entheai_federation::Federation::connect(
-                &entheai_federation::FedOptions::from_config(&config.nats, &config.federation),
-            )
-            .await
-            .map(|f| {
-                entheai_federation::FederationExecutor::new(f, root.clone())
-                    as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>
-            })
-        } else {
-            None
-        };
+        fleet_fed.clone().map(|f| {
+            entheai_federation::FederationExecutor::new(f, root.clone())
+                as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>
+        });
 
     let (perm_tx, mut perm_rx) = mpsc::channel::<PermissionRequest>(8);
     let (result_tx, mut result_rx) = mpsc::channel::<Result<String, String>>(8);
@@ -524,6 +530,31 @@ async fn event_loop<P: Provider + 'static>(
                         }
                         Action::Submit(text) if is_model_command(&text) => {
                             handle_model_command(&mut app);
+                        }
+                        // Read-only remote fleet roster (C2). Handled inline here
+                        // (not in a sync `handle_*` fn) because `list_workers` is
+                        // async: the ~0.8s ping/collect briefly blocks the event
+                        // loop, which is acceptable for a manual command.
+                        Action::Submit(text) if is_fleet_command(&text) => {
+                            app.messages.push(Msg {
+                                role: Role::User,
+                                text: text.clone(),
+                            });
+                            match &fleet_fed {
+                                None => app.messages.push(Msg {
+                                    role: Role::Tool,
+                                    text: "⚑ federation disabled — no remote fleet".to_string(),
+                                }),
+                                Some(fed) => {
+                                    let workers =
+                                        fed.list_workers(Duration::from_millis(800)).await;
+                                    app.messages.push(Msg {
+                                        role: Role::Tool,
+                                        text: render_fleet(&workers),
+                                    });
+                                }
+                            }
+                            app.follow = true;
                         }
                         Action::Submit(text) if is_quit_command(&text) => break,
                         Action::Submit(text) => {
@@ -916,6 +947,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 || is_workers_command(trimmed)
                 || is_viz_command(trimmed)
                 || is_help_command(trimmed)
+                || is_fleet_command(trimmed)
                 || is_model_command(trimmed);
             if !trimmed.is_empty() && (idle || is_local_command) {
                 return Action::Submit(std::mem::take(&mut app.input));
@@ -1211,6 +1243,34 @@ fn handle_model_command(app: &mut App) {
         ),
     });
     app.follow = true;
+}
+
+/// True for `/fleet` — shows the live remote worker roster (read-only, C2).
+fn is_fleet_command(text: &str) -> bool {
+    text.trim() == "/fleet"
+}
+
+/// Render a `list_workers` snapshot into a single roster block for `/fleet`.
+/// `●` marks a working node, `○` an idle one; a working node shows its (truncated)
+/// task. Only real [`entheai_federation::WorkerPresence`] fields are shown — no
+/// fabricated "last seen". An empty roster reports that no workers responded.
+fn render_fleet(workers: &[entheai_federation::WorkerPresence]) -> String {
+    use entheai_federation::WorkerState;
+    if workers.is_empty() {
+        return "fleet · no workers responding".to_string();
+    }
+    let mut body = format!("fleet · {} node(s)", workers.len());
+    for w in workers {
+        let (marker, state, task) = match &w.state {
+            WorkerState::Idle => ('○', "idle", String::new()),
+            WorkerState::Working { task } => ('●', "working", format!("  {}", truncate(task, 60))),
+        };
+        body.push_str(&format!(
+            "\n {marker} {}  {}  {}  {state}{task}",
+            w.node_id, w.hostname, w.version
+        ));
+    }
+    body
 }
 
 /// True for `/quit` (or its `/exit` alias) — leaves entheai (like Ctrl-C ×2).
@@ -1752,6 +1812,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
         "music — add <url> · pause · next · stop  (Ctrl-P / Ctrl-N)",
     ),
     ("/workers", "fan-out swarm — list · stop <id> · debug <id>"),
+    ("/fleet", "show the remote worker fleet (read-only)"),
     ("/viz", "toggle the full-screen swarm view  (Ctrl-V)"),
     ("/quit", "exit entheai  (Ctrl-C ×2)"),
 ];
@@ -1892,7 +1953,39 @@ mod tests {
         let r = slash_matches("/radio add http://x");
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].0, "/radio");
+        // `/fl` uniquely prefixes `/fleet` (no other command starts with it).
+        let f = slash_matches("/fl");
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].0, "/fleet");
         assert!(slash_matches("/nope").is_empty());
+    }
+
+    #[test]
+    fn render_fleet_shows_real_presence_fields() {
+        use entheai_federation::{WorkerPresence, WorkerState};
+        assert_eq!(render_fleet(&[]), "fleet · no workers responding");
+        let workers = vec![
+            WorkerPresence {
+                node_id: "aaaaaa".into(),
+                hostname: "host-a".into(),
+                version: "1.2.3".into(),
+                state: WorkerState::Idle,
+                started_at_unix: 100,
+            },
+            WorkerPresence {
+                node_id: "bbbbbb".into(),
+                hostname: "host-b".into(),
+                version: "1.2.3".into(),
+                state: WorkerState::Working {
+                    task: "refactor the parser".into(),
+                },
+                started_at_unix: 200,
+            },
+        ];
+        let out = render_fleet(&workers);
+        assert!(out.starts_with("fleet · 2 node(s)"));
+        assert!(out.contains("○ aaaaaa  host-a  1.2.3  idle"));
+        assert!(out.contains("● bbbbbb  host-b  1.2.3  working  refactor the parser"));
     }
 
     /// Minimal idle `App` for exercising command handlers and the key handler.
@@ -1931,11 +2024,14 @@ mod tests {
         assert!(is_clear_command("/clear") && is_clear_command("/new"));
         assert!(is_fanout_command("/fanout") && is_fanout_command("/fanout on"));
         assert!(is_model_command("/model"));
+        assert!(is_fleet_command("/fleet") && is_fleet_command("  /fleet  "));
         assert!(is_quit_command("/quit") && is_quit_command("/exit"));
         // Lookalikes and non-commands stay out.
         assert!(!is_clear_command("/clearx"));
         assert!(!is_quit_command("quit"));
         assert!(!is_fanout_command("/fan"));
+        assert!(!is_fleet_command("/fleetx"));
+        assert!(!is_fleet_command("/fle"));
     }
 
     #[test]
