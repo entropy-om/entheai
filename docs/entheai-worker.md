@@ -181,6 +181,26 @@ hardening (F2.4+).
 Under `strict` on a host where confinement is unavailable, that line is a prominent
 warning that real coders will refuse to run there.
 
+## Concurrency & the shared base
+
+A `--serve` worker runs up to `[federation] max_concurrent_coders` coders at once
+(default 4). Coders spend almost all their time waiting on the model, so running several
+together multiplies throughput at little CPU cost. A bounded semaphore caps how many run
+at once; a permit is taken before each claim, so an item is never claimed unless there's
+capacity to process it.
+
+To keep that concurrency from multiplying memory, all coders on a given base commit share
+**one** materialized copy of it. The worker keeps a small per-node cache of bare repos
+(one per base commit); each coder attaches a cheap **detached git worktree** off the
+shared repo, so the object store is shared rather than copied. A coder's changes live in
+its own worktree and are bundled back as usual.
+
+It's a pure optimization. The cache lookup + worktree attach run under a short deadline,
+and on any failure the worker falls back to a full clone for that coder. Each result
+carries a `base = hit | miss | degraded:<reason>` tag so the dispatcher can see when the
+fast path was skipped and why. A base that a live coder is still attached to is never
+evicted from the cache.
+
 ## Memory & learning
 
 The worker runs its own `memory` crate instance (local SQLite + Osaurus embeddings). After task completion:

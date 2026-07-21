@@ -9,6 +9,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 ### Added
 - **Federation F2.3 — worker confinement + fleet visibility.** Each coder now runs in a self-sandboxing `entheai-worker --sandbox-run` child (new `entheai-sandbox` crate), governed by `[federation] sandbox = "strict" | "permissive" | "off"` (default `permissive`): **Linux** applies a Landlock filesystem jail + seccomp syscall denylist + drop-root — the production backend, jail-proven by a forked self-test (out-of-worktree reads denied, `unshare(2)` blocked); **macOS** applies a best-effort `sandbox_init` filesystem profile (local testing). Network stays open (the coder needs the LLM), and the child inherits provider/NATS env keys — so `--serve` stays trusted-nodes-only. Plus: the interactive TUI now offloads fan-out coders to the fleet (`FederationExecutor` wired in), presence heartbeats carry node identity, and a read-only `/fleet` command lists the remote swarm.
 
+### Performance
+- **Concurrent coders on a shared base (federation, Slice 1).** A `--serve` worker now runs up to `[federation] max_concurrent_coders` coders at once (default 4) instead of one at a time — they're model-wait-bound, so this multiplies throughput at little CPU cost. To keep concurrency from multiplying memory, all coders on a base commit share **one** materialized copy: a per-node cache holds one bare repo per base commit and each coder attaches a cheap detached git worktree off it (shared object store, not a full clone each). Pure optimization — a short deadline with an instant fall-back to a full clone, an in-use-guard so a live base is never evicted, and a `base = hit | miss | degraded` tag on each result.
+
 ### Migration
 - The project moved to the **`entropy-om`** GitHub organization: `github.com/entropy-om/entheai`, tapped as `brew tap entropy-om/entheai`. The old `peterlodri-sec/entheai` URLs redirect.
 

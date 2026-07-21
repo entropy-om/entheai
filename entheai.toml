@@ -72,6 +72,8 @@ enabled = false
 role = "auto"              # "auto" | "worker" | "dispatch"
 deadline_secs = 600
 sandbox = "permissive"     # coder confinement: "strict" | "permissive" | "off"
+max_concurrent_coders = 4  # coders a --serve worker runs at once (they're model-wait-bound;
+                           # all share one cached bare repo per base commit, so memory stays flat)
 # role is reserved; worker mode is chosen by --serve / --dispatch.
 
 # MCP servers — spawned at startup; their tools appear to the agent as `<name>__<tool>`.
