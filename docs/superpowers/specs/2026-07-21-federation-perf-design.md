@@ -27,11 +27,18 @@ These ride on machinery that already exists: the `FanoutEvent` bus for the tags,
 
 ---
 
-## Slice 1 — Share the base repo instead of copying it per coder
+## Slice 1 — Run coders concurrently, sharing one copy of the base
 
-**The problem.** Today, for every coder, the worker downloads the base as a git bundle and does a full `git clone` of it into a fresh temp directory (`materialize_from_bundle` in `crates/federation/src/repo.rs`). Ten coders on one base means ten downloads, ten full clones, ten separate copies of the same files in memory.
+**The problem.** Two things compound. First, the worker runs coders **one at a time** — `process_one` is `await`ed in the serve loop — so a 16-core box mostly idles while a coder waits on the model. Second, each coder downloads the base as a git bundle and does a full `git clone` into a fresh temp directory (`materialize_from_bundle` in `crates/federation/src/repo.rs`), so the moment we *do* run several at once we'd pay N downloads, N clones, and N copies of the same files in memory.
 
-**The idea.** Unpack the base **once** and give each coder a cheap, throwaway view of it. Two levels, ship the first, keep the second as a follow-up:
+**The idea.** Two coupled changes that only pay off together:
+
+1. **Let the worker run up to N coders at once.** They're almost entirely model-wait-bound, so concurrency costs little CPU and multiplies throughput. Claim several items, run several `process_one`s under a bounded limit, and ack each as it finishes.
+2. **Share one materialized base across those concurrent coders**, so their memory stays flat instead of N full clones. Unpack the base once and give each coder a cheap, throwaway view of it.
+
+Concurrency is *why* the sharing matters — without it there's only ever one coder — and the shared base is what keeps concurrency from multiplying memory (N full clones could OOM a worker on a big repo). Ship them as one unit.
+
+For the sharing, two levels — ship the first, keep the second as a follow-up:
 
 - **Minimal (git worktrees).** Materialize the bundle once into a **shared bare repository**, keyed by the base commit. Then give each coder a worktree off it (`git worktree add`). Worktrees share the repository's object store (the bulk of a repo's weight) and the checkout is cheap, and it needs no special privileges. This is exactly how *local* fan-out already works, so it's a small, familiar change.
 - **Bigger memory win (copy-on-write filesystem).** Layer an overlay (overlayfs, or a btrfs/reflink snapshot) with the shared base as a read-only lower layer and a per-coder writable upper layer. Now the file *contents* are read into the OS page cache once and shared across every coder on the box; each coder's edits are just its private upper layer. This is the real per-worker memory reduction on large repos. It requires overlay/btrfs support and must compose with the worker's Landlock/systemd confinement (the writable grant points at the merged view). Ship it as an opt-in tier once the worktree version is solid.
