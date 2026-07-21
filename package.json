@@ -12,16 +12,16 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/peterlodri-sec/entheai.git"
+    "url": "git+https://github.com/entropy-om/entheai.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "bugs": {
-    "url": "https://github.com/peterlodri-sec/entheai/issues"
+    "url": "https://github.com/entropy-om/entheai/issues"
   },
-  "homepage": "https://github.com/peterlodri-sec/entheai#readme",
+  "homepage": "https://github.com/entropy-om/entheai#readme",
   "devDependencies": {
     "gray-matter": "^4.0.3",
     "marked": "^15.0.12",

@@ -76,7 +76,7 @@ Create a temporary file `/tmp/og-card.html` (NOT committed to the repo — this 
 Using your Playwright browser tools:
 1. Resize the browser viewport to exactly 1200x630 (use the browser resize tool with width=1200, height=630).
 2. Navigate to `file:///tmp/og-card.html`.
-3. Take a screenshot (PNG, viewport-only — not full-page) and save it to `/Users/peter.lodri/workspace/peterlodri-sec/entheai/public/og-image.png`.
+3. Take a screenshot (PNG, viewport-only — not full-page) and save it to `/Users/peter.lodri/workspace/entropy-om/entheai/public/og-image.png`.
 
 - [ ] **Step 3: Verify the image**
 
@@ -86,7 +86,7 @@ Read the resulting `public/og-image.png` file directly (as an image) to confirm 
 
 ```bash
 rm -f /tmp/og-card.html
-cd /Users/peter.lodri/workspace/peterlodri-sec/entheai
+cd /Users/peter.lodri/workspace/entropy-om/entheai
 git add public/og-image.png
 git commit -m "feat: add OG image (1200x630 social share card)"
 ```
@@ -124,7 +124,7 @@ Immediately after it, add:
 - [ ] **Step 2: Commit**
 
 ```bash
-cd /Users/peter.lodri/workspace/peterlodri-sec/entheai
+cd /Users/peter.lodri/workspace/entropy-om/entheai
 git add public/index.html
 git commit -m "feat: add OG/Twitter card meta tags to landing page"
 ```
@@ -160,7 +160,7 @@ Immediately after it, add:
 - [ ] **Step 2: Rebuild and commit**
 
 ```bash
-cd /Users/peter.lodri/workspace/peterlodri-sec/entheai
+cd /Users/peter.lodri/workspace/entropy-om/entheai
 unset -f node npm npx nvm 2>/dev/null
 export PATH="$HOME/.nvm/versions/node/v24.17.0/bin:$PATH"
 npm run build
@@ -190,7 +190,7 @@ In `public/index.html`, immediately before the closing `</head>` tag, add:
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "macOS",
   "url": "https://entheai.com/",
-  "downloadUrl": "https://github.com/peterlodri-sec/entheai",
+  "downloadUrl": "https://github.com/entropy-om/entheai",
   "offers": {
     "@type": "Offer",
     "price": "0",
@@ -207,7 +207,7 @@ In `public/index.html`, immediately before the closing `</head>` tag, add:
 - [ ] **Step 2: Validate the JSON is well-formed**
 
 ```bash
-cd /Users/peter.lodri/workspace/peterlodri-sec/entheai
+cd /Users/peter.lodri/workspace/entropy-om/entheai
 python3 -c "
 import re, json
 html = open('public/index.html').read()
@@ -272,7 +272,7 @@ Sitemap: https://entheai.com/sitemap.xml
 - [ ] **Step 2: Commit**
 
 ```bash
-cd /Users/peter.lodri/workspace/peterlodri-sec/entheai
+cd /Users/peter.lodri/workspace/entropy-om/entheai
 git add public/robots.txt
 git commit -m "feat: add robots.txt with explicit AI-crawler allowlist"
 ```
@@ -306,14 +306,14 @@ Create `public/sitemap.xml`:
 - [ ] **Step 2: Validate it's well-formed XML**
 
 ```bash
-python3 -c "import xml.etree.ElementTree as ET; ET.parse('/Users/peter.lodri/workspace/peterlodri-sec/entheai/public/sitemap.xml'); print('valid XML')"
+python3 -c "import xml.etree.ElementTree as ET; ET.parse('/Users/peter.lodri/workspace/entropy-om/entheai/public/sitemap.xml'); print('valid XML')"
 ```
 Expected output: `valid XML`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/peter.lodri/workspace/peterlodri-sec/entheai
+cd /Users/peter.lodri/workspace/entropy-om/entheai
 git add public/sitemap.xml
 git commit -m "feat: add sitemap.xml"
 ```
@@ -331,7 +331,7 @@ git commit -m "feat: add sitemap.xml"
 In `public/index.html`, find:
 ```html
     <div class="footer-links">
-      <a href="https://github.com/peterlodri-sec/entheai" target="_blank" rel="noopener">GitHub ↗</a>
+      <a href="https://github.com/entropy-om/entheai" target="_blank" rel="noopener">GitHub ↗</a>
       <a href="docs/">Docs</a>
       <a href="https://pocoo.vaked.dev" target="_blank" rel="noopener">Blog ↗</a>
       <span style="color:var(--text-faint)">License · TBD</span>
@@ -341,7 +341,7 @@ In `public/index.html`, find:
 Replace it with:
 ```html
     <div class="footer-links">
-      <a href="https://github.com/peterlodri-sec/entheai" target="_blank" rel="noopener">GitHub ↗</a>
+      <a href="https://github.com/entropy-om/entheai" target="_blank" rel="noopener">GitHub ↗</a>
       <a href="docs/">Docs</a>
       <a href="llms.txt">For LLMs</a>
       <a href="https://pocoo.vaked.dev" target="_blank" rel="noopener">Blog ↗</a>
@@ -354,12 +354,12 @@ Replace it with:
 
 In `public/docs/_template.html`, find:
 ```html
-  <a class="gh-link" href="https://github.com/peterlodri-sec/entheai" target="_blank" rel="noopener">GitHub ↗</a>
+  <a class="gh-link" href="https://github.com/entropy-om/entheai" target="_blank" rel="noopener">GitHub ↗</a>
 </header>
 ```
 Replace it with:
 ```html
-  <a class="gh-link" href="https://github.com/peterlodri-sec/entheai" target="_blank" rel="noopener">GitHub ↗</a>
+  <a class="gh-link" href="https://github.com/entropy-om/entheai" target="_blank" rel="noopener">GitHub ↗</a>
   <a class="gh-link" href="/llms.txt">For LLMs</a>
 </header>
 ```
@@ -367,7 +367,7 @@ Replace it with:
 - [ ] **Step 3: Rebuild and commit**
 
 ```bash
-cd /Users/peter.lodri/workspace/peterlodri-sec/entheai
+cd /Users/peter.lodri/workspace/entropy-om/entheai
 unset -f node npm npx nvm 2>/dev/null
 export PATH="$HOME/.nvm/versions/node/v24.17.0/bin:$PATH"
 npm run build
@@ -384,7 +384,7 @@ git commit -m "feat: add For LLMs footer link pointing at llms.txt"
 - [ ] **Step 1: Rebuild and serve locally**
 
 ```bash
-cd /Users/peter.lodri/workspace/peterlodri-sec/entheai
+cd /Users/peter.lodri/workspace/entropy-om/entheai
 unset -f node npm npx nvm 2>/dev/null
 export PATH="$HOME/.nvm/versions/node/v24.17.0/bin:$PATH"
 npm run build
@@ -423,7 +423,7 @@ pkill -f "http.server 8936"
 - [ ] **Step 1: Push all commits**
 
 ```bash
-cd /Users/peter.lodri/workspace/peterlodri-sec/entheai
+cd /Users/peter.lodri/workspace/entropy-om/entheai
 git fetch origin main
 git merge-base --is-ancestor HEAD~7 origin/main && echo "base still current, safe to push" || echo "origin moved, fetch and rebase/resolve before pushing"
 git push origin main
@@ -433,11 +433,11 @@ git push origin main
 - [ ] **Step 2: Watch the deploy workflow**
 
 ```bash
-gh run list --repo peterlodri-sec/entheai --workflow=deploy.yml --limit 1
+gh run list --repo entropy-om/entheai --workflow=deploy.yml --limit 1
 ```
 Get the run ID from the output, then:
 ```bash
-gh run watch <RUN_ID> --repo peterlodri-sec/entheai --interval 5
+gh run watch <RUN_ID> --repo entropy-om/entheai --interval 5
 ```
 Expected: all steps green.
 

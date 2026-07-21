@@ -9,7 +9,7 @@ Thanks for your interest in improving entheai.
 3. Clone and build:
 
 ```bash
-git clone https://github.com/peterlodri-sec/entheai.git
+git clone https://github.com/entropy-om/entheai.git
 cd entheai
 cargo build
 ```

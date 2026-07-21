@@ -13,7 +13,7 @@
 - Organization login: `entropy-om`.
 - Organization name: `entropy.om`.
 - Description: `Building sovereign intelligence in the open — local-first agents, memory, orchestration, and tools for minds that fan out.`
-- Temporary website: `https://github.com/peterlodri-sec/entheai` until `https://entropy.om` has a DNS record and a live public site.
+- Temporary website: `https://github.com/entropy-om/entheai` until `https://entropy.om` has a DNS record and a live public site.
 - Location, public email, and social accounts remain unset.
 - Avatar contains no letters, words, watermark, third-party mark, mockup, or 3D presentation.
 - Existing unrelated workspace changes remain untouched.
@@ -104,7 +104,7 @@ Set these values exactly:
 ```text
 Name: entropy.om
 Description: Building sovereign intelligence in the open — local-first agents, memory, orchestration, and tools for minds that fan out.
-URL: https://github.com/peterlodri-sec/entheai
+URL: https://github.com/entropy-om/entheai
 ```
 
 Leave location, public email, and social account fields empty. Save the profile.

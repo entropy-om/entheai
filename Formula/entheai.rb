@@ -1,5 +1,5 @@
 # Homebrew formula for entheai. This repo doubles as its own tap:
-#   brew tap peterlodri-sec/entheai https://github.com/peterlodri-sec/entheai
+#   brew tap entropy-om/entheai https://github.com/entropy-om/entheai
 #   brew install entheai
 #
 # macOS / Apple Silicon only. It ships a PREBUILT binary because GitHub-hosted
@@ -17,7 +17,7 @@ class Entheai < Formula
   depends_on :macos
   depends_on arch: :arm64
 
-  url "https://github.com/peterlodri-sec/entheai/releases/download/v0.2.1/entheai-macos-arm64.tar.gz"
+  url "https://github.com/entropy-om/entheai/releases/download/v0.2.1/entheai-macos-arm64.tar.gz"
   sha256 "d909827f490761585e3ed53dd8878bba80eee72f439bd06efd1b685eeee76902"
 
   def install

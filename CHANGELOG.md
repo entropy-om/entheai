@@ -79,6 +79,6 @@ First versioned baseline — the v0.1 thin-but-complete slice.
 - **Providers** — OpenAI-compatible streaming/non-streaming for DeepSeek, OpenRouter, Hugging Face, OpenCode Zen, and local Osaurus.
 - **Ops** — perf-first release profile (mimalloc, fat LTO, PGO build script), Sentry crash reporting (PII disabled), typed errors (`thiserror` in libs, `anyhow` in the binary).
 
-[Unreleased]: https://github.com/peterlodri-sec/entheai/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/peterlodri-sec/entheai/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/peterlodri-sec/entheai/releases/tag/v0.1.0
+[Unreleased]: https://github.com/entropy-om/entheai/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/entropy-om/entheai/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/entropy-om/entheai/releases/tag/v0.1.0

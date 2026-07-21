@@ -1364,8 +1364,8 @@ In a scratch git repo (not this checkout):
 ```bash
 cd /tmp && rm -rf worker-smoke && mkdir worker-smoke && cd worker-smoke
 git init -q && git commit --allow-empty -q -m init
-cp /Users/peter.lodri/workspace/peterlodri-sec/entheai/entheai.toml . 2>/dev/null || true
-/Users/peter.lodri/workspace/peterlodri-sec/entheai/target/debug/entheai-worker \
+cp /Users/peter.lodri/workspace/entropy-om/entheai/entheai.toml . 2>/dev/null || true
+/Users/peter.lodri/workspace/entropy-om/entheai/target/debug/entheai-worker \
   --config entheai.toml --role coder --task "create a file called hello.txt with the word hi in it" --worktree .
 cat hello.txt
 ```

@@ -10,7 +10,7 @@
 ## Install
 
 ```bash
-git clone https://github.com/peterlodri-sec/entheai.git
+git clone https://github.com/entropy-om/entheai.git
 cd entheai
 ```
 

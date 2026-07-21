@@ -516,7 +516,7 @@ cask "entheai" do
   version "0.1.0"
   sha256 :no_check # ad-hoc-signed self-built zip; pin the sha on a real release
 
-  url "https://github.com/peterlodri-sec/entheai/releases/download/v#{version}/entheai-app-macos-arm64.zip"
+  url "https://github.com/entropy-om/entheai/releases/download/v#{version}/entheai-app-macos-arm64.zip"
   name "entheai"
   desc "Native minimalist Ghostty window running the entheai coding agent"
   homepage "https://entheai.com"
@@ -543,7 +543,7 @@ Prefer a dedicated, branded window? Install the app (needs Ghostty):
 
 ```bash
 brew install --cask ghostty
-brew install --cask peterlodri-sec/entheai/entheai
+brew install --cask entropy-om/entheai/entheai
 ```
 
 Launch `entheai.app` (first time: right-click → Open — it's ad-hoc signed), or from a terminal: `entheai --app`. It opens one minimalist Ghostty window — hidden titlebar, entheai's theme, and an ambient raindrop shader behind the text — running the agent. Your own Ghostty config is untouched.

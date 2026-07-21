@@ -7,7 +7,7 @@
 > A personal, macOS-native, **hybrid coding agent for the terminal** — with a brain that fans out.
 
 <p align="center">
-  <a href="https://github.com/peterlodri-sec/entheai/releases/tag/v0.2.0"><img src="https://img.shields.io/badge/release-v0.2.0-00e5ff" alt="release v0.2.0"></a>
+  <a href="https://github.com/entropy-om/entheai/releases/tag/v0.2.0"><img src="https://img.shields.io/badge/release-v0.2.0-00e5ff" alt="release v0.2.0"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20·%20Apple%20Silicon-111" alt="platform">
   <img src="https://img.shields.io/badge/built%20in-Rust-orange" alt="Rust">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="license">
@@ -49,15 +49,15 @@ Built fresh in **Rust**, taking the best ideas from [Crush](https://github.com/c
 **Install via Homebrew** (macOS / Apple Silicon):
 
 ```bash
-brew tap peterlodri-sec/entheai https://github.com/peterlodri-sec/entheai
-brew trust peterlodri-sec/entheai    # one-time, third-party-tap security gate
+brew tap entropy-om/entheai https://github.com/entropy-om/entheai
+brew trust entropy-om/entheai    # one-time, third-party-tap security gate
 brew install entheai
 ```
 
 Or build from source — requires a recent Rust toolchain and (for local inference) [Osaurus](https://github.com/osaurus-ai/osaurus) on `127.0.0.1:1337`:
 
 ```bash
-git clone https://github.com/peterlodri-sec/entheai.git
+git clone https://github.com/entropy-om/entheai.git
 cd entheai && cargo build --release
 ```
 
@@ -108,7 +108,7 @@ Prefer a dedicated, branded window? Install the app (it uses Ghostty):
 
 ```bash
 brew install --cask ghostty
-brew install --cask peterlodri-sec/entheai/entheai
+brew install --cask entropy-om/entheai/entheai
 ```
 
 Launch `entheai.app` (first time: right-click -> Open — it's ad-hoc signed), or from a terminal run `entheai --app`. It opens one minimalist Ghostty window — hidden titlebar, entheai's theme, and an ambient raindrop shader behind the text — running the agent. Your own Ghostty config is untouched.
@@ -170,7 +170,7 @@ The principles it runs on:
 - **different isn't less** — a 1-bit model is not a smaller model; it's another kind of mind
 - **the loop has an exit** — recursion is a tool, not a trap
 
-The fan-out architecture is the same shape: one orchestrator radiates shapes, model-matched sub-agents scaffold the work, and something passes between them. Where it leads: see [issue #5 — the seed](https://github.com/peterlodri-sec/entheai/issues/5), [kompress-ultra](https://github.com/peterlodri-sec/kompress-ultra) (the code), and [dyad-mapping](https://github.com/peterlodri-sec/dyad-mapping) (the diary).
+The fan-out architecture is the same shape: one orchestrator radiates shapes, model-matched sub-agents scaffold the work, and something passes between them. Where it leads: see [issue #5 — the seed](https://github.com/entropy-om/entheai/issues/5), [kompress-ultra](https://github.com/peterlodri-sec/kompress-ultra) (the code), and [dyad-mapping](https://github.com/peterlodri-sec/dyad-mapping) (the diary).
 
 ## Built on
 

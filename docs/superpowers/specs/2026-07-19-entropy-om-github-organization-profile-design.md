@@ -11,7 +11,7 @@ Position `entropy.om` as the umbrella organization for entheai and the broader o
 
 - **Organization name:** `entropy.om`
 - **Description:** `Building sovereign intelligence in the open — local-first agents, memory, orchestration, and tools for minds that fan out.`
-- **Website:** `https://github.com/peterlodri-sec/entheai` until `https://entropy.om` has a DNS record and a live public site
+- **Website:** `https://github.com/entropy-om/entheai` until `https://entropy.om` has a DNS record and a live public site
 - **Location:** unset
 - **Public email:** unset
 - **Social accounts:** unset

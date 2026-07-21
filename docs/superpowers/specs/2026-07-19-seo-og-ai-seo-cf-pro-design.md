@@ -103,7 +103,7 @@ Added to `public/index.html`, a `<script type="application/ld+json">` block:
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "macOS",
   "url": "https://entheai.com/",
-  "downloadUrl": "https://github.com/peterlodri-sec/entheai",
+  "downloadUrl": "https://github.com/entropy-om/entheai",
   "offers": {
     "@type": "Offer",
     "price": "0",

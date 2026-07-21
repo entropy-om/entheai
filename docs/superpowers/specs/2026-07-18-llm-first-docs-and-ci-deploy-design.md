@@ -92,7 +92,7 @@ badge: teal        # optional; omit for no eyebrow badge
 Clone the repo and build a release binary. You'll need a recent Rust toolchain.
 
 ​```bash
-git clone https://github.com/peterlodri-sec/entheai
+git clone https://github.com/entropy-om/entheai
 cd entheai
 cargo build --release
 ​```

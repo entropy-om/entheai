@@ -21,7 +21,7 @@ Spec: `docs/superpowers/specs/2026-07-18-llm-first-docs-and-ci-deploy-design.md`
 
 Run:
 ```bash
-cd /Users/peter.lodri/workspace/peterlodri-sec/entheai
+cd /Users/peter.lodri/workspace/entropy-om/entheai
 unset -f node npm npx nvm 2>/dev/null
 export PATH="$HOME/.nvm/versions/node/v24.17.0/bin:$PATH"
 npm install -D marked@^15 gray-matter@^4
@@ -151,7 +151,7 @@ test("GROUP_ORDER matches the seven known nav groups", () => {
 
 Run:
 ```bash
-cd /Users/peter.lodri/workspace/peterlodri-sec/entheai
+cd /Users/peter.lodri/workspace/entropy-om/entheai
 export PATH="$HOME/.nvm/versions/node/v24.17.0/bin:$PATH"
 node --test scripts/lib/parse-docs.test.mjs
 ```
@@ -983,7 +983,7 @@ Create `public/docs/_template.html` — this is `public/docs/index.html` (as it 
     <div class="search-results" data-search-results hidden></div>
   </div>
   <button class="theme-toggle" data-theme-toggle title="Toggle theme">☾</button>
-  <a class="gh-link" href="https://github.com/peterlodri-sec/entheai" target="_blank" rel="noopener">GitHub ↗</a>
+  <a class="gh-link" href="https://github.com/entropy-om/entheai" target="_blank" rel="noopener">GitHub ↗</a>
 </header>
 
 <div class="docs-grid">
@@ -1148,7 +1148,7 @@ badgeText: "Getting started"
 Clone the repo and build a release binary. You'll need a recent Rust toolchain.
 
 ```bash
-git clone https://github.com/peterlodri-sec/entheai
+git clone https://github.com/entropy-om/entheai
 cd entheai
 cargo build --release
 
@@ -1408,7 +1408,7 @@ order: 1
 
 Longer‑form specs and plans live alongside the source.
 
-<a class="btn btn-ghost" href="https://github.com/peterlodri-sec/entheai" target="_blank" rel="noopener">Design docs on GitHub <span>↗</span></a>
+<a class="btn btn-ghost" href="https://github.com/entropy-om/entheai" target="_blank" rel="noopener">Design docs on GitHub <span>↗</span></a>
 ```
 
 - [ ] **Step 18: Commit**
@@ -1481,7 +1481,7 @@ git commit -m "feat: wire up per-page Copy page button"
 
 Run:
 ```bash
-cd /Users/peter.lodri/workspace/peterlodri-sec/entheai
+cd /Users/peter.lodri/workspace/entropy-om/entheai
 export PATH="$HOME/.nvm/versions/node/v24.17.0/bin:$PATH"
 npm test
 ```
@@ -1520,7 +1520,7 @@ These three files are gitignored build artifacts (per Task 6) — nothing to com
 
 Run in the background:
 ```bash
-cd /Users/peter.lodri/workspace/peterlodri-sec/entheai/public
+cd /Users/peter.lodri/workspace/entropy-om/entheai/public
 python3 -m http.server 8935
 ```
 
@@ -1599,13 +1599,13 @@ git commit -m "docs: add frontend-scoped AGENTS.md"
 
 **Files:** none (infrastructure only)
 
-This task creates a new, narrowly-scoped Cloudflare API Token (Workers Scripts Write on this account + Workers Routes Write / DNS Write / SSL and Certificates Write on the `entheai.com` zone only) and stores it directly as the `CLOUDFLARE_API_TOKEN` secret in a GitHub Environment named `main` on `peterlodri-sec/entheai`. The permission group IDs below were looked up and confirmed against this Cloudflare account on 2026-07-18.
+This task creates a new, narrowly-scoped Cloudflare API Token (Workers Scripts Write on this account + Workers Routes Write / DNS Write / SSL and Certificates Write on the `entheai.com` zone only) and stores it directly as the `CLOUDFLARE_API_TOKEN` secret in a GitHub Environment named `main` on `entropy-om/entheai`. The permission group IDs below were looked up and confirmed against this Cloudflare account on 2026-07-18.
 
 - [ ] **Step 1: Confirm the GitHub `main` environment exists (create if not)**
 
 Run:
 ```bash
-gh api repos/peterlodri-sec/entheai/environments/main -X PUT --silent
+gh api repos/entropy-om/entheai/environments/main -X PUT --silent
 ```
 Expected: no output, exit code 0 (creates the environment if it doesn't already exist; idempotent if it does).
 
@@ -1661,7 +1661,7 @@ fi
 
 NEW_TOKEN=$(echo "$TOKEN_JSON" | jq -r '.result.value')
 
-gh secret set CLOUDFLARE_API_TOKEN --env main --repo peterlodri-sec/entheai --body "$NEW_TOKEN"
+gh secret set CLOUDFLARE_API_TOKEN --env main --repo entropy-om/entheai --body "$NEW_TOKEN"
 
 unset NEW_TOKEN TOKEN_JSON CF_AUTH
 ```
@@ -1674,13 +1674,13 @@ Expected: no error printed; the script exits 0. The full token value is never pr
 
 Run:
 ```bash
-gh secret list --env main --repo peterlodri-sec/entheai
+gh secret list --env main --repo entropy-om/entheai
 ```
 Expected: a line showing `CLOUDFLARE_API_TOKEN` with an "Updated" timestamp. `gh secret list` never prints secret values, only names and metadata.
 
 - [ ] **Step 4: Note on transient exposure**
 
-The token value passed through this shell session's `TOKEN_JSON`/`NEW_TOKEN` variables and was never printed to stdout/stderr by any command above. If you want zero transient exposure even within tool-call plumbing, you can rotate this token later via the Cloudflare dashboard (Profile → API Tokens) and re-run `gh secret set CLOUDFLARE_API_TOKEN --env main --repo peterlodri-sec/entheai` with the new value — this is a normal, revocable, narrowly-scoped credential, not the broad OAuth session.
+The token value passed through this shell session's `TOKEN_JSON`/`NEW_TOKEN` variables and was never printed to stdout/stderr by any command above. If you want zero transient exposure even within tool-call plumbing, you can rotate this token later via the Cloudflare dashboard (Profile → API Tokens) and re-run `gh secret set CLOUDFLARE_API_TOKEN --env main --repo entropy-om/entheai` with the new value — this is a normal, revocable, narrowly-scoped credential, not the broad OAuth session.
 
 No commit needed — this task is pure infrastructure setup.
 
@@ -1752,7 +1752,7 @@ git push origin main
 - [ ] **Step 2: Watch the workflow run**
 
 ```bash
-gh run watch --repo peterlodri-sec/entheai
+gh run watch --repo entropy-om/entheai
 ```
 Expected: the "Deploy site" run completes with all steps green (checkout, setup-node, npm ci, npm run build, npm test, wrangler deploy).
 
@@ -1762,4 +1762,4 @@ Using a browser tool, navigate to `https://entheai.com/docs/` and confirm the "C
 
 - [ ] **Step 4: If the workflow fails**
 
-Run `gh run view --repo peterlodri-sec/entheai --log-failed` to see the failing step's output, fix the underlying issue (most likely causes: a markdown frontmatter validation error from Task 2's validation, or a missing/incorrect `CLOUDFLARE_API_TOKEN` permission from Task 12), commit the fix, and push again.
+Run `gh run view --repo entropy-om/entheai --log-failed` to see the failing step's output, fix the underlying issue (most likely causes: a markdown frontmatter validation error from Task 2's validation, or a missing/incorrect `CLOUDFLARE_API_TOKEN` permission from Task 12), commit the fix, and push again.

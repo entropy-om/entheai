@@ -15,7 +15,7 @@ Please do not open public issues for security vulnerabilities.
 
 Report privately through GitHub Security Advisories:
 
-- https://github.com/peterlodri-sec/entheai/security/advisories/new
+- https://github.com/entropy-om/entheai/security/advisories/new
 
 Include:
 

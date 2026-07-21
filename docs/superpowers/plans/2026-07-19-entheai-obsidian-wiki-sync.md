@@ -1974,7 +1974,7 @@ default_model = "osaurus/qwen3-coder"
 [providers.osaurus]
 base_url = "http://127.0.0.1:1337/v1"
 TOML
-cargo run -q -p entheai --manifest-path /Users/peter.lodri/workspace/peterlodri-sec/entheai/Cargo.toml -- --config entheai.toml --no-companion --memory stats
+cargo run -q -p entheai --manifest-path /Users/peter.lodri/workspace/entropy-om/entheai/Cargo.toml -- --config entheai.toml --no-companion --memory stats
 ```
 Expected: `--memory stats` still runs and exits 0 (the obsidian guard is created only on the agent path, not the `--memory` early-return — this just confirms the bin still builds/links and nothing regressed). No `entheai-sync/` folder is created for `/tmp/entheai-obsidian-smoke` (no vault resolves).
 
@@ -2011,7 +2011,7 @@ TMPHOME=$(mktemp -d)
 VAULT="$TMPHOME/Library/Mobile Documents/iCloud~md~obsidian/entheai"
 mkdir -p "$VAULT/.obsidian"
 # Run entheai in the real repo but with HOME overridden so the temp vault resolves.
-cd /Users/peter.lodri/workspace/peterlodri-sec/entheai
+cd /Users/peter.lodri/workspace/entropy-om/entheai
 HOME="$TMPHOME" cargo run -q -p entheai -- --config entheai.toml --no-companion --memory stats >/dev/null 2>&1 || true
 # The --memory path returns before the watcher starts, so drive the agent path briefly instead:
 HOME="$TMPHOME" timeout 6 cargo run -q -p entheai -- --config entheai.toml --no-companion "say hi" >/dev/null 2>&1 || true
