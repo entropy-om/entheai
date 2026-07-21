@@ -66,11 +66,13 @@ token_env = "NATS_TOKEN"
 # materialize the repo from a git bundle, run the coder in isolation, and bundle
 # the result back; a dispatcher runs `entheai-worker --dispatch --task "…"`.
 # NOTE: a worker executes model-generated code with full tools on that node —
-# only run --serve on nodes you trust (tailnet-only; securefs hardening is F2.2).
+# only run --serve on nodes you trust (tailnet-only; securefs hardening is F2.3).
 [federation]
 enabled = false
 role = "auto"              # "auto" | "worker" | "dispatch"
 deadline_secs = 600
+sandbox = "permissive"     # coder confinement: "strict" | "permissive" | "off"
+# role is reserved; worker mode is chosen by --serve / --dispatch.
 
 # MCP servers — spawned at startup; their tools appear to the agent as `<name>__<tool>`.
 # [mcp.codebase]

@@ -66,6 +66,32 @@ async fn run_serve(
     })?;
     log::info!("entheai-worker: serving the coder work-queue");
 
+    // Startup posture: one line reporting the active confinement mode and whether
+    // this host can actually enforce it — so an operator sees at a glance whether
+    // coders will run confined (and, under strict, whether they'll run at all).
+    let sandbox_mode = config.federation.sandbox;
+    let mode = match sandbox_mode {
+        entheai_sandbox::SandboxMode::Strict => "strict",
+        entheai_sandbox::SandboxMode::Permissive => "permissive",
+        entheai_sandbox::SandboxMode::Off => "off",
+    };
+    match entheai_sandbox::availability() {
+        entheai_sandbox::Availability::Available => {
+            log::info!("worker serving · sandbox={mode} · confinement=available");
+        }
+        entheai_sandbox::Availability::Unavailable(reason)
+            if sandbox_mode == entheai_sandbox::SandboxMode::Strict =>
+        {
+            log::warn!(
+                "worker serving · sandbox=strict · confinement=unavailable: {reason} \
+                 — real coders will REFUSE to run on this host until confinement is available"
+            );
+        }
+        entheai_sandbox::Availability::Unavailable(reason) => {
+            log::info!("worker serving · sandbox={mode} · confinement=unavailable: {reason}");
+        }
+    }
+
     // Presence: announce liveness every 5s, and answer presence pings promptly so
     // a dispatcher's `count_workers` sees us right away.
     {
@@ -362,6 +388,28 @@ fn sandbox_read_only_paths(config: &Config, config_path: Option<&Path>) -> Vec<P
     candidates.into_iter().filter(|p| p.exists()).collect()
 }
 
+/// The (uid, gid) the confined coder should drop to, so untrusted model-generated
+/// code never keeps root. Returns `Some` only when we are actually running as root
+/// (`geteuid() == 0`): prefer the invoking user via `SUDO_UID`/`SUDO_GID` when both
+/// are set and parse, else fall back to `nobody` (65534 on Linux — the conventional
+/// unprivileged id). Off-root returns `None`: the `entheai_sandbox` drop is a no-op
+/// there anyway, but `None` keeps the "only drop when we hold privilege" intent explicit.
+fn worker_drop_uid() -> Option<(u32, u32)> {
+    // SAFETY: `geteuid` is an always-succeeds syscall with no arguments or preconditions.
+    if unsafe { libc::geteuid() } != 0 {
+        return None;
+    }
+    let sudo = std::env::var("SUDO_UID")
+        .ok()
+        .and_then(|u| u.trim().parse::<u32>().ok())
+        .zip(
+            std::env::var("SUDO_GID")
+                .ok()
+                .and_then(|g| g.trim().parse::<u32>().ok()),
+        );
+    Some(sudo.unwrap_or((65534, 65534)))
+}
+
 /// Child entry (`--sandbox-run`). Reads the task, applies confinement per the
 /// configured [`SandboxMode`] while single-threaded, then runs exactly one coder
 /// against the worktree on a current-thread runtime — mutating `--work` in place.
@@ -377,7 +425,7 @@ fn run_sandboxed_coder_blocking(cli: Cli) -> anyhow::Result<()> {
     let spec = entheai_sandbox::SandboxSpec {
         work_dir: work.clone(),
         read_only_paths: sandbox_read_only_paths(&config, Some(Path::new(&cli.config))),
-        drop_uid: None, // privilege drop wired in a later task (A6)
+        drop_uid: worker_drop_uid(), // never run the untrusted coder as root
     };
     match config.federation.sandbox {
         entheai_sandbox::SandboxMode::Off => {
@@ -427,6 +475,18 @@ mod tests {
         assert_eq!(parsed["role"], "coder");
         assert_eq!(parsed["task"], "add x");
         assert_eq!(parsed["output"], "did the thing");
+    }
+
+    #[test]
+    fn worker_drop_uid_is_none_when_not_root() {
+        // The test process is not root, so no privilege-drop target is chosen.
+        // Guard against the rare run-as-root case (e.g. a root CI container) so the
+        // assertion stays honest: worker_drop_uid only returns Some when euid == 0.
+        // SAFETY: `geteuid` is an always-succeeds syscall with no preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        assert_eq!(worker_drop_uid(), None);
     }
 
     #[test]

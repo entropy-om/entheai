@@ -885,12 +885,17 @@ fn default_nats_token_env() -> String {
     "NATS_TOKEN".to_string()
 }
 
-/// Distributed swarm (F2). Opt-in; reuses `[nats]` for the connection. `role`
-/// selects whether this process dispatches work, serves as a worker, or both.
+/// Distributed swarm (F2). Opt-in; reuses `[nats]` for the connection.
+///
+/// `role` is **reserved** and currently unused by the runtime: worker vs.
+/// dispatcher mode is chosen by the `--serve` / `--dispatch` CLI flags on
+/// `entheai-worker`, not by this field. `sandbox` sets the coder confinement
+/// posture on a serving worker (see `crates/sandbox`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct FederationConfig {
     #[serde(default)]
     pub enabled: bool,
+    /// Reserved; worker mode is selected by `--serve` / `--dispatch`, not this field.
     #[serde(default = "default_fed_role")]
     pub role: String, // "auto" | "worker" | "dispatch"
     #[serde(default = "default_fed_deadline_secs")]

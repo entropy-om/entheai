@@ -16,7 +16,7 @@ The first working slice ships a **NATS JetStream** transport — *not* the gRPC/
 - **`entheai-worker --dispatch --role coder --task "…"`** — bundles the current repo, enqueues a `WorkItem`, awaits the `WorkResult` over core NATS, and applies the returned delta to a `fed/…` branch.
 - **`entheai-worker --role <r> --task <t> --worktree <path>`** — the original one-shot local mode (`run_coder_once` against a given worktree), unchanged.
 - Opt-in via `[federation]` (reuses `[nats]` creds). **Fail-safe** — no hub, no problem; the caller runs locally.
-- **Not yet (F2.2):** dispatch wired into `run_fanout`, presence/heartbeat, cross-platform sandbox hardening, and the `comms`/gRPC + `learning`/`dogfeed` pushback described below. A worker currently runs model output with full tools on its node — run `--serve` **only on trusted, tailnet-only nodes**.
+- **In progress (F2.3):** worker sandbox hardening — Linux Landlock + seccomp + drop-root (the lead platform, landing via task A3); macOS `sandbox_init` best-effort today. The `comms`/gRPC + `learning`/`dogfeed` pushback described below stays aspirational. Until the Linux backend lands, a worker runs model output with full tools on its node — run `--serve` **only on trusted, tailnet-only nodes**.
 
 The sections below are the broader **v0.3 design vision**; the transport and several crates named there (`comms`, `learning`, `dogfeed`, `health`, `session`, `plugins`) are aspirational or realized differently by F2.1.
 
@@ -62,7 +62,7 @@ Worker compiles a subset of the workspace (`--no-default-features`, macOS-only c
 | `config` | ✅ | TOML config (providers, roles, tailnet nodes) |
 | `tui` | ❌ | macOS-only; worker is headless |
 | `viz` | ❌ | macOS-only; no GPU rendering |
-| `sandbox` | ❌ | macOS Seatbelt; worker uses best-effort sandboxing |
+| `sandbox` | ✅ | Coder confinement: Landlock/seccomp (Linux, lead — F2.3/A3) · Seatbelt (macOS) |
 | `permission` | ✅ | Policy gate (YOLO/allowlist per dispatched role) |
 
 ### Binary surface
@@ -124,13 +124,45 @@ The worker **does not** accept a prompt on the CLI. It listens for dispatched su
 
 ## Sandboxing
 
+Each dispatched coder runs inside a dedicated **`--sandbox-run` child** that the
+`--serve` parent spawns per task (see `crates/sandbox`). Confinement is applied in
+the child while it is still single-threaded, before its async runtime starts, and
+is irreversible for that process. The posture is set by `[federation] sandbox`
+(default `permissive`) — there is **no** `[worker] sandbox` knob:
+
+| Mode | Behavior |
+|---|---|
+| `strict` | Refuse to run the coder if confinement can't be applied on this host (child exits `3`; the worker reports the item failed). |
+| `permissive` (default) | Attempt confinement; if unavailable, warn and run the coder unconfined. |
+| `off` | Never attempt confinement (the pre-F2.3 behavior). |
+
+**Platform backends:**
+
 | Platform | Strategy |
 |---|---|
-| macOS | Seatbelt profile (same as `entheai`) |
-| Linux | `bwrap` (bubblewrap) / `landlock` / `seccomp` — best-effort |
-| Windows | Job objects + restricted token — best-effort |
+| Linux | Landlock filesystem jail + seccomp syscall denylist + drop-root. This is the **intended, lead platform**, landing in **F2.3 (task A3)** — the Linux backend is currently a stub, so `entheai_sandbox::availability()` reports *unavailable* (and `strict` refuses) until A3 lands. |
+| macOS | Best-effort `sandbox_init` (Seatbelt) profile. Available today. |
+| other | No confinement backend — `availability()` reports unavailable. |
 
-Worker sandboxing is **best-effort** on non-macOS. The orchestrator can set `sandbox: strict` (refuse dispatch if full sandboxing unavailable) or `sandbox: permissive` (accept reduced isolation).
+**Filesystem allow-list.** The coder's worktree is the single read-write directory;
+everything else is denied except a read-only allow-list: the toolchain (`/usr`,
+`/lib*`, `/bin`, plus `~/.cargo` and `~/.rustup` when a `[fanout] verify` command is
+configured), CA certs (`/etc/ssl`, `/etc/ca-certificates`), `/etc/resolv.conf`,
+`/etc/hosts`, and `/tmp`.
+
+**Privilege drop.** If the worker is running as root, the confined coder drops to the
+invoking user (`SUDO_UID`/`SUDO_GID`) or to `nobody` (65534) — untrusted model output
+never keeps root. Off-root this is a no-op.
+
+**Network stays open (documented residual risk).** The coder needs outbound access to
+reach the LLM endpoint, so the sandbox does **not** restrict the network. A confined
+coder can still open arbitrary outbound connections; run `--serve` only on trusted,
+tailnet-only nodes.
+
+**Startup posture.** At `--serve` startup the worker logs one line —
+`worker serving · sandbox=<mode> · confinement=<available | unavailable: <reason>>`.
+Under `strict` on a host where confinement is unavailable, that line is a prominent
+warning that real coders will refuse to run there.
 
 ## Memory & learning
 
@@ -149,7 +181,8 @@ The orchestrator merges worker trajectories into its own ReasoningBank, improvin
 [worker]
 name = "studio-m3-max"
 capabilities = ["coder", "test", "merge"]
-sandbox = "strict"            # strict | permissive | off
+# Coder confinement is NOT set here — it lives under [federation] sandbox
+# ("strict" | "permissive" | "off"); see the Sandboxing section above.
 
 [providers]
 # Same as main entheai.toml; worker uses local Osaurus or cloud providers

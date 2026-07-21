@@ -1646,6 +1646,7 @@ dependencies = [
  "entheai-sandbox",
  "env_logger",
  "futures",
+ "libc",
  "log",
  "serde_json",
  "tempfile",

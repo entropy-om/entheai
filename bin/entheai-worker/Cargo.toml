@@ -17,3 +17,4 @@ tempfile = "3"
 log = "0.4"
 futures = { workspace = true }
 env_logger = "0.11"
+libc = "0.2" # geteuid() for the privilege-drop target (worker_drop_uid)
