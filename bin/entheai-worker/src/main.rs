@@ -52,6 +52,67 @@ fn render_result(role: &str, task: &str, output: &str) -> String {
     serde_json::json!({ "role": role, "task": task, "output": output }).to_string()
 }
 
+/// Per-worker presence: the immutable node identity (stamped once at startup) plus
+/// the current [`WorkerState`], shared with the heartbeat tasks behind a `Mutex`.
+/// The lock is never held across an `.await`, so `std::sync::Mutex` is correct here.
+struct Presence {
+    node_id: String,
+    hostname: String,
+    started_at_unix: u64,
+    state: std::sync::Mutex<entheai_federation::WorkerState>,
+}
+
+impl Presence {
+    /// Detect this node's identity once: hostname → node_id, start time = now.
+    fn detect() -> Self {
+        let hostname = worker_hostname();
+        let node_id = entheai_federation::seeded_node_id(&hostname);
+        let started_at_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Self {
+            node_id,
+            hostname,
+            started_at_unix,
+            state: std::sync::Mutex::new(entheai_federation::WorkerState::Idle),
+        }
+    }
+
+    /// Build a heartbeat snapshot: the fixed identity + a copy of the current state.
+    fn snapshot(&self) -> entheai_federation::WorkerPresence {
+        entheai_federation::WorkerPresence {
+            node_id: self.node_id.clone(),
+            hostname: self.hostname.clone(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            state: self
+                .state
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or(entheai_federation::WorkerState::Idle),
+            started_at_unix: self.started_at_unix,
+        }
+    }
+
+    /// Set the current worker state (reflected by the next heartbeat).
+    fn set(&self, state: entheai_federation::WorkerState) {
+        if let Ok(mut g) = self.state.lock() {
+            *g = state;
+        }
+    }
+}
+
+/// This host's plain hostname — the same source `seeded_node_id` hashes and the TUI
+/// env-banner's `seeded_machine_id` uses. Falls back to "localhost".
+fn worker_hostname() -> String {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "localhost".to_string())
+}
+
 /// Worker mode: block on the federation work-queue, materialize each `WorkItem`'s
 /// repo from its base bundle, run the coder in an isolated dir, bundle the delta
 /// back through the object store, and publish a `WorkResult`. Runs forever.
@@ -92,22 +153,26 @@ async fn run_serve(
         }
     }
 
-    // Presence: announce liveness every 5s, and answer presence pings promptly so
-    // a dispatcher's `count_workers` sees us right away.
+    // Presence: announce liveness (identity + live Idle/Working state) every 5s, and
+    // answer presence pings promptly so a dispatcher's count_workers / list_workers
+    // sees us right away. `presence` is stamped once and shared with both tasks.
+    let presence = std::sync::Arc::new(Presence::detect());
     {
         let fed_hb = fed.clone();
+        let pres_hb = presence.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
                 ticker.tick().await;
-                fed_hb.heartbeat().await;
+                fed_hb.heartbeat(&pres_hb.snapshot()).await;
             }
         });
         let fed_ping = fed.clone();
+        let pres_ping = presence.clone();
         tokio::spawn(async move {
             if let Ok(mut pings) = fed_ping.subscribe_ping().await {
                 while futures::StreamExt::next(&mut pings).await.is_some() {
-                    fed_ping.heartbeat().await;
+                    fed_ping.heartbeat(&pres_ping.snapshot()).await;
                 }
             }
         });
@@ -126,6 +191,11 @@ async fn run_serve(
         };
         let item = claimed.item.clone();
         log::info!("claimed work {}::{} role={}", item.session, item.index, item.role);
+        // Reflect Working state in presence while the coder runs; back to Idle after
+        // (including the error path, since a failed process_one still returns here).
+        presence.set(entheai_federation::WorkerState::Working {
+            task: item.task.clone(),
+        });
         let result = process_one(&fed, config, config_path, &item, test_coder).await.unwrap_or_else(|e| {
             entheai_federation::WorkResult {
                 session: item.session.clone(),
@@ -136,6 +206,7 @@ async fn run_serve(
                 log: format!("error: {e}"),
             }
         });
+        presence.set(entheai_federation::WorkerState::Idle);
         fed.publish_result(&result).await.ok();
         claimed.ack().await;
     }

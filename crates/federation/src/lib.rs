@@ -215,9 +215,14 @@ impl Federation {
         }
     }
 
-    /// Announce this worker is alive (core NATS, fire-and-forget).
-    pub async fn heartbeat(&self) {
-        let _ = self.client.publish(PRESENCE_SUBJECT, "1".into()).await;
+    /// Announce this worker is alive with its identity + current state. Publishes a
+    /// JSON-serialized [`WorkerPresence`] to `PRESENCE_SUBJECT` (core NATS,
+    /// fire-and-forget), matching the `WorkItem`/`WorkResult` on-the-wire JSON style.
+    pub async fn heartbeat(&self, presence: &WorkerPresence) {
+        let Ok(payload) = serde_json::to_vec(presence) else {
+            return;
+        };
+        let _ = self.client.publish(PRESENCE_SUBJECT, payload.into()).await;
         let _ = self.client.flush().await;
     }
 
@@ -227,19 +232,165 @@ impl Federation {
         Ok(self.client.subscribe(PRESENCE_PING).await?)
     }
 
-    /// Cheap "are there workers?" — ping, then count heartbeats seen within
-    /// `window`. Returns the number of heartbeats (≈ live workers).
-    pub async fn count_workers(&self, window: Duration) -> usize {
+    /// The live worker roster: ping, collect presence heartbeats for `window`,
+    /// deserialize each into a [`WorkerPresence`], and dedup to one per `node_id`
+    /// (newest — see [`dedup_presence`]). This is the data behind the `/fleet` UI.
+    /// Same ping/collect pattern as the old `count_workers`; non-JSON payloads
+    /// (e.g. a pre-identity worker) simply don't deserialize and are skipped.
+    pub async fn list_workers(&self, window: Duration) -> Vec<WorkerPresence> {
         let Ok(mut sub) = self.client.subscribe(PRESENCE_SUBJECT).await else {
-            return 0;
+            return Vec::new();
         };
         let _ = self.client.publish(PRESENCE_PING, "?".into()).await;
         let _ = self.client.flush().await;
-        let mut n = 0usize;
+        let mut msgs = Vec::new();
         let deadline = tokio::time::Instant::now() + window;
-        while let Ok(Some(_)) = tokio::time::timeout_at(deadline, sub.next()).await {
-            n += 1;
+        while let Ok(Some(msg)) = tokio::time::timeout_at(deadline, sub.next()).await {
+            if let Ok(p) = serde_json::from_slice::<WorkerPresence>(&msg.payload) {
+                msgs.push(p);
+            }
         }
-        n
+        dedup_presence(msgs)
+    }
+
+    /// Cheap "are there workers?" — the number of DISTINCT live workers seen within
+    /// `window`. Delegates to [`list_workers`] so both share the ping/collect path;
+    /// `FederationExecutor::workers_available` gates dispatch on this being `> 0`.
+    pub async fn count_workers(&self, window: Duration) -> usize {
+        self.list_workers(window).await.len()
+    }
+}
+
+/// Presence broadcast by each `--serve` worker on `PRESENCE_SUBJECT`: a stable node
+/// identity plus what the worker is doing right now. This is the contract the
+/// `/fleet` roster (task C2) consumes, so the shape stays `pub` and JSON-stable.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct WorkerPresence {
+    /// FNV-1a of the hostname → 6 lowercase hex (see [`seeded_node_id`]).
+    pub node_id: String,
+    pub hostname: String,
+    /// The worker build's `CARGO_PKG_VERSION`.
+    pub version: String,
+    pub state: WorkerState,
+    /// Seconds since the Unix epoch when this worker started.
+    pub started_at_unix: u64,
+}
+
+/// What a worker is doing at heartbeat time.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub enum WorkerState {
+    /// Between claims — available for work.
+    Idle,
+    /// Running a coder for `task`.
+    Working { task: String },
+}
+
+/// A stable 6-hex node id SEEDED from the hostname (FNV-1a). Mirrors the TUI
+/// env-banner's `seeded_machine_id` (`crates/tui/src/lib.rs`) — duplicated here so
+/// federation need not depend on the tui crate. Same on a host every run; no
+/// hardware PII.
+pub fn seeded_node_id(host: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in host.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{:06x}", h & 0xff_ffff)
+}
+
+/// Dedup presence messages to ONE per `node_id`, keeping the NEWEST: the entry with
+/// the highest `started_at_unix` wins (a restarted worker supersedes its stale
+/// self), and on a tie the last-seen message wins (so the freshest `state` — the
+/// most recent heartbeat — survives). Pure, so it's unit-tested without a live NATS
+/// hub; `list_workers` supplies the collected messages.
+pub fn dedup_presence(msgs: Vec<WorkerPresence>) -> Vec<WorkerPresence> {
+    use std::collections::HashMap;
+    let mut by_node: HashMap<String, WorkerPresence> = HashMap::new();
+    for m in msgs {
+        match by_node.get(&m.node_id) {
+            // Keep the existing entry only if it started strictly later than `m`.
+            Some(prev) if prev.started_at_unix > m.started_at_unix => {}
+            _ => {
+                by_node.insert(m.node_id.clone(), m);
+            }
+        }
+    }
+    by_node.into_values().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_presence_json_round_trips() {
+        let p = WorkerPresence {
+            node_id: seeded_node_id("dev-cx53"),
+            hostname: "dev-cx53".into(),
+            version: "9.9.9".into(),
+            state: WorkerState::Working {
+                task: "add a null check".into(),
+            },
+            started_at_unix: 1_753_000_000,
+        };
+        let j = serde_json::to_vec(&p).unwrap();
+        assert_eq!(serde_json::from_slice::<WorkerPresence>(&j).unwrap(), p);
+
+        // The Idle variant survives the round trip too.
+        let idle = WorkerPresence {
+            state: WorkerState::Idle,
+            ..p.clone()
+        };
+        let j = serde_json::to_vec(&idle).unwrap();
+        assert_eq!(serde_json::from_slice::<WorkerPresence>(&j).unwrap(), idle);
+    }
+
+    #[test]
+    fn seeded_node_id_is_six_lowercase_hex_and_stable() {
+        let id = seeded_node_id("dev-cx53");
+        assert_eq!(id.len(), 6, "expected 6 hex chars, got {id:?}");
+        assert!(id
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert_eq!(id, seeded_node_id("dev-cx53"), "must be deterministic");
+        assert_ne!(id, seeded_node_id("other-host"), "distinct hosts differ");
+    }
+
+    #[test]
+    fn dedup_presence_keeps_one_newest_per_node() {
+        let mk = |node: &str, host: &str, started: u64, state: WorkerState| WorkerPresence {
+            node_id: node.into(),
+            hostname: host.into(),
+            version: "1.0.0".into(),
+            state,
+            started_at_unix: started,
+        };
+        // Two messages from node "aaaaaa" (older Idle, newer Working) + one other node.
+        let msgs = vec![
+            mk("aaaaaa", "host-a", 100, WorkerState::Idle),
+            mk(
+                "aaaaaa",
+                "host-a",
+                200,
+                WorkerState::Working { task: "t".into() },
+            ),
+            mk("bbbbbb", "host-b", 150, WorkerState::Idle),
+        ];
+        let out = dedup_presence(msgs);
+        assert_eq!(out.len(), 2, "one entry per node_id");
+        let a = out
+            .iter()
+            .find(|p| p.node_id == "aaaaaa")
+            .expect("node aaaaaa present");
+        assert_eq!(a.started_at_unix, 200, "newest start survives");
+        assert_eq!(
+            a.state,
+            WorkerState::Working { task: "t".into() },
+            "newest state survives"
+        );
+        assert!(
+            out.iter().any(|p| p.node_id == "bbbbbb"),
+            "other node retained"
+        );
     }
 }
