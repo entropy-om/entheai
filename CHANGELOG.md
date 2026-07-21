@@ -6,11 +6,33 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-21
+
+Interactive polish + a portable native-app fix, on top of the F2.1/F2.2
+federation work landed since 0.2.0.
+
 ### Added
 - `entheai --skills list` — list installed skills (name, description, path), the companion to `--skills add`.
 - `entheai --skills remove <name>` — remove an installed skill by name (slugified → traversal-safe, scoped to the skills dir). Completes the add/list/remove surface.
 - **Federation F2.1 — distributed swarm (opt-in `[federation]`).** New `entheai-federation` crate (JetStream work-queue + object-store git-bundles) + `entheai-worker --serve`/`--dispatch`: a coder task can run on another tailnet node — the dispatcher bundles the repo, enqueues a `WorkItem`, and applies the worker's delta to a `fed/…` branch; the worker pulls, materializes, runs the coder, and bundles the result back. Live-verified end-to-end.
 - **Federation F2.2 — fan-out offload.** `entheai --fanout` now runs its coder sub-tasks on the fleet when `[federation]` is enabled and a worker is serving: a `CoderExecutor` seam in `run_fanout` (orchestrator stays NATS-agnostic — trait only), a worker **presence heartbeat** (`count_workers` gates dispatch), and a `FederationExecutor` that dispatches each coder and **squash-applies** the delta into its worktree so the existing commit/verify/integrate path is unchanged. Per-coder **local fallback** on no-worker/timeout/no-change; federation off → byte-identical to before. Executor path live-verified (presence + dispatch + squash-apply); full decompose→integrate offload wired (worker securefs hardening is F2.3).
+- **Richer TUI slash surface** — a live `/`-menu (filter-as-you-type, `Tab` completes) now covers `/help`, `/clear`, `/fanout [on|off]`, `/model`, and `/quit`, alongside `/radio`, `/workers`, `/viz`.
+- **Always-on env banner** — the status bar's second row shows the current + starting folder, a hostname-seeded machine id, and the primary local IP.
+- **Token / context readout** — top-right `ctx ~cur/max · pct% · ↓out` on the status bar.
+
+### Changed
+- **`Esc Esc` stops the in-flight run; `Ctrl-C ×2` quits** (first press arms + shows a hint). A single `Esc` no longer quits.
+- **`entheai --app` roots the window in the invocation cwd.** Ghostty's macOS login-shell wrapper reset cwd to `$HOME`, which hid the project's `.env` (empty provider key → 401) and pointed the agent at the wrong tree; the launcher now wraps the command in `sh -c 'cd <cwd> && exec …'`.
+- **Default `max_turns` raised to 200**, and **unlimited under `--yolo`**.
+- **Calmer companion pulse** — glow-breath periods slowed ~1.7× (idle 3.0→5.0s, working 1.5→2.5s).
+- **Text-aware rain shader** — the raindrops refract only the empty background; glyphs and a small margin around them stay crisp.
+
+### Fixed
+- **Federation security-review pass** — same-host-only redirect guard on skill sub-fetches (SSRF), a 128 MiB git-bundle cap, redacted NATS URLs in logs, and `git reset/clean` cleanup when a squash-apply conflicts.
+
+### Performance
+- TUI history renders only the viewport slice (O(scrollback) → O(viewport) per frame).
+- Viz swarm paint clones only `(status, short role)` per node, not each node's full task string.
 
 ## [0.2.0] - 2026-07-20
 
