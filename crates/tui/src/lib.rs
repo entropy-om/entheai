@@ -349,6 +349,25 @@ async fn event_loop<P: Provider + 'static>(
     let policy = Arc::new(policy);
     let config = Arc::new(config);
 
+    // Federation dispatch (F2.3): build the remote coder executor once per TUI
+    // session, mirroring the CLI binary. When `[federation]` is on and a worker
+    // is serving, fan-out coders run on the fleet; otherwise `run_fanout` runs
+    // them locally. Connect failure → `None` → local (fail-safe). Cloned into
+    // each fan-out submit below.
+    let fed_exec: Option<std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>> =
+        if config.federation.enabled {
+            entheai_federation::Federation::connect(
+                &entheai_federation::FedOptions::from_config(&config.nats, &config.federation),
+            )
+            .await
+            .map(|f| {
+                entheai_federation::FederationExecutor::new(f, root.clone())
+                    as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>
+            })
+        } else {
+            None
+        };
+
     let (perm_tx, mut perm_rx) = mpsc::channel::<PermissionRequest>(8);
     let (result_tx, mut result_rx) = mpsc::channel::<Result<String, String>>(8);
     // Receiver for the currently running task's progress events, if any. Set on
@@ -527,6 +546,7 @@ async fn event_loop<P: Provider + 'static>(
                                 app.worker_pool = Some(Arc::clone(&pool));
                                 let config = Arc::clone(&config);
                                 let root = root.clone();
+                                let fed_exec = fed_exec.clone();
                                 let result_tx = result_tx.clone();
                                 let (ftx, frx) =
                                     mpsc::unbounded_channel::<entheai_orchestrator::FanoutEvent>();
@@ -544,7 +564,7 @@ async fn event_loop<P: Provider + 'static>(
                                 );
                                 run_handle = Some(tokio::spawn(async move {
                                     let res =
-                                        entheai_orchestrator::run_fanout(&config, &root, &text, events, pool, None)
+                                        entheai_orchestrator::run_fanout(&config, &root, &text, events, pool, fed_exec)
                                             .await;
                                     // Drain + flush the tee before dropping it so
                                     // the final events (e.g. `done`) reach
