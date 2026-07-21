@@ -144,11 +144,19 @@ is irreversible for that process. The posture is set by `[federation] sandbox`
 | macOS | Best-effort `sandbox_init` (Seatbelt) profile. Available today. |
 | other | No confinement backend — `availability()` reports unavailable. |
 
-**Filesystem allow-list.** The coder's worktree is the single read-write directory;
-everything else is denied except a read-only allow-list: the toolchain (`/usr`,
-`/lib*`, `/bin`, plus `~/.cargo` and `~/.rustup` when a `[fanout] verify` command is
-configured), CA certs (`/etc/ssl`, `/etc/ca-certificates`), `/etc/resolv.conf`,
-`/etc/hosts`, and `/tmp`.
+**Filesystem confinement** differs by backend — the strength is not the same:
+
+- **Linux (lead platform, task A3):** default-**deny**. The coder's worktree is the
+  single read-write directory; every other path is denied except a read-only
+  allow-list — the toolchain (`/usr`, `/lib*`, `/bin`, plus `~/.cargo` and `~/.rustup`
+  when a `[fanout] verify` command is configured), CA certs (`/etc/ssl`,
+  `/etc/ca-certificates`), `/etc/resolv.conf`, `/etc/hosts`, and `/tmp`.
+- **macOS (shipping today, best-effort):** the `sandbox_init` profile is `allow
+  default` with targeted **denies** — it confines **writes** to the worktree (plus
+  `/tmp` and the macOS temp dirs) and denies **reads** of a few common secret dirs
+  (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud`), but **all other reads stay
+  open**. It blocks worktree-escape writes and the obvious credential reads; it is
+  deliberately *not* the Linux default-deny model. For local testing, not production.
 
 **Privilege drop.** If the worker is running as root, the confined coder drops to the
 invoking user (`SUDO_UID`/`SUDO_GID`) or to `nobody` (65534) — untrusted model output
@@ -158,6 +166,15 @@ never keeps root. Off-root this is a no-op.
 reach the LLM endpoint, so the sandbox does **not** restrict the network. A confined
 coder can still open arbitrary outbound connections; run `--serve` only on trusted,
 tailnet-only nodes.
+
+**Env-borne secrets are exposed to the coder (residual risk).** The `--sandbox-run`
+child inherits the worker's environment — including the provider API key(s) and NATS
+credentials loaded from `.env`. Filesystem confinement does not cover process env, and
+the network is open, so a malicious coder can read its own environment and exfiltrate
+those keys. The `~/.ssh`/`~/.aws` read-denies protect *host* secrets, not the app's own
+in-process credentials — which is the core reason `--serve` must run only on trusted,
+tailnet-only nodes. Env-scrubbing the child and an egress allow-list are future
+hardening (F2.4+).
 
 **Startup posture.** At `--serve` startup the worker logs one line —
 `worker serving · sandbox=<mode> · confinement=<available | unavailable: <reason>>`.
