@@ -11,14 +11,14 @@
 class Entheai < Formula
   desc "Hybrid, visual, self-improving terminal coding-agent harness"
   homepage "https://entheai.com"
-  version "0.2.0"
+  version "0.2.1"
   license "MIT"
 
   depends_on :macos
   depends_on arch: :arm64
 
-  url "https://github.com/peterlodri-sec/entheai/releases/download/v0.2.0/entheai-macos-arm64.tar.gz"
-  sha256 "8242c54f858563a798c1aae8292d19453938f5bd9a67936cea9b4e469ab770ec"
+  url "https://github.com/peterlodri-sec/entheai/releases/download/v0.2.1/entheai-macos-arm64.tar.gz"
+  sha256 "d909827f490761585e3ed53dd8878bba80eee72f439bd06efd1b685eeee76902"
 
   def install
     bin.install "entheai"
@@ -26,6 +26,6 @@ class Entheai < Formula
   end
 
   test do
-    assert_match "entheai 0.2.0", shell_output("#{bin}/entheai --version")
+    assert_match "entheai 0.2.1", shell_output("#{bin}/entheai --version")
   end
 end
