@@ -1392,6 +1392,7 @@ dependencies = [
 name = "entheai-config"
 version = "0.2.1"
 dependencies = [
+ "entheai-sandbox",
  "serde",
  "thiserror 2.0.18",
  "toml",

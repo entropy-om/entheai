@@ -665,6 +665,18 @@ mod tests {
         assert_eq!(cfg.federation.role, "auto");
         assert_eq!(cfg.federation.deadline_secs, 600);
     }
+
+    #[test]
+    fn federation_sandbox_defaults_permissive_and_parses() {
+        use entheai_sandbox::SandboxMode;
+        let cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(cfg.federation.sandbox, SandboxMode::Permissive); // default
+
+        let cfg: Config = toml::from_str("[federation]\nsandbox = \"strict\"\n").unwrap();
+        assert_eq!(cfg.federation.sandbox, SandboxMode::Strict);
+
+        assert!(toml::from_str::<Config>("[federation]\nsandbox = \"bogus\"\n").is_err());
+    }
 }
 
 /// Memory configuration per the SOTA memory design spec.
@@ -883,11 +895,19 @@ pub struct FederationConfig {
     pub role: String, // "auto" | "worker" | "dispatch"
     #[serde(default = "default_fed_deadline_secs")]
     pub deadline_secs: u64,
+    /// Coder confinement posture on this worker (see crates/sandbox).
+    #[serde(default)]
+    pub sandbox: entheai_sandbox::SandboxMode,
 }
 
 impl Default for FederationConfig {
     fn default() -> Self {
-        Self { enabled: false, role: default_fed_role(), deadline_secs: default_fed_deadline_secs() }
+        Self {
+            enabled: false,
+            role: default_fed_role(),
+            deadline_secs: default_fed_deadline_secs(),
+            sandbox: entheai_sandbox::SandboxMode::default(),
+        }
     }
 }
 
