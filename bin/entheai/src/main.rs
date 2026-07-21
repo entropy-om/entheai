@@ -46,6 +46,87 @@ struct Cli {
     skills: Option<Vec<String>>,
 }
 
+/// The `--config` default; only this filename falls through to the global /
+/// built-in configs when absent (an explicit `--config <other>` must exist).
+const DEFAULT_CONFIG_PATH: &str = "entheai.toml";
+
+/// Built-in configuration used when no `entheai.toml` is found in the working
+/// directory or `~/.config/entheai/`. Keeps the standard OpenAI-compatible
+/// providers — keys still come from the environment / `.env` — so `entheai` runs
+/// from any directory. Deliberately omits user-specific MCP servers and paths.
+const DEFAULT_CONFIG_TOML: &str = r#"default_model = "deepseek/deepseek-chat"
+
+[providers.deepseek]
+base_url = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[providers.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[providers.hf]
+base_url = "https://router.huggingface.co/v1"
+api_key_env = "HUGGINGFACE_API_KEY"
+
+[providers.zen]
+base_url = "https://opencode.ai/zen/v1"
+api_key_env = "OPENCODE_API_KEY"
+
+[providers.osaurus]
+base_url = "http://127.0.0.1:1337/v1"
+
+[router]
+orchestrator = "deepseek/deepseek-chat"
+max_parallel = 4
+"#;
+
+/// Load the config, tolerating a missing default file so `entheai` runs from any
+/// directory (fixes a hard `reading config entheai.toml: No such file or
+/// directory` when launched outside a project). Resolution order:
+///   1. `path` in the cwd — a file that *is* present must parse (a broken config
+///      is a real error, never silently ignored).
+///   2. `~/.config/entheai/entheai.toml` — the per-user global config.
+///   3. Built-in defaults ([`DEFAULT_CONFIG_TOML`]).
+///
+/// An *explicitly* passed `--config <other>` that is missing stays a hard error;
+/// only the default filename falls through to the global / built-in configs.
+fn load_config(path: &str) -> anyhow::Result<Config> {
+    if std::path::Path::new(path).exists() {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("reading config {path}"))?;
+        return Ok(Config::from_toml_str(&text)?);
+    }
+
+    if path != DEFAULT_CONFIG_PATH {
+        anyhow::bail!("reading config {path}: No such file or directory (os error 2)");
+    }
+
+    let global = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+        .join(".config")
+        .join("entheai")
+        .join(DEFAULT_CONFIG_PATH);
+    if global.exists() {
+        let text = std::fs::read_to_string(&global)
+            .with_context(|| format!("reading config {}", global.display()))?;
+        eprintln!(
+            "entheai: no ./{DEFAULT_CONFIG_PATH} — using {}",
+            global.display()
+        );
+        return Ok(Config::from_toml_str(&text)?);
+    }
+
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| ".".into());
+    eprintln!(
+        "entheai: no {DEFAULT_CONFIG_PATH} in {cwd} or {} — using built-in defaults \
+         (provider keys still come from the environment / .env; run from a project \
+         with an entheai.toml, or `entheai --config <path>`, for custom settings)",
+        global.parent().map(|p| p.display().to_string()).unwrap_or_default(),
+    );
+    Ok(Config::from_toml_str(DEFAULT_CONFIG_TOML)?)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load `.env` first so provider keys, MCP URLs, etc. are visible to
@@ -76,9 +157,7 @@ async fn main() -> anyhow::Result<()> {
         return run_doctor_cmd();
     }
 
-    let cfg_text = std::fs::read_to_string(&cli.config)
-        .with_context(|| format!("reading config {}", cli.config))?;
-    let cfg = Config::from_toml_str(&cfg_text)?;
+    let cfg = load_config(&cli.config)?;
     let _sentry = init_telemetry(cfg.telemetry.sentry_dsn.clone());
     let root = std::env::current_dir()?.canonicalize()?;
 
