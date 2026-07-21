@@ -16,6 +16,14 @@ async fn git_ok(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// True if `rev` resolves in `dir` (a quick sanity check for a cached bare repo).
+pub async fn rev_parse_ok(dir: &Path, rev: &str) -> bool {
+    git(dir, &["rev-parse", "--verify", "--quiet", rev])
+        .await
+        .map(|(ok, _)| ok)
+        .unwrap_or(false)
+}
+
 /// Create a base bundle of `repo`'s HEAD under `out` (a `.bundle` path). Bundles
 /// the branch `entheai-fed-base` pointing at HEAD so a clone lands on a named branch.
 pub async fn bundle_base(repo: &Path, out: &Path) -> anyhow::Result<String> {

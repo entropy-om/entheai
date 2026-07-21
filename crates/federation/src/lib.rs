@@ -3,6 +3,7 @@
 //! git bundles travel through the JetStream object store; results return over
 //! core NATS. Fail-safe: any NATS failure leaves the caller to run locally.
 
+pub mod base_cache;
 pub mod executor;
 pub mod repo;
 pub mod types;
