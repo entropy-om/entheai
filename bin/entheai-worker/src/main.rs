@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::Parser;
@@ -28,6 +28,16 @@ struct Cli {
     /// For testing: replace the LLM coder with a shell command run in the worktree.
     #[arg(long)]
     test_coder: Option<String>,
+    /// Internal: run one coder confined in this process, then exit. Not for direct
+    /// use — the `--serve` parent spawns itself with this to sandbox each coder.
+    #[arg(long, hide = true)]
+    sandbox_run: bool,
+    /// The worktree the confined coder mutates in place (with `--sandbox-run`).
+    #[arg(long, requires = "sandbox_run")]
+    work: Option<PathBuf>,
+    /// File holding the coder's task text (with `--sandbox-run`).
+    #[arg(long, requires = "sandbox_run")]
+    task_file: Option<PathBuf>,
 }
 
 /// Whether `output` (a coder's captured result text) indicates the sub-agent
@@ -45,7 +55,11 @@ fn render_result(role: &str, task: &str, output: &str) -> String {
 /// Worker mode: block on the federation work-queue, materialize each `WorkItem`'s
 /// repo from its base bundle, run the coder in an isolated dir, bundle the delta
 /// back through the object store, and publish a `WorkResult`. Runs forever.
-async fn run_serve(config: &Config, test_coder: Option<&str>) -> anyhow::Result<()> {
+async fn run_serve(
+    config: &Config,
+    config_path: &str,
+    test_coder: Option<&str>,
+) -> anyhow::Result<()> {
     let opts = entheai_federation::FedOptions::from_config(&config.nats, &config.federation);
     let fed = entheai_federation::Federation::connect(&opts).await.ok_or_else(|| {
         anyhow::anyhow!("federation not available (check [federation].enabled + [nats] creds)")
@@ -86,7 +100,7 @@ async fn run_serve(config: &Config, test_coder: Option<&str>) -> anyhow::Result<
         };
         let item = claimed.item.clone();
         log::info!("claimed work {}::{} role={}", item.session, item.index, item.role);
-        let result = process_one(&fed, config, &item, test_coder).await.unwrap_or_else(|e| {
+        let result = process_one(&fed, config, config_path, &item, test_coder).await.unwrap_or_else(|e| {
             entheai_federation::WorkResult {
                 session: item.session.clone(),
                 index: item.index,
@@ -107,6 +121,7 @@ async fn run_serve(config: &Config, test_coder: Option<&str>) -> anyhow::Result<
 async fn process_one(
     fed: &entheai_federation::Federation,
     config: &Config,
+    config_path: &str,
     item: &entheai_federation::WorkItem,
     test_coder: Option<&str>,
 ) -> anyhow::Result<entheai_federation::WorkResult> {
@@ -116,7 +131,8 @@ async fn process_one(
     let work = tmp.path().join("work");
     entheai_federation::repo::materialize_from_bundle(&base_bundle, &work).await?;
 
-    // Coder step: real LLM by default; a shell command in test mode.
+    // Coder step: real LLM by default (run in a confined `--sandbox-run` child); a
+    // shell command in test mode (unchanged).
     let log = match test_coder {
         Some(cmd) => {
             let out = tokio::process::Command::new("sh")
@@ -131,7 +147,43 @@ async fn process_one(
                 String::from_utf8_lossy(&out.stdout)
             )
         }
-        None => entheai_orchestrator::run_coder_once(config, &item.role, &item.task, &work).await,
+        None => {
+            // Re-exec ourselves as a confined child that runs exactly one coder
+            // against `work`, mutating it in place. Confinement is applied in the
+            // child while it is still single-threaded, before its async runtime
+            // starts (see `run_sandboxed_coder_blocking`).
+            let task_file = tmp.path().join("task.txt");
+            std::fs::write(&task_file, &item.task)?;
+            let exe = std::env::current_exe()?;
+            let deadline = std::time::Duration::from_secs(config.fanout.coder_timeout_secs);
+            let mut cmd = tokio::process::Command::new(&exe);
+            // kill_on_drop: when the deadline fires (or we bail), tokio drops the
+            // `status()` future — this kills the child so a timed-out confined coder
+            // stops burning CPU + model tokens and can't keep writing into a worktree
+            // the parent is about to drop. Without it these orphans accumulate on a
+            // long-lived --serve worker that periodically hits coder_timeout_secs.
+            cmd.kill_on_drop(true)
+                .arg("--sandbox-run")
+                .arg("--work")
+                .arg(&work)
+                .arg("--role")
+                .arg(&item.role)
+                .arg("--task-file")
+                .arg(&task_file)
+                .arg("--config")
+                .arg(config_path);
+            let status = tokio::time::timeout(deadline, cmd.status())
+                .await
+                .map_err(|_| anyhow::anyhow!("coder child timed out"))??;
+            if status.code() == Some(3) {
+                // Sandbox strict + unavailable: the child refused to run the coder.
+                // Bail before bundling — the worktree was never touched.
+                anyhow::bail!("sandbox strict-refused on this worker");
+            } else if !status.success() {
+                anyhow::bail!("coder child failed: {status}");
+            }
+            format!("coder ran in a confined child (role={})", item.role)
+        }
     };
 
     let result_bundle = tmp.path().join("result.bundle");
@@ -223,16 +275,36 @@ fn uuid_like() -> String {
     format!("d{}", std::process::id())
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+/// Load and parse the entheai TOML config from `path`.
+fn load_config(path: &str) -> anyhow::Result<Config> {
+    let cfg_text =
+        std::fs::read_to_string(path).with_context(|| format!("reading config {path}"))?;
+    Ok(Config::from_toml_str(&cfg_text)?)
+}
+
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let cfg_text = std::fs::read_to_string(&cli.config)
-        .with_context(|| format!("reading config {}", cli.config))?;
-    let config = Config::from_toml_str(&cfg_text)?;
+    // The confined-coder child path MUST apply confinement while the process is
+    // still single-threaded, so handle it BEFORE the multi-threaded runtime spins
+    // up its worker threads (Landlock/seccomp/sandbox_init cover the calling
+    // thread plus threads created afterward, not threads that already exist).
+    if cli.sandbox_run {
+        return run_sandboxed_coder_blocking(cli);
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(serve_or_dispatch(cli))
+}
+
+/// The normal (unconfined-parent) entry: serve the work-queue, dispatch a task, or
+/// run one coder in-process. Unchanged from the previous `async fn main` body.
+async fn serve_or_dispatch(cli: Cli) -> anyhow::Result<()> {
+    let config = load_config(&cli.config)?;
 
     if cli.serve {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-        return run_serve(&config, cli.test_coder.as_deref()).await;
+        return run_serve(&config, &cli.config, cli.test_coder.as_deref()).await;
     }
 
     if cli.dispatch {
@@ -257,6 +329,87 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The paths a confined coder legitimately needs read/execute access to, filtered
+/// to those that actually exist on this host. On macOS the profile allows reads by
+/// default, so this list is consumed by the Linux (Landlock) backend; building it
+/// here keeps the child's `SandboxSpec` portable across backends.
+fn sandbox_read_only_paths(config: &Config, config_path: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(cfg) = config_path {
+        candidates.push(cfg.to_path_buf());
+    }
+    for p in [
+        "/usr",
+        "/lib",
+        "/lib64",
+        "/bin",
+        "/etc/ssl",
+        "/etc/ca-certificates",
+        "/etc/resolv.conf",
+        "/etc/hosts",
+        "/tmp",
+    ] {
+        candidates.push(PathBuf::from(p));
+    }
+    // A `verify` command (e.g. `cargo test`) needs the Rust toolchain caches.
+    if config.fanout.verify.is_some() {
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = PathBuf::from(home);
+            candidates.push(home.join(".cargo"));
+            candidates.push(home.join(".rustup"));
+        }
+    }
+    candidates.into_iter().filter(|p| p.exists()).collect()
+}
+
+/// Child entry (`--sandbox-run`). Reads the task, applies confinement per the
+/// configured [`SandboxMode`] while single-threaded, then runs exactly one coder
+/// against the worktree on a current-thread runtime — mutating `--work` in place.
+///
+/// Exit codes: `0` = coder ran; `3` = sandbox strict + unavailable (refused);
+/// `1` = coder reported an error (via `run_coder_once`'s captured `"error: …"`).
+fn run_sandboxed_coder_blocking(cli: Cli) -> anyhow::Result<()> {
+    let config = load_config(&cli.config)?;
+    let work = cli.work.clone().context("missing --work")?;
+    let role = cli.role.clone().context("missing --role")?;
+    let task = std::fs::read_to_string(cli.task_file.as_ref().context("missing --task-file")?)?;
+
+    let spec = entheai_sandbox::SandboxSpec {
+        work_dir: work.clone(),
+        read_only_paths: sandbox_read_only_paths(&config, Some(Path::new(&cli.config))),
+        drop_uid: None, // privilege drop wired in a later task (A6)
+    };
+    match config.federation.sandbox {
+        entheai_sandbox::SandboxMode::Off => {
+            eprintln!("[worker] sandbox=off — coder UNCONFINED")
+        }
+        entheai_sandbox::SandboxMode::Permissive => {
+            if let Err(e) = entheai_sandbox::confine(&spec) {
+                eprintln!("[worker] sandbox unavailable ({e}); permissive → UNCONFINED");
+            }
+        }
+        entheai_sandbox::SandboxMode::Strict => {
+            if let Err(e) = entheai_sandbox::confine(&spec) {
+                eprintln!("[worker] sandbox strict + unavailable ({e}); refusing");
+                std::process::exit(3);
+            }
+        }
+    }
+
+    // `run_coder_once` never returns `Err` — a coder failure is captured as
+    // `"error: …"` text, so inspect the output and exit non-zero on failure.
+    let output = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(entheai_orchestrator::run_coder_once(&config, &role, &task, &work));
+    if is_error_output(&output) {
+        eprintln!("[worker] {output}");
+        std::process::exit(1);
+    }
+    println!("{output}");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,5 +427,46 @@ mod tests {
         assert_eq!(parsed["role"], "coder");
         assert_eq!(parsed["task"], "add x");
         assert_eq!(parsed["output"], "did the thing");
+    }
+
+    #[test]
+    fn sandbox_read_only_paths_returns_only_existing_paths() {
+        let cfg = Config::from_toml_str("").unwrap();
+        let paths = sandbox_read_only_paths(&cfg, None);
+        // Every returned path must exist on this host (the list is filtered).
+        assert!(paths.iter().all(|p| p.exists()), "unfiltered non-existent path leaked: {paths:?}");
+        // A well-known always-present path must survive the filter on any Unix.
+        assert!(paths.iter().any(|p| p == Path::new("/usr")), "expected /usr in {paths:?}");
+    }
+
+    #[test]
+    fn sandbox_read_only_paths_includes_the_config_path_when_it_exists() {
+        let cfg = Config::from_toml_str("").unwrap();
+        // A real, existing file: use this test binary's own source dir marker via a
+        // tempfile so the "Some + exists" branch is exercised deterministically.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let cfg_path = tmp.path();
+        let paths = sandbox_read_only_paths(&cfg, Some(cfg_path));
+        assert!(paths.iter().any(|p| p == cfg_path), "config path missing from {paths:?}");
+
+        // A config path that does NOT exist must be filtered out.
+        let missing = Path::new("/nonexistent/entheai-such-path-should-not-exist.toml");
+        let paths = sandbox_read_only_paths(&cfg, Some(missing));
+        assert!(!paths.iter().any(|p| p == missing), "non-existent config path leaked");
+    }
+
+    #[test]
+    fn sandbox_read_only_paths_excludes_toolchain_dirs_without_verify() {
+        // No `[fanout] verify` → the Rust toolchain caches are not requested, even
+        // when they exist on this host.
+        let cfg = Config::from_toml_str("").unwrap();
+        assert!(cfg.fanout.verify.is_none());
+        let paths = sandbox_read_only_paths(&cfg, None);
+        if let Some(home) = std::env::var_os("HOME") {
+            let cargo = PathBuf::from(&home).join(".cargo");
+            let rustup = PathBuf::from(&home).join(".rustup");
+            assert!(!paths.contains(&cargo), ".cargo present without verify: {paths:?}");
+            assert!(!paths.contains(&rustup), ".rustup present without verify: {paths:?}");
+        }
     }
 }

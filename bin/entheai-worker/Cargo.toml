@@ -8,6 +8,7 @@ rust-version.workspace = true
 entheai-config = { path = "../../crates/config" }
 entheai-orchestrator = { path = "../../crates/orchestrator" }
 entheai-federation = { path = "../../crates/federation" }
+entheai-sandbox = { path = "../../crates/sandbox" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "io-util", "fs", "time"] }
 anyhow.workspace = true
 clap.workspace = true

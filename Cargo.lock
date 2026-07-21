@@ -1643,6 +1643,7 @@ dependencies = [
  "entheai-config",
  "entheai-federation",
  "entheai-orchestrator",
+ "entheai-sandbox",
  "env_logger",
  "futures",
  "log",
