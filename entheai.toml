@@ -96,6 +96,18 @@ max_concurrent_coders = 4  # coders a --serve worker runs at once (they're model
 command = "/bin/sh"
 args = ["-c", "exec /usr/bin/python3 /Users/peter.lodri/.mcp-usage/bin/mcp_bridge.py --source entheai --server valyu --url $VALYU_MCP_URL"]
 
+# Smart Tree — AI-friendly filesystem + code intelligence (30+ tools). Binary `st`
+# from `cargo install smart-tree`; `--mcp` runs it as a stdio MCP server (on PATH).
+[mcp.smart-tree]
+command = "st"
+args = ["--mcp"]
+
+# rmcp-sensors — cross-platform environmental-awareness sensors exposed as MCP
+# tools (`cargo install rmcp-sensors`); the bare binary is a stdio MCP server.
+[mcp.rmcp-sensors]
+command = "rmcp-sensors"
+args = []
+
 [agents.explore]
 model = ["deepseek/deepseek-chat"] # local instead: ["osaurus/<your-local-model>"]
 
