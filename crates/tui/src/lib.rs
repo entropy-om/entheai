@@ -1214,13 +1214,22 @@ fn handle_radio_command(app: &mut App, radio: &Radio, text: &str) {
     });
     let mut parts = text.split_whitespace().skip(1); // skip "/radio"
     let feedback = match (parts.next(), parts.next()) {
-        (Some("add"), Some(url)) => {
-            radio.send(RadioCommand::Add(url.to_string()));
-            format!("♪ fetching {url}")
+        (Some("add"), Some(url_or_path)) => {
+            radio.send(RadioCommand::Add(url_or_path.to_string()));
+            format!("♪ fetching/loading {url_or_path}")
         }
-        (Some(url), None) if url.starts_with("http") => {
-            radio.send(RadioCommand::Add(url.to_string()));
-            format!("♪ fetching {url}")
+        (Some("seed"), pattern) => {
+            let pat = pattern.unwrap_or("~/Downloads/Mesa*");
+            radio.send(RadioCommand::Seed(pat.to_string()));
+            format!("♪ loading procedural ambient seeds from {pat}")
+        }
+        (Some("procedural"), _) => {
+            radio.send(RadioCommand::Seed("~/Downloads/Mesa*".to_string()));
+            "♪ procedural ambient radio activated (~/Downloads/Mesa* seed)".to_string()
+        }
+        (Some(arg), None) if arg.starts_with("http") || arg.contains('/') || arg.contains('*') => {
+            radio.send(RadioCommand::Add(arg.to_string()));
+            format!("♪ fetching/loading {arg}")
         }
         (Some("pause"), None) | (Some("resume"), None) => {
             radio.send(RadioCommand::TogglePause);
@@ -1234,7 +1243,7 @@ fn handle_radio_command(app: &mut App, radio: &Radio, text: &str) {
             radio.send(RadioCommand::Stop);
             "♪ stopping".to_string()
         }
-        _ => "usage: /radio <url> | add <url> | pause | next | stop  (Ctrl-P pause, Ctrl-N next)"
+        _ => "usage: /radio <url_or_file> | seed [pattern] | procedural | pause | next | stop"
             .to_string(),
     };
     app.messages.push(Msg {
