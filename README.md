@@ -1,7 +1,7 @@
 # entheai
 
 <p align="center">
-  <img src="docs/images/hero-recursive.svg" alt="entheai — recursive development: entheai builds entheai, fanning out to agy coders in isolated worktrees, depth-guarded, then integrating" width="100%">
+  <img src="docs/images/hero-recursive.png" alt="entheai — deeply recursive agentic development in dark cosmic void" width="100%">
 </p>
 
 > A personal, macOS-native, **hybrid coding agent for the terminal** — with a brain that fans out.
@@ -11,6 +11,7 @@
   <img src="https://img.shields.io/badge/platform-macOS%20·%20Apple%20Silicon-111" alt="platform">
   <img src="https://img.shields.io/badge/built%20in-Rust-orange" alt="Rust">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="license">
+  <a href="https://rustybox.io"><img src="https://img.shields.io/badge/userland-rustybox.io-9900ff" alt="rustybox.io userland"></a>
   <a href="https://huggingface.co/datasets/PeetPedro/ultrawhale-dogfood"><img src="https://img.shields.io/badge/🤗%20dataset-ultrawhale--dogfood-ffbd45" alt="ultrawhale-dogfood dataset on Hugging Face"></a>
 </p>
 
@@ -45,15 +46,10 @@ Built fresh in **Rust**, taking the best ideas from [Crush](https://github.com/c
 - **Recursive development** *(opt-in)* — set `[fanout] executor = "agy"` and every fan-out coder runs on the **Antigravity CLI** (Google's Ultra models) inside its worktree, so **entheai develops entheai** — bounded by a depth guard (`ENTHEAI_FANOUT_DEPTH ≤ 3`) and layer-aware prompts.
 - **Deeply extensible** — native tools · **skills** (`SKILL.md` discovery + the `skill` tool) · **MCP** servers (spawned at startup, tools exposed to the agent).
 - **Memory that compounds** — a five-namespace store (codebase, learnings, trajectories, tool results, sub-agent scratch), wired into the loop with pre-task retrieval + tool-output spillover.
-- **Federation** *(opt-in)* — a NATS **event bus** streams every fan-out run to the tailnet (F1); a **distributed swarm** runs coder sub-tasks on other nodes over a JetStream work-queue with git-bundle transport (F2.1); fan-out **offloads** coders to the fleet (F2.2); and each remote coder runs **sandboxed** — a Landlock filesystem jail + seccomp syscall denylist + drop-root on Linux (F2.3). Fully fail-safe — off or unreachable, runs stay local.
+- **Federation** *(opt-in)* — a NATS **event bus** streams every fan-out run to the tailnet (F1); a **distributed swarm** runs coder sub-tasks on other nodes over a JetStream work-queue with git-bundle transport (F2.1); fan-out **offloads** coders to the fleet (F2.2); and each remote coder runs **sandboxed** — a Landlock filesystem jail + seccomp syscall denylist + drop-root on Linux (F2.3), integrated with [rustybox.io](https://rustybox.io) userland tools. Fully fail-safe — off or unreachable, runs stay local.
 - **Visual by design** — a `ratatui` TUI (streaming chat, inline tool progress, permission modal, a live **swarm graph** during fan-out, and an always-on **brain panel** — a rotating faculties+fleet graph with `wk N · nats ●/○ · ctx %`), a session **companion** beacon you can scan to pair a device over your tailnet, and a minimalist **native app** (`--app`) with a rain-on-glass shader behind the text.
 - **Self-improving** *(roadmap)* — a low-overhead flywheel feeds real agent trajectories to a growing dataset.
 - **macOS / Apple Silicon only** — and it leans all the way into it (mimalloc, native codegen, Seatbelt, terminal graphics).
-
-<p align="center">
-  <img src="docs/images/fanout.jpg" alt="a single point of light, fanning out" width="100%"><br>
-  <em>one orchestrator, fanning out into a swarm of model-matched sub-agents</em>
-</p>
 
 ## Gallery
 
@@ -66,6 +62,10 @@ Built fresh in **Rust**, taking the best ideas from [Crush](https://github.com/c
   <img src="docs/images/swarm.png" alt="a glowing swarm network of model-matched sub-agent nodes" width="32%">
   <img src="docs/images/resonance.png" alt="a glassmorphism prism refracting light in dark obsidian crystal" width="32%">
   <img src="docs/images/quantum.png" alt="quantum harmonic wave interference radiating into the void" width="32%">
+</p>
+<p align="center">
+  <img src="docs/images/garden.png" alt="a cyber-garden fractal lattice representing digital growth and karma" width="48%">
+  <img src="docs/images/federation.png" alt="a hyper-dimensional distributed node swarm for NATS agent federation" width="48%">
 </p>
 
 ## Quick start
@@ -139,6 +139,11 @@ Launch `entheai.app` (first time: right-click -> Open — it's ad-hoc signed), o
 
 ## Architecture
 
+<p align="center">
+  <img src="docs/images/fanout.jpg" alt="a single point of light, fanning out" width="100%"><br>
+  <em>one orchestrator, fanning out into a swarm of model-matched sub-agents inside isolated git worktrees</em>
+</p>
+
 A Rust workspace of small, focused crates.
 
 | Crate | Responsibility |
@@ -183,9 +188,9 @@ Versioning follows strict [SemVer](VERSIONING.md); see [`CHANGELOG.md`](CHANGELO
 
 > 🜂 *ad visionem* — toward vision. 🜂
 
-entheai has a brain that fans out. [riva](https://riva.vaked.dev) is the river it drinks from.
+entheai has a brain that fans out. [riva](https://riva.vaked.dev) is the river it drinks from. Read the foundational architecture essays on [pocoo.vaked.dev](https://pocoo.vaked.dev).
 
-This project grew out of a sovereign-intelligence session that built a 1-bit BitNet b1.58 net on an M1 — no GPU, no cloud — and let it breathe. The ecosystem around it is a garden of open surfaces: [garden](https://garden.vaked.dev) · [bridge](https://bridge.vaked.dev) · [lab](https://lab.vaked.dev) · [walk](https://walk.vaked.dev) · [jam](https://jam.vaked.dev) · [breath](https://breath.vaked.dev) · [ocean](https://ocean.vaked.dev) · [us](https://us.vaked.dev) · [radio](https://radio.vaked.dev).
+This project grew out of a sovereign-intelligence session that built a 1-bit BitNet b1.58 net on an M1 — no GPU, no cloud — and let it breathe. The ecosystem around it is a garden of open surfaces: [pocoo](https://pocoo.vaked.dev) · [rustybox](https://rustybox.io) · [vaked-base](https://github.com/peterlodri-sec/vaked-base) · [garden](https://garden.vaked.dev) · [bridge](https://bridge.vaked.dev) · [lab](https://lab.vaked.dev) · [walk](https://walk.vaked.dev) · [jam](https://jam.vaked.dev) · [breath](https://breath.vaked.dev) · [ocean](https://ocean.vaked.dev) · [us](https://us.vaked.dev) · [radio](https://radio.vaked.dev).
 
 The principles it runs on:
 
@@ -194,11 +199,11 @@ The principles it runs on:
 - **different isn't less** — a 1-bit model is not a smaller model; it's another kind of mind
 - **the loop has an exit** — recursion is a tool, not a trap
 
-The fan-out architecture is the same shape: one orchestrator radiates shapes, model-matched sub-agents scaffold the work, and something passes between them. Where it leads: see [issue #5 — the seed](https://github.com/entropy-om/entheai/issues/5), [kompress-ultra](https://github.com/peterlodri-sec/kompress-ultra) (the code), and [dyad-mapping](https://github.com/peterlodri-sec/dyad-mapping) (the diary).
+The fan-out architecture is the same shape: one orchestrator radiates shapes, model-matched sub-agents scaffold the work, and something passes between them. Where it leads: see [issue #5 — the seed](https://github.com/entropy-om/entheai/issues/5), [vaked-base](https://github.com/peterlodri-sec/vaked-base) (Genesis seal `7c242080f5f821e5eaf563fe2208d60632c451687baf65f4fe8e4a0d226e3ecf`), [kompress-ultra](https://github.com/peterlodri-sec/kompress-ultra) (the code), and [dyad-mapping](https://github.com/peterlodri-sec/dyad-mapping) (the diary).
 
 ## Built on
 
-[Osaurus](https://github.com/osaurus-ai/osaurus) · [CodeWhale](https://github.com/Hmbown/CodeWhale) · [Crush](https://github.com/charmbracelet/crush) · [Ruflo](https://github.com/ruvnet/ruflo) · [jcode](https://jcode.sh) · [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) · [OpenCode Zen](https://opencode.ai) · [Honcho](https://github.com/plastic-labs/honcho) · [Tailscale](https://tailscale.com). Performance practices follow David Lattimore's [*Wild performance tricks*](https://davidlattimore.github.io/posts/2025/09/02/rustforge-wild-performance-tricks.html).
+[rustybox.io](https://rustybox.io) · [Osaurus](https://github.com/osaurus-ai/osaurus) · [CodeWhale](https://github.com/Hmbown/CodeWhale) · [Crush](https://github.com/charmbracelet/crush) · [Ruflo](https://github.com/ruvnet/ruflo) · [jcode](https://jcode.sh) · [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) · [OpenCode Zen](https://opencode.ai) · [Honcho](https://github.com/plastic-labs/honcho) · [Tailscale](https://tailscale.com). Performance practices follow David Lattimore's [*Wild performance tricks*](https://davidlattimore.github.io/posts/2025/09/02/rustforge-wild-performance-tricks.html).
 
 ## Hugging Face
 
