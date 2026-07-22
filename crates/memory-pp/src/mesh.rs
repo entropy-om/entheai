@@ -181,6 +181,134 @@ impl MeshSearch for SidecarMesh {
     }
 }
 
+// ---- Slice 2c: the native in-process mesh (no subprocess) -------------------
+
+/// Feature-vector width: `[query byte-histogram(256) | text byte-histogram(256)]`.
+/// A `.ugm` reranker must consume exactly this many inputs.
+pub const FEATURE_DIM: usize = 512;
+
+/// Normalized byte histogram of `s` (each bin = count(byte)/len, 0 for empty).
+fn byte_histogram(s: &str) -> Vec<f32> {
+    let mut h = vec![0f32; 256];
+    let bytes = s.as_bytes();
+    if bytes.is_empty() {
+        return h;
+    }
+    for &b in bytes {
+        h[b as usize] += 1.0;
+    }
+    let inv = 1.0 / bytes.len() as f32;
+    for v in &mut h {
+        *v *= inv;
+    }
+    h
+}
+
+/// `[query_hist | text_hist]` — the `FEATURE_DIM`-wide input to a `.ugm` reranker.
+fn featurize(query: &str, text: &str) -> Vec<f32> {
+    let mut f = byte_histogram(query);
+    f.extend(byte_histogram(text));
+    debug_assert_eq!(f.len(), FEATURE_DIM);
+    f
+}
+
+/// Distinct lowercased-alphanumeric query terms.
+fn query_terms(query: &str) -> std::collections::HashSet<String> {
+    query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// Deterministic lexical relevance: count of DISTINCT query terms (lowercased
+/// alphanumeric runs) that appear in `text` (lowercased). The native fallback when
+/// no `.ugm` model is configured — mirrors the sidecar's reference scorer, in Rust.
+fn lexical_score(query: &str, text: &str) -> f32 {
+    let text_lc = text.to_lowercase();
+    query_terms(query).iter().filter(|t| text_lc.contains(t.as_str())).count() as f32
+}
+
+/// The native in-process mesh: reranks candidate spans without any subprocess.
+/// Scores each candidate with a configured `.ugm` reranker (via `entheai-ultragraph`)
+/// when present, else the lexical fallback. This is the default backend — it drops
+/// the Python sidecar while keeping `SidecarMesh` available via config.
+pub struct NativeMesh {
+    raw: RawStore,
+    model: Option<entheai_ultragraph::UgmFile>,
+    preview_bytes: usize,
+    top_k: usize,
+}
+
+impl NativeMesh {
+    pub fn new(
+        raw: RawStore,
+        model: Option<entheai_ultragraph::UgmFile>,
+        preview_bytes: usize,
+        top_k: usize,
+    ) -> Self {
+        NativeMesh { raw, model, preview_bytes, top_k }
+    }
+
+    /// Load a `.ugm` reranker, accepting it only if every source tree (one with no
+    /// incoming ultra-edge) takes exactly `FEATURE_DIM` inputs — otherwise the model
+    /// can't consume our feature vector, so we reject it (→ lexical fallback) rather
+    /// than risk a shape mismatch at run time.
+    pub fn load_model(path: &std::path::Path) -> Option<entheai_ultragraph::UgmFile> {
+        let m = entheai_ultragraph::UgmFile::load(path).ok()?;
+        let has_src: std::collections::HashSet<u32> =
+            m.ultra_edges.iter().map(|e| e.dst_idx).collect();
+        let sources_ok = m
+            .trees
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !has_src.contains(&(*i as u32)))
+            .all(|(_, t)| t.in_dim as usize == FEATURE_DIM);
+        if sources_ok {
+            Some(m)
+        } else {
+            None
+        }
+    }
+
+    fn score(&self, query: &str, text: &str) -> f32 {
+        match &self.model {
+            Some(m) => {
+                let feat = featurize(query, text);
+                m.run(&[feat]).first().and_then(|row| row.first().copied()).unwrap_or(0.0)
+            }
+            None => lexical_score(query, text),
+        }
+    }
+}
+
+#[async_trait]
+impl MeshSearch for NativeMesh {
+    async fn rerank(
+        &self,
+        query: &str,
+        spans: &[RawSpan],
+        _deadline: Duration,
+    ) -> Result<Vec<RawSpan>, PpError> {
+        let mut scored: Vec<(usize, f32, RawSpan)> = Vec::with_capacity(spans.len());
+        for (i, s) in spans.iter().enumerate() {
+            if let Some(rc) = self.raw.get(&s.id).await? {
+                let text = cap(&rc.bytes, self.preview_bytes);
+                scored.push((i, self.score(query, &text), s.clone()));
+            }
+        }
+        if scored.is_empty() {
+            return Err(PpError::Mesh("no candidate text to rank".into()));
+        }
+        // Highest score first; stable on ties (original recall order via the index).
+        scored.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0))
+        });
+        scored.truncate(self.top_k);
+        Ok(scored.into_iter().map(|(_, _, s)| s).collect())
+    }
+}
+
 /// Spawn the sidecar, write the request to its stdin, close stdin (EOF → the
 /// stateless sidecar responds and exits), and read its stdout (capped). Stderr is
 /// discarded. `kill_on_drop` guarantees a timed-out child is reaped when the
@@ -324,5 +452,81 @@ mod tests {
         assert!(!out.is_empty(), "sidecar returned a ranking");
         // The reference scorer ranks the auth span first for an auth query.
         assert_eq!(out[0].id, a, "auth-relevant span ranked first");
+    }
+
+    // ---- Slice 2c: native in-process mesh ----
+
+    #[test]
+    fn byte_histogram_is_normalized() {
+        let h = byte_histogram("aab");
+        assert_eq!(h.len(), 256);
+        assert!((h[b'a' as usize] - 2.0 / 3.0).abs() < 1e-6);
+        assert!((h[b'b' as usize] - 1.0 / 3.0).abs() < 1e-6);
+        let sum: f32 = h.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6, "histogram sums to 1");
+        assert_eq!(byte_histogram("").iter().sum::<f32>(), 0.0, "empty → all zero");
+    }
+
+    #[test]
+    fn featurize_concats_query_then_text() {
+        let f = featurize("a", "b");
+        assert_eq!(f.len(), FEATURE_DIM);
+        assert!((f[b'a' as usize] - 1.0).abs() < 1e-6, "query half");
+        assert!((f[256 + b'b' as usize] - 1.0).abs() < 1e-6, "text half");
+    }
+
+    #[test]
+    fn lexical_score_counts_distinct_query_terms() {
+        assert_eq!(lexical_score("auth token", "the auth login and token flow"), 2.0);
+        assert_eq!(lexical_score("AUTH", "auth auth auth"), 1.0, "distinct, case-insensitive");
+        assert_eq!(lexical_score("disk", "the auth login flow"), 0.0);
+    }
+
+    #[tokio::test]
+    async fn native_lexical_ranks_relevant_span_first() {
+        use crate::raw_store::{RawKind, RawStore};
+        let raw = RawStore::open_memory().unwrap();
+        let disk = raw.ingest(RawKind::ToolOutput, "unrelated disk usage report", None).await.unwrap();
+        let auth = raw.ingest(RawKind::Transcript, "the auth login flow and tokens", None).await.unwrap();
+        let mesh = NativeMesh::new(raw, None, 8192, 8);
+        // deliberately present the auth span second
+        let out = mesh
+            .rerank("auth tokens", &[span(&disk), span(&auth)], Duration::from_millis(50))
+            .await
+            .unwrap();
+        assert_eq!(out[0].id, auth, "native lexical ranks the auth span first");
+    }
+
+    #[tokio::test]
+    async fn native_uses_ugm_model_to_score() {
+        use crate::raw_store::{RawKind, RawStore};
+        use entheai_ultragraph::ugm::{ACT_NONE, KIND_DENSE};
+        use entheai_ultragraph::{UgmFile, UgmTree};
+        // A FEATURE_DIM->1 dense reranker whose score = the text histogram bin for
+        // byte 'z' (weight +1 at index 256 + 'z'). So more 'z's in the raw span →
+        // higher score. Proves featurize→UGM run drives the ranking.
+        let mut wq = vec![0i8; FEATURE_DIM];
+        wq[256 + b'z' as usize] = 1;
+        let tree = UgmTree {
+            kind: KIND_DENSE,
+            act: ACT_NONE,
+            in_dim: FEATURE_DIM as u32,
+            out_dim: 1,
+            name: "rerank".into(),
+            w_scale: 1.0,
+            wq: Some(wq),
+            bias: Some(vec![0.0]),
+        };
+        let model = UgmFile { trees: vec![tree], ultra_edges: vec![] };
+
+        let raw = RawStore::open_memory().unwrap();
+        let plain = raw.ingest(RawKind::Transcript, "aaaa bbbb", None).await.unwrap();
+        let zzz = raw.ingest(RawKind::Transcript, "zzz zebra", None).await.unwrap();
+        let mesh = NativeMesh::new(raw, Some(model), 8192, 8);
+        let out = mesh
+            .rerank("anything", &[span(&plain), span(&zzz)], Duration::from_millis(50))
+            .await
+            .unwrap();
+        assert_eq!(out[0].id, zzz, "the 'z'-heavy span scores higher under the model");
     }
 }

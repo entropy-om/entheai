@@ -241,6 +241,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_mesh_runs_pipeline_fully_in_process() {
+        // The default Slice-2c backend: recall → NATIVE rerank (no subprocess) →
+        // rehydrate raw → compress. Proves PP produces a real brief with zero
+        // external tools (native mesh + identity StubMarqant).
+        use crate::mesh::NativeMesh;
+        let raw = RawStore::open_memory().unwrap();
+        let mesh = NativeMesh::new(raw.clone(), None, 4096, 8);
+        let pp = PromptProcessor::new(
+            raw,
+            Box::new(mesh),
+            Box::new(StubMarqant),
+            Duration::from_millis(200),
+            16,
+            1 << 20,
+        );
+        pp.raw().ingest(RawKind::ToolOutput, "unrelated disk usage report", None).await.unwrap();
+        pp.raw().ingest(RawKind::Transcript, "the auth login and token flow", None).await.unwrap();
+        let brief = pp.retrieve("auth token").await.unwrap().expect("in-process brief");
+        assert!(brief.contains("auth login and token flow"), "native mesh surfaced the auth finding");
+    }
+
+    #[tokio::test]
     async fn ingest_tool_and_transcript_land_rows() {
         let pp = pp_with(Box::new(StubMesh));
         let ev = entheai_memory::ToolEvidence {

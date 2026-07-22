@@ -519,8 +519,8 @@ fn build_prompt_processor(
     cfg: &Config,
 ) -> anyhow::Result<Option<entheai_memory_pp::PromptProcessor>> {
     use entheai_memory_pp::{
-        Marqant, MeshSearch, PromptProcessor, RawStore, RetrievalMode, SidecarMesh, StubMarqant,
-        StubMesh, SubprocessMarqant,
+        Marqant, MeshSearch, NativeMesh, PromptProcessor, RawStore, RetrievalMode, SidecarMesh,
+        StubMarqant, StubMesh, SubprocessMarqant,
     };
 
     // Preview budget sent to the mesh per candidate, and how many ranked findings
@@ -540,11 +540,34 @@ fn build_prompt_processor(
     }
     let raw = RawStore::open(&path)?;
 
-    let mesh: Box<dyn MeshSearch> = if pc.sidecar_cmd.trim().is_empty() {
-        Box::new(StubMesh)
-    } else {
-        // Shares the raw store (cheap clone) so the sidecar can fetch candidate previews.
-        Box::new(SidecarMesh::new(raw.clone(), &pc.sidecar_cmd, PP_PREVIEW_BYTES, PP_MESH_TOP_K))
+    // Stage-2 mesh backend. "native" (default) reranks in-process via
+    // entheai-ultragraph — no Python. "sidecar" uses the stdio-JSON-RPC serve.py;
+    // "stub" always falls back to top-K. All share the raw store (cheap clone).
+    let mesh: Box<dyn MeshSearch> = match pc.mesh_backend.trim() {
+        "stub" => Box::new(StubMesh),
+        "sidecar" if !pc.sidecar_cmd.trim().is_empty() => {
+            Box::new(SidecarMesh::new(raw.clone(), &pc.sidecar_cmd, PP_PREVIEW_BYTES, PP_MESH_TOP_K))
+        }
+        "sidecar" => Box::new(StubMesh), // requested but no sidecar_cmd → stub
+        other => {
+            if !other.is_empty() && other != "native" {
+                log::warn!("unknown pp mesh_backend {other:?}; using native");
+            }
+            // Optional .ugm reranker; rejected/absent → the lexical scorer.
+            let model = if pc.native_model.trim().is_empty() {
+                None
+            } else {
+                let m = NativeMesh::load_model(&expand_home(&pc.native_model));
+                if m.is_none() {
+                    log::warn!(
+                        "pp native_model {:?} missing or wrong shape; using lexical scorer",
+                        pc.native_model
+                    );
+                }
+                m
+            };
+            Box::new(NativeMesh::new(raw.clone(), model, PP_PREVIEW_BYTES, PP_MESH_TOP_K))
+        }
     };
     let marqant: Box<dyn Marqant> = if pc.marqant_cmd.trim().is_empty() {
         Box::new(StubMarqant)

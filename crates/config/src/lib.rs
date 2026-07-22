@@ -606,6 +606,8 @@ mod tests {
         assert_eq!(pp.recall_k, 32);
         assert_eq!(pp.marqant_cmd, "mq", "absent sub-fields take their defaults");
         assert_eq!(pp.raw_retention_days, 90);
+        assert_eq!(pp.mesh_backend, "native", "mesh defaults to the in-process native backend");
+        assert_eq!(pp.native_model, "", "no .ugm reranker by default → lexical scorer");
     }
 
     #[test]
@@ -891,6 +893,14 @@ pub struct PromptProcessingConfig {
     /// tool/transcript payloads so a huge output can't balloon raw.db in one run.
     #[serde(default = "default_pp_max_ingest_bytes")]
     pub max_ingest_bytes: usize,
+    /// Stage-2 mesh backend: "native" (in-process, default — no Python), "sidecar"
+    /// (the stdio-JSON-RPC `sidecar_cmd`), or "stub" (always fall back to top-K).
+    #[serde(default = "default_pp_mesh_backend")]
+    pub mesh_backend: String,
+    /// Optional `.ugm` reranker for the native mesh (a FEATURE_DIM-input dense model);
+    /// empty → the deterministic lexical scorer.
+    #[serde(default)]
+    pub native_model: String,
 }
 
 impl Default for PromptProcessingConfig {
@@ -904,8 +914,14 @@ impl Default for PromptProcessingConfig {
             recall_k: default_pp_recall_k(),
             raw_path: default_pp_raw_path(),
             max_ingest_bytes: default_pp_max_ingest_bytes(),
+            mesh_backend: default_pp_mesh_backend(),
+            native_model: String::new(),
         }
     }
+}
+
+fn default_pp_mesh_backend() -> String {
+    "native".into()
 }
 
 fn default_pp_sidecar_cmd() -> String {
