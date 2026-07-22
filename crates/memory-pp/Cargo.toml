@@ -8,6 +8,7 @@ rust-version.workspace = true
 entheai-memory = { path = "../memory" }
 entheai-providers = { path = "../providers" }
 entheai-ultragraph = { path = "../ultragraph" }
+kompress-core = { path = "../kompress-core" }
 tokio = { workspace = true, features = ["rt", "time", "process", "io-util", "fs"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

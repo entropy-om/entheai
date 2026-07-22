@@ -112,10 +112,63 @@ async fn read_capped(path: &std::path::Path, max: u64) -> Result<Vec<u8>, PpErro
     Ok(buf)
 }
 
+/// Native, in-process compressor backed by `kompress-core`'s pipeline
+/// (composer → pruner → rewriter → circulator, λ=3.0 asymmetric-loss scoring).
+/// No subprocess, no external `mq` binary — an alternative to `SubprocessMarqant`
+/// for environments where shelling out isn't desired.
+pub struct KompressMarqant {
+    pipeline: kompress_core::Pipeline,
+}
+
+impl KompressMarqant {
+    pub fn new() -> Self {
+        Self { pipeline: kompress_core::Pipeline::new() }
+    }
+}
+
+impl Default for KompressMarqant {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl Marqant for KompressMarqant {
+    async fn compress(&self, findings: &str, _deadline: Duration) -> Result<String, PpError> {
+        if findings.trim().is_empty() {
+            return Ok(String::new());
+        }
+        let inputs: Vec<String> =
+            findings.lines().filter(|l| !l.trim().is_empty()).map(str::to_string).collect();
+        let result = self
+            .pipeline
+            .run(inputs)
+            .map_err(|e| PpError::Marqant(format!("kompress-core pipeline failed: {e}")))?;
+        Ok(result.units.into_iter().map(|u| u.content).collect::<Vec<_>>().join("\n"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn kompress_marqant_reduces_filler_and_keeps_critical_tokens() {
+        let m = KompressMarqant::new();
+        let findings = "This is basically just a very simple finding about /usr/bin/cargo \
+                         and it is obviously really quite verbose for no reason at all.";
+        let brief = m.compress(findings, Duration::from_millis(500)).await.unwrap();
+        assert!(brief.contains("/usr/bin/cargo"), "critical file path must survive: {brief:?}");
+        assert!(brief.len() < findings.len(), "output should be shorter than input: {brief:?}");
+    }
+
+    #[tokio::test]
+    async fn kompress_marqant_empty_input_yields_empty_brief() {
+        let m = KompressMarqant::new();
+        let brief = m.compress("", Duration::from_millis(500)).await.unwrap();
+        assert!(brief.trim().is_empty());
+    }
 
     #[tokio::test]
     async fn stub_marqant_is_identity() {

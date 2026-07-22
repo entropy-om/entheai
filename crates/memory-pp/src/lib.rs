@@ -15,7 +15,7 @@ mod raw_store;
 
 pub use error::PpError;
 pub use frozen::{activate, FrozenNode, FrozenStore};
-pub use marqant::{Marqant, StubMarqant, SubprocessMarqant};
+pub use marqant::{KompressMarqant, Marqant, StubMarqant, SubprocessMarqant};
 pub use mesh::{IdentityMesh, MeshSearch, NativeMesh, SidecarMesh, SlowStubMesh, StubMesh, FEATURE_DIM};
 pub use processor::PromptProcessor;
 pub use raw_store::{RawContent, RawKind, RawSpan, RawStore};
