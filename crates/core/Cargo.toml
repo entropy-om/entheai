@@ -9,6 +9,7 @@ entheai-providers = { path = "../providers" }
 entheai-tools = { path = "../tools" }
 entheai-permission = { path = "../permission" }
 entheai-memory = { path = "../memory" }
+entheai-memory-pp = { path = "../memory-pp" }
 thiserror = { workspace = true }
 async-trait.workspace = true
 futures.workspace = true

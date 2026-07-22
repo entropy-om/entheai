@@ -270,6 +270,7 @@ async fn main() -> anyhow::Result<()> {
                         &mut prompter,
                         None,
                         runtime.as_ref(),
+                        None, // pp — wired in Task 8
                         scope,
                     )
                     .await?;

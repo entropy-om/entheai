@@ -155,9 +155,13 @@ impl<P: Provider> Agent<P> {
         prompter: &mut impl entheai_permission::Prompter,
         events: Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
         memory: Option<&entheai_memory::MemoryRuntime>,
+        pp: Option<&entheai_memory_pp::PromptProcessor>,
         scope: entheai_memory::MemoryScope,
     ) -> Result<String, CoreError> {
-        // Pre-task: inject memory context if enabled.
+        // Pre-task: inject retrieval context if enabled. `injected_ctx` is declared
+        // outside the guard so the transcript-ingest hook can exclude the brief we
+        // injected (avoiding a self-reinforcing recall loop across sessions).
+        let mut injected_ctx: Option<String> = None;
         if let Some(mem) = memory {
             // Insert the retrieved context immediately BEFORE the last user
             // message (the turn it was retrieved for). Using the user message's
@@ -166,8 +170,27 @@ impl<P: Provider> Agent<P> {
             // tool/assistant turn).
             if let Some(user_idx) = messages.iter().rposition(|m| m.role == "user") {
                 let user_msg = messages[user_idx].content.clone();
-                match mem.retrieve_before(&user_msg).await {
+                // Dispatch: prompt-processing when configured + present; else
+                // today's top-K. The fallback arm calls the UNCHANGED
+                // retrieve_before with the SAME query, so a fallback is
+                // byte-identical to today's behaviour.
+                //
+                // Correction #5 / Slice-1 note: PP's stubs always fall back here,
+                // and the processor logs the failing stage (→ stderr in oneshot,
+                // the only Slice-1 mode). A user-facing fallback notice via the
+                // `events` channel is deferred to Slice 2, where fallback is the
+                // exception rather than the rule — emitting one per prompt while
+                // the mesh is stubbed would be pure noise.
+                let retrieved: Result<Option<String>, entheai_memory::MemoryError> = match pp {
+                    Some(p) => match p.retrieve(&user_msg).await {
+                        Ok(Some(brief)) => Ok(Some(brief)),
+                        Ok(None) | Err(_) => mem.retrieve_before(&user_msg).await,
+                    },
+                    None => mem.retrieve_before(&user_msg).await,
+                };
+                match retrieved {
                     Ok(Some(ctx)) => {
+                        injected_ctx = Some(ctx.clone());
                         messages.insert(user_idx, ChatMessage::system(ctx));
                     }
                     Ok(None) => {}
@@ -198,6 +221,12 @@ impl<P: Provider> Agent<P> {
                         }
                     }
                 }
+                // Phase-1 transcript ingest (best-effort), cleaned of the brief we
+                // injected so memory's own context is never recalled into future briefs.
+                if let Some(p) = pp {
+                    let clean = transcript_for_ingest(&messages, injected_ctx.as_deref());
+                    p.ingest_transcript(&scope, &clean, &resp.content).await;
+                }
                 return Ok(resp.content);
             }
             messages.push(ChatMessage::assistant_tool_calls(
@@ -218,6 +247,10 @@ impl<P: Provider> Agent<P> {
                         result: dr.result.clone(),
                         allowed: dr.allowed,
                     };
+                    // Phase-1 raw ingest: unconditional, ahead of memory's spill gate.
+                    if let Some(p) = pp {
+                        p.ingest_tool(&scope, &ev).await;
+                    }
                     match mem.record_tool_result(&scope, &ev).await {
                         Ok(Some(pointer)) => {
                             messages.push(ChatMessage::tool_result(call.id, pointer));
@@ -316,12 +349,46 @@ fn truncate_preview(s: &str, max: usize) -> String {
     }
 }
 
+/// Build the transcript to raw-ingest, excluding the memory-context system
+/// message we injected before the user turn (identified by exact content match).
+/// Without this, `ingest_transcript` would re-ingest memory's own injected brief,
+/// which would then be recalled and compressed into future briefs — a
+/// self-reinforcing loop that degrades retrieval quality across sessions.
+fn transcript_for_ingest(
+    messages: &[entheai_providers::ChatMessage],
+    injected_ctx: Option<&str>,
+) -> Vec<entheai_providers::ChatMessage> {
+    messages
+        .iter()
+        .filter(|m| !(m.role == "system" && injected_ctx == Some(m.content.as_str())))
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use async_trait::async_trait;
     use entheai_providers::{ChatMessage, Provider, StreamEvent};
     use futures::stream::{self, BoxStream};
+
+    #[test]
+    fn transcript_for_ingest_drops_only_injected_ctx() {
+        let injected = "Memory context:\n\n[codebase score=0.90 key=k]\nbody\n";
+        let messages = vec![
+            ChatMessage::system("you are helpful"),    // real system prompt — kept
+            ChatMessage::system(injected.to_string()), // memory's injected brief — dropped
+            ChatMessage::user("do the thing"),
+        ];
+        let clean = transcript_for_ingest(&messages, Some(injected));
+        assert_eq!(clean.len(), 2);
+        assert!(clean.iter().all(|m| m.content != injected), "injected ctx filtered out");
+        assert!(clean.iter().any(|m| m.content == "you are helpful"), "real system prompt kept");
+
+        // No injection this turn → nothing dropped.
+        let clean2 = transcript_for_ingest(&messages, None);
+        assert_eq!(clean2.len(), 3);
+    }
 
     struct MockProvider {
         tokens: Vec<&'static str>,
