@@ -537,8 +537,8 @@ fn build_prompt_processor(
     cfg: &Config,
 ) -> anyhow::Result<Option<entheai_memory_pp::PromptProcessor>> {
     use entheai_memory_pp::{
-        Marqant, MeshSearch, NativeMesh, PromptProcessor, RawStore, RetrievalMode, SidecarMesh,
-        StubMarqant, StubMesh, SubprocessMarqant,
+        KompressMarqant, Marqant, MeshSearch, NativeMesh, PromptProcessor, RawStore,
+        RetrievalMode, SidecarMesh, StubMarqant, StubMesh, SubprocessMarqant,
     };
 
     // Preview budget sent to the mesh per candidate, and how many ranked findings
@@ -589,6 +589,7 @@ fn build_prompt_processor(
     };
     let marqant: Box<dyn Marqant> = match pc.marqant_backend.trim() {
         "stub" => Box::new(StubMarqant),
+        "kompress" => Box::new(KompressMarqant::new()),
         "subprocess" if pc.marqant_cmd.trim().is_empty() => {
             log::warn!("pp marqant_backend is \"subprocess\" but marqant_cmd is empty; using stub");
             Box::new(StubMarqant)

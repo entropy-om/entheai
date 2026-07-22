@@ -927,7 +927,8 @@ pub struct PromptProcessingConfig {
     #[serde(default)]
     pub native_model: String,
     /// Stage-3 marqant backend: "subprocess" (default — spawn `marqant_cmd`),
-    /// or "stub" (identity passthrough, always falls back to top-K).
+    /// "kompress" (in-process kompress-core pipeline, no subprocess), or "stub"
+    /// (identity passthrough, always falls back to top-K).
     #[serde(default = "default_pp_marqant_backend")]
     pub marqant_backend: String,
 }
