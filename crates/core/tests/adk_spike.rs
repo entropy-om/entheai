@@ -44,7 +44,7 @@ async fn spike_llm_agent_runner_session_roundtrip() {
         .mount(&server)
         .await;
 
-    let config = OpenAIConfig::compatible("no-key", &server.uri(), "spike-model");
+    let config = OpenAIConfig::compatible("no-key", server.uri(), "spike-model");
     let model = Arc::new(OpenAIClient::new(config).expect("client builds"));
 
     let tool: Arc<dyn Tool> = Arc::new(
