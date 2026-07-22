@@ -198,13 +198,21 @@ mod tests {
 
     #[tokio::test]
     async fn connect_returns_none_when_disabled() {
-        let opts = BusOptions { enabled: false, url: Some("nats://127.0.0.1:4222".into()), token: None };
+        let opts = BusOptions {
+            enabled: false,
+            url: Some("nats://127.0.0.1:4222".into()),
+            token: None,
+        };
         assert!(Bus::connect(&opts).await.is_none());
     }
 
     #[tokio::test]
     async fn connect_returns_none_when_url_missing() {
-        let opts = BusOptions { enabled: true, url: None, token: None };
+        let opts = BusOptions {
+            enabled: true,
+            url: None,
+            token: None,
+        };
         assert!(Bus::connect(&opts).await.is_none());
     }
 
@@ -231,7 +239,9 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<FanoutEvent>();
         let (returned, session) = tee(None, "sess".into(), Some(tx));
         let returned = returned.expect("downstream passed through");
-        returned.send(FanoutEvent::Integrating { branches: 1 }).unwrap();
+        returned
+            .send(FanoutEvent::Integrating { branches: 1 })
+            .unwrap();
         match rx.recv().await {
             Some(FanoutEvent::Integrating { branches }) => assert_eq!(branches, 1),
             other => panic!("expected Integrating, got {other:?}"),
@@ -248,8 +258,14 @@ mod tests {
     #[test]
     fn redact_url_strips_userinfo_only() {
         assert_eq!(redact_url("nats://host:4222"), "nats://host:4222");
-        assert_eq!(redact_url("nats://user:pass@host:4222"), "nats://***@host:4222");
-        assert_eq!(redact_url("nats://tok@host:4222/x"), "nats://***@host:4222/x");
+        assert_eq!(
+            redact_url("nats://user:pass@host:4222"),
+            "nats://***@host:4222"
+        );
+        assert_eq!(
+            redact_url("nats://tok@host:4222/x"),
+            "nats://***@host:4222/x"
+        );
         // An `@` in the path (after the authority) is not userinfo — leave it.
         assert_eq!(redact_url("nats://host:4222/a@b"), "nats://host:4222/a@b");
         assert_eq!(redact_url("not-a-url"), "not-a-url");

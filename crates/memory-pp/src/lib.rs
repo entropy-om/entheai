@@ -16,7 +16,9 @@ mod raw_store;
 pub use error::PpError;
 pub use frozen::{activate, FrozenNode, FrozenStore};
 pub use marqant::{KompressMarqant, Marqant, StubMarqant, SubprocessMarqant};
-pub use mesh::{IdentityMesh, MeshSearch, NativeMesh, SidecarMesh, SlowStubMesh, StubMesh, FEATURE_DIM};
+pub use mesh::{
+    IdentityMesh, MeshSearch, NativeMesh, SidecarMesh, SlowStubMesh, StubMesh, FEATURE_DIM,
+};
 pub use processor::PromptProcessor;
 pub use raw_store::{RawContent, RawKind, RawSpan, RawStore};
 
@@ -53,7 +55,10 @@ mod tests {
         assert_eq!(RetrievalMode::default(), RetrievalMode::TopK);
         assert_eq!(RetrievalMode::parse("topk"), RetrievalMode::TopK);
         assert_eq!(RetrievalMode::parse(""), RetrievalMode::TopK);
-        assert_eq!(RetrievalMode::parse("prompt-processing"), RetrievalMode::PromptProcessing);
+        assert_eq!(
+            RetrievalMode::parse("prompt-processing"),
+            RetrievalMode::PromptProcessing
+        );
         assert_eq!(RetrievalMode::parse("bogus"), RetrievalMode::TopK);
     }
 }

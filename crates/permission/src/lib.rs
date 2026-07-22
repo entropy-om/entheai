@@ -287,7 +287,11 @@ mod tests {
     fn mode_parse_is_fail_safe() {
         assert_eq!(Mode::parse("plan"), Mode::Plan);
         assert_eq!(Mode::parse("YOLO"), Mode::Yolo);
-        assert_eq!(Mode::parse("bogus"), Mode::Ask, "unknown → ask (safe default)");
+        assert_eq!(
+            Mode::parse("bogus"),
+            Mode::Ask,
+            "unknown → ask (safe default)"
+        );
     }
 
     #[test]
@@ -298,7 +302,7 @@ mod tests {
             (Mode::Plan, [Allow, Deny, Deny, Deny, Deny]),
             (Mode::Auto, [Allow, Allow, Ask, Ask, Ask]),
             (Mode::Yolo, [Allow, Allow, Allow, Allow, Allow]),
-            (Mode::Ask,  [Allow, Ask, Ask, Ask, Ask]),
+            (Mode::Ask, [Allow, Ask, Ask, Ask, Ask]),
         ];
         let tiers = [Read, Write, Exec, Network, Spawn];
         for (mode, row) in cases {

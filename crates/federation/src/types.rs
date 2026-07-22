@@ -60,14 +60,29 @@ mod tests {
 
     #[test]
     fn work_item_json_round_trips() {
-        let w = WorkItem { session: "s".into(), index: 1, role: "coder".into(), task: "t".into(), base_bundle_key: base_key("s", 1), base_sha: "deadbeef".into() };
+        let w = WorkItem {
+            session: "s".into(),
+            index: 1,
+            role: "coder".into(),
+            task: "t".into(),
+            base_bundle_key: base_key("s", 1),
+            base_sha: "deadbeef".into(),
+        };
         let j = serde_json::to_vec(&w).unwrap();
         assert_eq!(serde_json::from_slice::<WorkItem>(&j).unwrap(), w);
     }
 
     #[test]
     fn work_result_json_round_trips() {
-        let r = WorkResult { session: "s".into(), index: 1, status: "committed".into(), committed: true, result_bundle_key: result_key("s", 1), log: "ok".into(), base: "hit".into() };
+        let r = WorkResult {
+            session: "s".into(),
+            index: 1,
+            status: "committed".into(),
+            committed: true,
+            result_bundle_key: result_key("s", 1),
+            log: "ok".into(),
+            base: "hit".into(),
+        };
         let j = serde_json::to_vec(&r).unwrap();
         assert_eq!(serde_json::from_slice::<WorkResult>(&j).unwrap(), r);
     }

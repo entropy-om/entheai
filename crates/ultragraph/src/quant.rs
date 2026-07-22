@@ -39,10 +39,7 @@ pub fn quantize_act_int8(x: &[f32]) -> (Vec<i8>, f32) {
     if x.is_empty() {
         return (Vec::new(), 0.0);
     }
-    let max_abs = x
-        .iter()
-        .map(|v| v.abs())
-        .fold(0.0f32, f32::max);
+    let max_abs = x.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
     let mut m = max_abs;
     if !m.is_finite() {
         m = 0.0;

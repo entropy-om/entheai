@@ -35,7 +35,10 @@ impl AgyExecutor {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        Arc::new(Self { model: model.into(), depth })
+        Arc::new(Self {
+            model: model.into(),
+            depth,
+        })
     }
 }
 
@@ -135,7 +138,10 @@ impl crate::CoderExecutor for AgyExecutor {
             );
         let out = cmd.output().await.ok()?;
         if !out.status.success() {
-            log::warn!("agy coder (layer {}, {role}) failed → local fallback", self.depth);
+            log::warn!(
+                "agy coder (layer {}, {role}) failed → local fallback",
+                self.depth
+            );
             return None;
         }
         let log = String::from_utf8_lossy(&out.stdout).to_string();
@@ -176,6 +182,9 @@ mod tests {
 
     #[test]
     fn max_depth_is_a_sane_cap() {
-        assert!((1..=5).contains(&MAX_DEPTH), "recursion cap must be bounded + small");
+        assert!(
+            (1..=5).contains(&MAX_DEPTH),
+            "recursion cap must be bounded + small"
+        );
     }
 }

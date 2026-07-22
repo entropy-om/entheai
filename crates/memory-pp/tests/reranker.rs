@@ -23,20 +23,40 @@ async fn trained_ugm_reranker_ranks_relevant_first() {
 
     let raw = RawStore::open_memory().unwrap();
     let irrelevant = raw
-        .ingest(RawKind::ToolOutput, "disk usage report: 42% full on /dev/sda1", None)
+        .ingest(
+            RawKind::ToolOutput,
+            "disk usage report: 42% full on /dev/sda1",
+            None,
+        )
         .await
         .unwrap();
     let relevant = raw
-        .ingest(RawKind::Transcript, "the authentication login token refresh flow", None)
+        .ingest(
+            RawKind::Transcript,
+            "the authentication login token refresh flow",
+            None,
+        )
         .await
         .unwrap();
 
     let mesh = NativeMesh::new(raw, Some(model), 8192, 8);
-    let span = |id: &str| RawSpan { id: id.into(), kind: RawKind::Transcript, score: 0.0, created_at: 0 };
+    let span = |id: &str| RawSpan {
+        id: id.into(),
+        kind: RawKind::Transcript,
+        score: 0.0,
+        created_at: 0,
+    };
     // Present the relevant span SECOND so a passing result reflects scoring, not order.
     let out = mesh
-        .rerank("auth login token", &[span(&irrelevant), span(&relevant)], Duration::from_millis(200))
+        .rerank(
+            "auth login token",
+            &[span(&irrelevant), span(&relevant)],
+            Duration::from_millis(200),
+        )
         .await
         .unwrap();
-    assert_eq!(out[0].id, relevant, "trained reranker ranks the auth span first");
+    assert_eq!(
+        out[0].id, relevant,
+        "trained reranker ranks the auth span first"
+    );
 }

@@ -29,7 +29,10 @@ pub struct Pomodoro {
 
 impl Default for Pomodoro {
     fn default() -> Self {
-        Pomodoro { work_secs: 25 * 60, break_secs: 5 * 60 }
+        Pomodoro {
+            work_secs: 25 * 60,
+            break_secs: 5 * 60,
+        }
     }
 }
 
@@ -39,7 +42,10 @@ impl Pomodoro {
     }
 
     pub fn with(work_secs: u64, break_secs: u64) -> Self {
-        Pomodoro { work_secs, break_secs }
+        Pomodoro {
+            work_secs,
+            break_secs,
+        }
     }
 
     /// Phase + remaining countdown at `elapsed_secs` since the timer started.
@@ -47,14 +53,26 @@ impl Pomodoro {
     pub fn at(&self, elapsed_secs: u64) -> PomodoroView {
         let period = self.work_secs + self.break_secs;
         if period == 0 {
-            return PomodoroView { phase: PomoPhase::Work, remaining_secs: 0, cycle: 0 };
+            return PomodoroView {
+                phase: PomoPhase::Work,
+                remaining_secs: 0,
+                cycle: 0,
+            };
         }
         let cycle = elapsed_secs / period;
         let t = elapsed_secs % period;
         if t < self.work_secs {
-            PomodoroView { phase: PomoPhase::Work, remaining_secs: self.work_secs - t, cycle }
+            PomodoroView {
+                phase: PomoPhase::Work,
+                remaining_secs: self.work_secs - t,
+                cycle,
+            }
         } else {
-            PomodoroView { phase: PomoPhase::Break, remaining_secs: period - t, cycle }
+            PomodoroView {
+                phase: PomoPhase::Break,
+                remaining_secs: period - t,
+                cycle,
+            }
         }
     }
 }
@@ -139,9 +157,17 @@ mod tests {
 
     #[test]
     fn label_is_ascii_and_names_the_phase() {
-        let work = label(&PomodoroView { phase: PomoPhase::Work, remaining_secs: 25 * 60 - 1, cycle: 0 });
+        let work = label(&PomodoroView {
+            phase: PomoPhase::Work,
+            remaining_secs: 25 * 60 - 1,
+            cycle: 0,
+        });
         assert_eq!(work, "WORK 24:59");
-        let brk = label(&PomodoroView { phase: PomoPhase::Break, remaining_secs: 4 * 60 + 12, cycle: 3 });
+        let brk = label(&PomodoroView {
+            phase: PomoPhase::Break,
+            remaining_secs: 4 * 60 + 12,
+            cycle: 3,
+        });
         assert_eq!(brk, "BREAK 04:12");
         assert!(work.is_ascii() && brk.is_ascii(), "pure ASCII");
     }

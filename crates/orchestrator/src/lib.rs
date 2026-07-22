@@ -191,7 +191,10 @@ fn decompose_messages_coder(task: &str) -> Vec<ChatMessage> {
 /// analyze the task and integrate nothing. Appends a single coder for the whole
 /// task when the model produced none.
 fn ensure_coder(mut subtasks: Vec<SubTask>, task: &str) -> Vec<SubTask> {
-    if !subtasks.iter().any(|s| s.role.eq_ignore_ascii_case("coder")) {
+    if !subtasks
+        .iter()
+        .any(|s| s.role.eq_ignore_ascii_case("coder"))
+    {
         subtasks.push(SubTask {
             role: "coder".to_string(),
             task: task.to_string(),
@@ -591,8 +594,12 @@ pub async fn run_fanout(
 
     // 1. Map + decompose.
     let mapped = entheai_mapper::Mapper::map(root, task, &[]).await;
-    let raw =
-        orchestrate_once(config, &orch_model, decompose_messages_coder(&mapped.render())).await?;
+    let raw = orchestrate_once(
+        config,
+        &orch_model,
+        decompose_messages_coder(&mapped.render()),
+    )
+    .await?;
     // The v2 coder path exists to CHANGE code, so guarantee at least one `coder`
     // sub-task: a weak orchestrator model sometimes returns an explore-only (or
     // empty) plan, which would analyze the task and integrate nothing. `ensure_coder`
@@ -907,13 +914,22 @@ mod tests {
         let default_cfg = Config::from_toml_str("").unwrap();
         let p = fanout_policy(&default_cfg);
         // Default mode is Auto -> Exec ceiling (allows Exec, denies Network)
-        assert_eq!(p.decide_tiered("run_shell", entheai_permission::Tier::Exec), entheai_permission::Decision::Allow);
-        assert_eq!(p.decide_tiered("fetch", entheai_permission::Tier::Network), entheai_permission::Decision::Deny);
+        assert_eq!(
+            p.decide_tiered("run_shell", entheai_permission::Tier::Exec),
+            entheai_permission::Decision::Allow
+        );
+        assert_eq!(
+            p.decide_tiered("fetch", entheai_permission::Tier::Network),
+            entheai_permission::Decision::Deny
+        );
 
         let strict = Config::from_toml_str("[permission]\nfanout_auto_approve = false\n").unwrap();
         let sp = fanout_policy(&strict);
         // fanout_auto_approve = false -> Plan mode (denies Exec)
-        assert_eq!(sp.decide_tiered("run_shell", entheai_permission::Tier::Exec), entheai_permission::Decision::Deny);
+        assert_eq!(
+            sp.decide_tiered("run_shell", entheai_permission::Tier::Exec),
+            entheai_permission::Decision::Deny
+        );
     }
 
     #[test]
@@ -932,7 +948,10 @@ mod tests {
     fn ensure_coder_appends_when_no_coder_present() {
         // A weak model returned an explore-only plan; the guard must add a coder
         // so the v2 fan-out actually changes code instead of only analyzing it.
-        let out = ensure_coder(vec![sub_task("explore", "analyze foo")], "add a doc comment");
+        let out = ensure_coder(
+            vec![sub_task("explore", "analyze foo")],
+            "add a doc comment",
+        );
         assert_eq!(out.len(), 2);
         assert!(out
             .iter()

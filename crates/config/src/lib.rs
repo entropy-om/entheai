@@ -619,11 +619,23 @@ mod tests {
         let pp = cfg.memory.prompt_processing.unwrap();
         assert_eq!(pp.search_deadline_ms, 800);
         assert_eq!(pp.recall_k, 32);
-        assert_eq!(pp.marqant_cmd, "mq", "absent sub-fields take their defaults");
-        assert_eq!(pp.marqant_backend, "subprocess", "marqant defaults to subprocess backend");
+        assert_eq!(
+            pp.marqant_cmd, "mq",
+            "absent sub-fields take their defaults"
+        );
+        assert_eq!(
+            pp.marqant_backend, "subprocess",
+            "marqant defaults to subprocess backend"
+        );
         assert_eq!(pp.raw_retention_days, 90);
-        assert_eq!(pp.mesh_backend, "native", "mesh defaults to the in-process native backend");
-        assert_eq!(pp.native_model, "", "no .ugm reranker by default → lexical scorer");
+        assert_eq!(
+            pp.mesh_backend, "native",
+            "mesh defaults to the in-process native backend"
+        );
+        assert_eq!(
+            pp.native_model, "",
+            "no .ugm reranker by default → lexical scorer"
+        );
     }
 
     #[test]
@@ -769,8 +781,7 @@ mod tests {
         let cfg: Config = toml::from_str("").unwrap();
         assert_eq!(cfg.federation.max_concurrent_coders, 4);
 
-        let cfg: Config =
-            toml::from_str("[federation]\nmax_concurrent_coders = 3\n").unwrap();
+        let cfg: Config = toml::from_str("[federation]\nmax_concurrent_coders = 3\n").unwrap();
         assert_eq!(cfg.federation.max_concurrent_coders, 3);
     }
 
@@ -782,8 +793,7 @@ mod tests {
         assert_eq!(cfg.federation.base_cache_count(), 4 * 2 + 4); // 12 by default
         assert!(cfg.federation.base_cache_count() > cfg.federation.max_concurrent_coders);
 
-        let cfg: Config =
-            toml::from_str("[federation]\nmax_concurrent_coders = 16\n").unwrap();
+        let cfg: Config = toml::from_str("[federation]\nmax_concurrent_coders = 16\n").unwrap();
         assert_eq!(cfg.federation.base_cache_count(), 16 * 2 + 4);
         assert!(cfg.federation.base_cache_count() > cfg.federation.max_concurrent_coders);
     }
@@ -792,9 +802,13 @@ mod tests {
     fn permission_mode_and_pins_parse() {
         let cfg = Config::from_toml_str(
             "[permission]\nmode = \"auto\"\npins = { run_shell = \"always_ask\" }\n",
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(cfg.permission.mode, "auto");
-        assert_eq!(cfg.permission.pins.get("run_shell").map(String::as_str), Some("always_ask"));
+        assert_eq!(
+            cfg.permission.pins.get("run_shell").map(String::as_str),
+            Some("always_ask")
+        );
     }
 }
 
@@ -1161,9 +1175,15 @@ impl Default for FederationConfig {
     }
 }
 
-fn default_fed_role() -> String { "auto".to_string() }
-fn default_fed_deadline_secs() -> u64 { 600 }
-fn default_max_concurrent() -> usize { 4 }
+fn default_fed_role() -> String {
+    "auto".to_string()
+}
+fn default_fed_deadline_secs() -> u64 {
+    600
+}
+fn default_max_concurrent() -> usize {
+    4
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct FrozenConfig {

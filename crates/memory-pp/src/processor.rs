@@ -61,7 +61,14 @@ impl PromptProcessor {
         recall_k: usize,
         max_ingest_bytes: usize,
     ) -> Self {
-        Self { raw, mesh, marqant, deadline, recall_k, max_ingest_bytes }
+        Self {
+            raw,
+            mesh,
+            marqant,
+            deadline,
+            recall_k,
+            max_ingest_bytes,
+        }
     }
 
     /// The ingest hooks reach the raw store through this.
@@ -203,7 +210,14 @@ mod tests {
 
     fn pp_with(mesh: Box<dyn MeshSearch>) -> PromptProcessor {
         let raw = RawStore::open_memory().unwrap();
-        PromptProcessor::new(raw, mesh, Box::new(StubMarqant), Duration::from_millis(50), 16, 1 << 20)
+        PromptProcessor::new(
+            raw,
+            mesh,
+            Box::new(StubMarqant),
+            Duration::from_millis(50),
+            16,
+            1 << 20,
+        )
     }
 
     #[tokio::test]
@@ -221,23 +235,45 @@ mod tests {
     #[tokio::test]
     async fn stub_mesh_unavailable_falls_back() {
         let pp = pp_with(Box::new(StubMesh));
-        pp.raw().ingest(RawKind::Transcript, "the auth thing", None).await.unwrap();
-        assert_eq!(pp.retrieve("auth").await.unwrap(), None, "mesh err → fallback signal");
+        pp.raw()
+            .ingest(RawKind::Transcript, "the auth thing", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            pp.retrieve("auth").await.unwrap(),
+            None,
+            "mesh err → fallback signal"
+        );
     }
 
     #[tokio::test]
     async fn slow_mesh_times_out_to_fallback() {
-        let pp = pp_with(Box::new(SlowStubMesh { sleep: Duration::from_millis(300) }));
-        pp.raw().ingest(RawKind::Transcript, "auth login flow", None).await.unwrap();
-        assert_eq!(pp.retrieve("auth").await.unwrap(), None, "deadline → fallback signal");
+        let pp = pp_with(Box::new(SlowStubMesh {
+            sleep: Duration::from_millis(300),
+        }));
+        pp.raw()
+            .ingest(RawKind::Transcript, "auth login flow", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            pp.retrieve("auth").await.unwrap(),
+            None,
+            "deadline → fallback signal"
+        );
     }
 
     #[tokio::test]
     async fn happy_path_produces_brief_from_raw() {
         let pp = pp_with(Box::new(IdentityMesh));
-        pp.raw().ingest(RawKind::Transcript, "auth login flow details", None).await.unwrap();
+        pp.raw()
+            .ingest(RawKind::Transcript, "auth login flow details", None)
+            .await
+            .unwrap();
         let brief = pp.retrieve("auth").await.unwrap().expect("brief");
-        assert!(brief.contains("auth login flow details"), "brief carries the raw finding");
+        assert!(
+            brief.contains("auth login flow details"),
+            "brief carries the raw finding"
+        );
     }
 
     #[tokio::test]
@@ -256,10 +292,23 @@ mod tests {
             16,
             1 << 20,
         );
-        pp.raw().ingest(RawKind::ToolOutput, "unrelated disk usage report", None).await.unwrap();
-        pp.raw().ingest(RawKind::Transcript, "the auth login and token flow", None).await.unwrap();
-        let brief = pp.retrieve("auth token").await.unwrap().expect("in-process brief");
-        assert!(brief.contains("auth login and token flow"), "native mesh surfaced the auth finding");
+        pp.raw()
+            .ingest(RawKind::ToolOutput, "unrelated disk usage report", None)
+            .await
+            .unwrap();
+        pp.raw()
+            .ingest(RawKind::Transcript, "the auth login and token flow", None)
+            .await
+            .unwrap();
+        let brief = pp
+            .retrieve("auth token")
+            .await
+            .unwrap()
+            .expect("in-process brief");
+        assert!(
+            brief.contains("auth login and token flow"),
+            "native mesh surfaced the auth finding"
+        );
     }
 
     #[tokio::test]
@@ -275,7 +324,11 @@ mod tests {
         pp.ingest_tool(&scope(), &ev).await;
         let msgs = vec![entheai_providers::ChatMessage::user("hi")];
         pp.ingest_transcript(&scope(), &msgs, "done").await;
-        assert_eq!(pp.raw().count().await.unwrap(), 2, "one tool row + one transcript row");
+        assert_eq!(
+            pp.raw().count().await.unwrap(),
+            2,
+            "one tool row + one transcript row"
+        );
     }
 
     #[tokio::test]
@@ -303,6 +356,10 @@ mod tests {
         // Re-running the same session ingests nothing new (content-addressed).
         pp.ingest_transcript(&sc, &msgs, "fixed it").await;
         pp.ingest_tool(&sc, &ev).await;
-        assert_eq!(pp.raw().count().await.unwrap(), 2, "idempotent across re-runs");
+        assert_eq!(
+            pp.raw().count().await.unwrap(),
+            2,
+            "idempotent across re-runs"
+        );
     }
 }

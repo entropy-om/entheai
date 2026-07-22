@@ -9,6 +9,6 @@ pub mod pomodoro;
 pub mod swarm;
 pub mod term;
 
-pub use model::{NodeStatus, Phase, SwarmModel, SwarmNode};
 pub use brain::{BrainState, Faculty, FacultyKind, FleetNode};
-pub use pomodoro::{Pomodoro, PomodoroView, PomoPhase};
+pub use model::{NodeStatus, Phase, SwarmModel, SwarmNode};
+pub use pomodoro::{PomoPhase, Pomodoro, PomodoroView};

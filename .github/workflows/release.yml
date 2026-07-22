@@ -17,6 +17,7 @@ jobs:
   build-release:
     # Apple Silicon runner — entheai is macOS/Apple-Silicon only.
     runs-on: macos-14
+    environment: main
     steps:
       - uses: actions/checkout@v4
 
@@ -64,31 +65,53 @@ jobs:
           IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
         run: |
           BIN="target/aarch64-apple-darwin/release/entheai"
+          APP="dist/entheai.app"
+          
+          # Sign bare CLI binary
           codesign --force --options runtime --timestamp --sign "$IDENTITY" "$BIN"
           codesign --verify --strict --verbose=2 "$BIN"
 
-      - name: Notarize
+          # Sign entheai.app bundle (including nested binaries)
+          if [ -d "$APP" ]; then
+            codesign --force --options runtime --timestamp --deep --sign "$IDENTITY" "$APP"
+            codesign --verify --strict --verbose=2 "$APP"
+          fi
+
+      - name: Notarize + Staple entheai.app
         env:
           NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
         run: |
-          BIN="target/aarch64-apple-darwin/release/entheai"
           echo "$NOTARY_KEY" | base64 --decode > AuthKey.p8
-          ditto -c -k --keepParent "$BIN" entheai-notarize.zip
-          xcrun notarytool submit entheai-notarize.zip \
-            --key AuthKey.p8 --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait
-          rm -f AuthKey.p8 entheai-notarize.zip
-          # A bare Mach-O CLI is notarized but NOT staple-able (stapling needs an
-          # .app/.dmg/.pkg); Gatekeeper verifies via the online notary ticket on
-          # first run. A stapled .app/.dmg is the follow-up (the launcher builds one).
+          
+          # Notarize entheai.app bundle
+          APP="dist/entheai.app"
+          if [ -d "$APP" ]; then
+            ditto -c -k --keepParent "$APP" dist/entheai-app-notarize.zip
+            xcrun notarytool submit dist/entheai-app-notarize.zip \
+              --key AuthKey.p8 --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait
+            rm -f dist/entheai-app-notarize.zip
 
-      - name: Package binary
+            # Staple notarization ticket to the app bundle
+            xcrun stapler staple "$APP"
+
+            # Re-create final signed + stapled zip archive
+            ( cd dist && ditto -c -k --keepParent entheai.app entheai-app-macos-arm64.zip )
+          fi
+
+          rm -f AuthKey.p8
+
+      - name: Package release artifacts
         run: |
           BIN="target/aarch64-apple-darwin/release/entheai"
           test -f "$BIN" || { echo "binary not found at $BIN"; exit 1; }
           tar -czf entheai-macos-arm64.tar.gz -C "$(dirname "$BIN")" entheai
           shasum -a 256 entheai-macos-arm64.tar.gz | tee entheai-macos-arm64.tar.gz.sha256
+
+          if [ -f "dist/entheai-app-macos-arm64.zip" ]; then
+            shasum -a 256 dist/entheai-app-macos-arm64.zip | tee dist/entheai-app-macos-arm64.zip.sha256
+          fi
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -97,4 +120,6 @@ jobs:
           files: |
             entheai-macos-arm64.tar.gz
             entheai-macos-arm64.tar.gz.sha256
+            dist/entheai-app-macos-arm64.zip
+            dist/entheai-app-macos-arm64.zip.sha256
           generate_release_notes: true

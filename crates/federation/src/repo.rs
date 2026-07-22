@@ -4,14 +4,31 @@
 use std::path::Path;
 
 async fn git(dir: &Path, args: &[&str]) -> anyhow::Result<(bool, String)> {
-    let out = tokio::process::Command::new("git").arg("-C").arg(dir).args(args).output().await
+    let out = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .await
         .map_err(|e| anyhow::anyhow!("spawn git -C {} {:?}: {e}", dir.display(), args))?;
-    Ok((out.status.success(), String::from_utf8_lossy(&out.stdout).into_owned()))
+    Ok((
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    ))
 }
 async fn git_ok(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
-    let out = tokio::process::Command::new("git").arg("-C").arg(dir).args(args).output().await?;
+    let out = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .await?;
     if !out.status.success() {
-        anyhow::bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+        anyhow::bail!(
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -27,7 +44,10 @@ pub async fn rev_parse_ok(dir: &Path, rev: &str) -> bool {
 /// Create a base bundle of `repo`'s HEAD under `out` (a `.bundle` path). Bundles
 /// the branch `entheai-fed-base` pointing at HEAD so a clone lands on a named branch.
 pub async fn bundle_base(repo: &Path, out: &Path) -> anyhow::Result<String> {
-    let base_sha = git_ok(repo, &["rev-parse", "HEAD"]).await?.trim().to_string();
+    let base_sha = git_ok(repo, &["rev-parse", "HEAD"])
+        .await?
+        .trim()
+        .to_string();
     // A fresh branch ref for the bundle (force in case it exists).
     git_ok(repo, &["branch", "-f", "entheai-fed-base", &base_sha]).await?;
     let out_s = out.to_string_lossy();
@@ -44,9 +64,14 @@ pub async fn materialize_from_bundle(bundle: &Path, dest: &Path) -> anyhow::Resu
     let bundle_s = bundle.to_string_lossy();
     let dest_s = dest.to_string_lossy();
     let out = tokio::process::Command::new("git")
-        .args(["clone", "-b", "entheai-fed-base", &bundle_s, &dest_s]).output().await?;
+        .args(["clone", "-b", "entheai-fed-base", &bundle_s, &dest_s])
+        .output()
+        .await?;
     if !out.status.success() {
-        anyhow::bail!("git clone bundle failed: {}", String::from_utf8_lossy(&out.stderr));
+        anyhow::bail!(
+            "git clone bundle failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     git_ok(dest, &["checkout", "-b", "fed-work"]).await?;
     // Identity so commits succeed in the ephemeral clone.
@@ -58,12 +83,22 @@ pub async fn materialize_from_bundle(bundle: &Path, dest: &Path) -> anyhow::Resu
 /// After a coder changed files in `worktree`: stage+commit; if nothing changed
 /// return Ok(None); else bundle `base_sha..HEAD` to `out` and return the
 /// new sha.
-pub async fn commit_and_bundle_delta(worktree: &Path, base_sha: &str, msg: &str, out: &Path) -> anyhow::Result<Option<String>> {
+pub async fn commit_and_bundle_delta(
+    worktree: &Path,
+    base_sha: &str,
+    msg: &str,
+    out: &Path,
+) -> anyhow::Result<Option<String>> {
     git_ok(worktree, &["add", "-A"]).await?;
     let (clean, _) = git(worktree, &["diff", "--cached", "--quiet"]).await?;
-    if clean { return Ok(None); } // nothing staged
+    if clean {
+        return Ok(None);
+    } // nothing staged
     git_ok(worktree, &["commit", "-m", msg]).await?;
-    let new_sha = git_ok(worktree, &["rev-parse", "HEAD"]).await?.trim().to_string();
+    let new_sha = git_ok(worktree, &["rev-parse", "HEAD"])
+        .await?
+        .trim()
+        .to_string();
     let out_s = out.to_string_lossy();
     let range = format!("{base_sha}..HEAD");
     git_ok(worktree, &["bundle", "create", &out_s, &range]).await?;
@@ -72,11 +107,18 @@ pub async fn commit_and_bundle_delta(worktree: &Path, base_sha: &str, msg: &str,
 
 /// In the dispatcher's `repo` (which has `base_sha`), fetch the worker's delta
 /// bundle into a fresh local branch `branch`. Returns the fetched tip sha.
-pub async fn apply_delta_bundle(repo: &Path, bundle: &Path, branch: &str) -> anyhow::Result<String> {
+pub async fn apply_delta_bundle(
+    repo: &Path,
+    bundle: &Path,
+    branch: &str,
+) -> anyhow::Result<String> {
     let bundle_s = bundle.to_string_lossy();
     let refspec = format!("HEAD:refs/heads/{branch}");
     git_ok(repo, &["fetch", &bundle_s, &refspec]).await?;
-    Ok(git_ok(repo, &["rev-parse", branch]).await?.trim().to_string())
+    Ok(git_ok(repo, &["rev-parse", branch])
+        .await?
+        .trim()
+        .to_string())
 }
 
 /// Clone a base bundle into a SHARED BARE repo at `bare` (a `*.git` dir). No
@@ -84,10 +126,21 @@ pub async fn apply_delta_bundle(repo: &Path, bundle: &Path, branch: &str) -> any
 pub async fn materialize_bare(bundle: &Path, bare: &Path) -> anyhow::Result<()> {
     let (bundle_s, bare_s) = (bundle.to_string_lossy(), bare.to_string_lossy());
     let out = tokio::process::Command::new("git")
-        .args(["clone", "--bare", "-b", "entheai-fed-base", &bundle_s, &bare_s])
-        .output().await?;
+        .args([
+            "clone",
+            "--bare",
+            "-b",
+            "entheai-fed-base",
+            &bundle_s,
+            &bare_s,
+        ])
+        .output()
+        .await?;
     if !out.status.success() {
-        anyhow::bail!("git clone --bare failed: {}", String::from_utf8_lossy(&out.stderr));
+        anyhow::bail!(
+            "git clone --bare failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     Ok(())
 }
@@ -97,7 +150,11 @@ pub async fn materialize_bare(bundle: &Path, bare: &Path) -> anyhow::Result<()> 
 /// collide. Sets a commit identity so the coder's commit succeeds.
 pub async fn add_worktree(bare: &Path, work: &Path) -> anyhow::Result<()> {
     let work_s = work.to_string_lossy();
-    git_ok(bare, &["worktree", "add", "--detach", &work_s, "entheai-fed-base"]).await?;
+    git_ok(
+        bare,
+        &["worktree", "add", "--detach", &work_s, "entheai-fed-base"],
+    )
+    .await?;
     git_ok(work, &["config", "user.email", "worker@entheai"]).await?;
     git_ok(work, &["config", "user.name", "entheai-worker"]).await?;
     Ok(())
@@ -120,7 +177,9 @@ mod tests {
         git_ok(dir, &["init", "-q"]).await.unwrap();
         git_ok(dir, &["config", "user.email", "t@t"]).await.unwrap();
         git_ok(dir, &["config", "user.name", "t"]).await.unwrap();
-        tokio::fs::write(dir.join("README.md"), "base\n").await.unwrap();
+        tokio::fs::write(dir.join("README.md"), "base\n")
+            .await
+            .unwrap();
         git_ok(dir, &["add", "-A"]).await.unwrap();
         git_ok(dir, &["commit", "-q", "-m", "base"]).await.unwrap();
     }
@@ -136,23 +195,42 @@ mod tests {
         let base_bundle = tmp.path().join("base.bundle");
         let base_sha = bundle_base(&dispatcher, &base_bundle).await.unwrap();
         // bundle_base must not leave a `entheai-fed-base` branch in the dispatcher's repo.
-        let (has_fed_base, _) = git(&dispatcher, &["rev-parse", "--verify", "entheai-fed-base"]).await.unwrap();
-        assert!(!has_fed_base, "entheai-fed-base branch should be cleaned up after bundling");
+        let (has_fed_base, _) = git(&dispatcher, &["rev-parse", "--verify", "entheai-fed-base"])
+            .await
+            .unwrap();
+        assert!(
+            !has_fed_base,
+            "entheai-fed-base branch should be cleaned up after bundling"
+        );
 
         // Worker materializes, changes a file, delta-bundles.
         let work = tmp.path().join("work");
         materialize_from_bundle(&base_bundle, &work).await.unwrap();
-        assert_eq!(tokio::fs::read_to_string(work.join("README.md")).await.unwrap(), "base\n");
-        tokio::fs::write(work.join("NEW.md"), "from worker\n").await.unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(work.join("README.md"))
+                .await
+                .unwrap(),
+            "base\n"
+        );
+        tokio::fs::write(work.join("NEW.md"), "from worker\n")
+            .await
+            .unwrap();
         let result_bundle = tmp.path().join("result.bundle");
-        let new_sha = super::commit_and_bundle_delta(&work, &base_sha, "worker change", &result_bundle).await.unwrap();
+        let new_sha =
+            super::commit_and_bundle_delta(&work, &base_sha, "worker change", &result_bundle)
+                .await
+                .unwrap();
         assert!(new_sha.is_some());
 
         // Dispatcher applies the delta to a branch.
-        let tip = apply_delta_bundle(&dispatcher, &result_bundle, "fed/test").await.unwrap();
+        let tip = apply_delta_bundle(&dispatcher, &result_bundle, "fed/test")
+            .await
+            .unwrap();
         assert_eq!(tip, new_sha.unwrap());
         // The new file exists on that branch.
-        let show = git_ok(&dispatcher, &["show", "fed/test:NEW.md"]).await.unwrap();
+        let show = git_ok(&dispatcher, &["show", "fed/test:NEW.md"])
+            .await
+            .unwrap();
         assert_eq!(show, "from worker\n");
     }
 
@@ -178,16 +256,31 @@ mod tests {
         tokio::fs::write(w2.join("B.md"), "from-2\n").await.unwrap();
         let r1 = tmp.path().join("r1.bundle");
         let r2 = tmp.path().join("r2.bundle");
-        assert!(commit_and_bundle_delta(&w1, &base_sha, "c1", &r1).await.unwrap().is_some());
-        assert!(commit_and_bundle_delta(&w2, &base_sha, "c2", &r2).await.unwrap().is_some());
+        assert!(commit_and_bundle_delta(&w1, &base_sha, "c1", &r1)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(commit_and_bundle_delta(&w2, &base_sha, "c2", &r2)
+            .await
+            .unwrap()
+            .is_some());
 
         apply_delta_bundle(&disp, &r1, "fed/1").await.unwrap();
         apply_delta_bundle(&disp, &r2, "fed/2").await.unwrap();
-        assert_eq!(git_ok(&disp, &["show", "fed/1:A.md"]).await.unwrap(), "from-1\n");
-        assert_eq!(git_ok(&disp, &["show", "fed/2:B.md"]).await.unwrap(), "from-2\n");
+        assert_eq!(
+            git_ok(&disp, &["show", "fed/1:A.md"]).await.unwrap(),
+            "from-1\n"
+        );
+        assert_eq!(
+            git_ok(&disp, &["show", "fed/2:B.md"]).await.unwrap(),
+            "from-2\n"
+        );
 
         // The worktree's .git is a pointer FILE (shared object store), not a dir.
-        assert!(tokio::fs::metadata(w1.join(".git")).await.unwrap().is_file());
+        assert!(tokio::fs::metadata(w1.join(".git"))
+            .await
+            .unwrap()
+            .is_file());
 
         remove_worktree(&bare, &w1).await.unwrap();
         remove_worktree(&bare, &w2).await.unwrap();
@@ -204,6 +297,9 @@ mod tests {
         let work = tmp.path().join("w");
         materialize_from_bundle(&base_bundle, &work).await.unwrap();
         let rb = tmp.path().join("r.bundle");
-        assert!(commit_and_bundle_delta(&work, &base_sha, "noop", &rb).await.unwrap().is_none());
+        assert!(commit_and_bundle_delta(&work, &base_sha, "noop", &rb)
+            .await
+            .unwrap()
+            .is_none());
     }
 }

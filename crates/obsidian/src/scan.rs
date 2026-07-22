@@ -289,7 +289,7 @@ mod tests {
             p.clone(),
             CachedFile {
                 mtime: meta.modified().unwrap(),
-                len: meta.len(), // matches disk → cache hit
+                len: meta.len(),        // matches disk → cache hit
                 content: "CASH".into(), // 4 bytes, distinct from disk "DISK"
             },
         );

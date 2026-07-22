@@ -110,13 +110,17 @@ impl RawStore {
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         ensure_schema(&conn)?;
-        Ok(Self { db: Arc::new(Mutex::new(conn)) })
+        Ok(Self {
+            db: Arc::new(Mutex::new(conn)),
+        })
     }
 
     pub fn open_memory() -> Result<Self, PpError> {
         let conn = Connection::open_in_memory()?;
         ensure_schema(&conn)?;
-        Ok(Self { db: Arc::new(Mutex::new(conn)) })
+        Ok(Self {
+            db: Arc::new(Mutex::new(conn)),
+        })
     }
 
     /// Append-only, content-addressed, idempotent. Re-ingesting identical
@@ -171,8 +175,8 @@ impl RawStore {
         let span_id = span_id.to_string();
         tokio::task::spawn_blocking(move || -> Result<Option<RawContent>, PpError> {
             let conn = db.lock().map_err(|_| PpError::Lock)?;
-            let mut stmt = conn
-                .prepare("SELECT id, kind, bytes, meta, created_at FROM raw WHERE id = ?1")?;
+            let mut stmt =
+                conn.prepare("SELECT id, kind, bytes, meta, created_at FROM raw WHERE id = ?1")?;
             let mut rows = stmt.query(rusqlite::params![span_id])?;
             match rows.next()? {
                 Some(row) => {
@@ -204,7 +208,10 @@ impl RawStore {
                 "DELETE FROM raw_fts WHERE id IN (SELECT id FROM raw WHERE created_at < ?1)",
                 rusqlite::params![cutoff],
             )?;
-            let n = tx.execute("DELETE FROM raw WHERE created_at < ?1", rusqlite::params![cutoff])?;
+            let n = tx.execute(
+                "DELETE FROM raw WHERE created_at < ?1",
+                rusqlite::params![cutoff],
+            )?;
             tx.commit()?;
             Ok(n)
         })
@@ -253,7 +260,12 @@ impl RawStore {
                 let (id, kind_s, created_at, bm) = r?;
                 if let Some(kind) = RawKind::parse(&kind_s) {
                     // bm25 is lower-is-better (negative); flip so higher = better.
-                    out.push(RawSpan { id, kind, score: (-bm) as f32, created_at });
+                    out.push(RawSpan {
+                        id,
+                        kind,
+                        score: (-bm) as f32,
+                        created_at,
+                    });
                 }
             }
             Ok(out)
@@ -282,8 +294,14 @@ mod tests {
     #[tokio::test]
     async fn reingest_same_bytes_is_idempotent() {
         let s = RawStore::open_memory().unwrap();
-        let a = s.ingest(RawKind::Transcript, "same content", None).await.unwrap();
-        let b = s.ingest(RawKind::Transcript, "same content", None).await.unwrap();
+        let a = s
+            .ingest(RawKind::Transcript, "same content", None)
+            .await
+            .unwrap();
+        let b = s
+            .ingest(RawKind::Transcript, "same content", None)
+            .await
+            .unwrap();
         assert_eq!(a, b, "content-addressed id is stable");
         assert_eq!(s.count().await.unwrap(), 1, "re-ingest is a no-op");
     }
@@ -300,39 +318,61 @@ mod tests {
         // can fetch candidate preview text — the clone must see the SAME rows.
         let s = RawStore::open_memory().unwrap();
         let handle = s.clone();
-        let id = s.ingest(RawKind::Transcript, "shared row", None).await.unwrap();
-        let got = handle.get(&id).await.unwrap().expect("clone sees the ingest");
+        let id = s
+            .ingest(RawKind::Transcript, "shared row", None)
+            .await
+            .unwrap();
+        let got = handle
+            .get(&id)
+            .await
+            .unwrap()
+            .expect("clone sees the ingest");
         assert_eq!(got.bytes, "shared row");
     }
 
     #[tokio::test]
     async fn prune_respects_retention() {
         let s = RawStore::open_memory().unwrap();
-        s.ingest(RawKind::Transcript, "keep-me", None).await.unwrap();
+        s.ingest(RawKind::Transcript, "keep-me", None)
+            .await
+            .unwrap();
         assert_eq!(s.prune(90).await.unwrap(), 0, "recent row retained");
         assert_eq!(s.count().await.unwrap(), 1);
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        assert_eq!(s.prune(0).await.unwrap(), 1, "cutoff=now drops older-than-now");
+        assert_eq!(
+            s.prune(0).await.unwrap(),
+            1,
+            "cutoff=now drops older-than-now"
+        );
         assert_eq!(s.count().await.unwrap(), 0);
     }
 
     #[tokio::test]
     async fn recall_finds_by_keyword_and_rehydrates() {
         let s = RawStore::open_memory().unwrap();
-        s.ingest(RawKind::Transcript, "the auth login flow", None).await.unwrap();
-        s.ingest(RawKind::ToolOutput, "unrelated disk usage report", None).await.unwrap();
+        s.ingest(RawKind::Transcript, "the auth login flow", None)
+            .await
+            .unwrap();
+        s.ingest(RawKind::ToolOutput, "unrelated disk usage report", None)
+            .await
+            .unwrap();
         let spans = s.recall("auth", 10).await.unwrap();
         assert_eq!(spans.len(), 1, "only the matching span");
         assert_eq!(spans[0].kind, RawKind::Transcript);
         let rc = s.get(&spans[0].id).await.unwrap().unwrap();
-        assert_eq!(rc.bytes, "the auth login flow", "span id rehydrates raw payload");
+        assert_eq!(
+            rc.bytes, "the auth login flow",
+            "span id rehydrates raw payload"
+        );
     }
 
     #[tokio::test]
     async fn recall_respects_k() {
         let s = RawStore::open_memory().unwrap();
         for i in 0..5 {
-            s.ingest(RawKind::Transcript, &format!("auth event number {i}"), None).await.unwrap();
+            s.ingest(RawKind::Transcript, &format!("auth event number {i}"), None)
+                .await
+                .unwrap();
         }
         assert_eq!(s.recall("auth", 3).await.unwrap().len(), 3);
     }
@@ -340,7 +380,9 @@ mod tests {
     #[tokio::test]
     async fn recall_punctuated_query_does_not_error() {
         let s = RawStore::open_memory().unwrap();
-        s.ingest(RawKind::Transcript, "fix the auth bug in v2", None).await.unwrap();
+        s.ingest(RawKind::Transcript, "fix the auth bug in v2", None)
+            .await
+            .unwrap();
         // A raw FTS5 MATCH of this string is a syntax error (quotes, parens, `?`);
         // the sanitizer must turn it into a valid, recall-preserving query. Without
         // this, PP would silently never fire for punctuated prompts.
@@ -351,6 +393,9 @@ mod tests {
     #[test]
     fn sanitize_rejects_empty_and_quotes_tokens() {
         assert_eq!(sanitize_fts5_query("   "), None);
-        assert_eq!(sanitize_fts5_query("a-b c"), Some("\"a\" OR \"b\" OR \"c\"".to_string()));
+        assert_eq!(
+            sanitize_fts5_query("a-b c"),
+            Some("\"a\" OR \"b\" OR \"c\"".to_string())
+        );
     }
 }

@@ -58,7 +58,8 @@ impl Marqant for SubprocessMarqant {
         if self.program.is_empty() {
             return Err(PpError::Marqant("empty marqant_cmd".into()));
         }
-        match tokio::time::timeout(deadline, run_marqant(&self.program, &self.prefix, findings)).await
+        match tokio::time::timeout(deadline, run_marqant(&self.program, &self.prefix, findings))
+            .await
         {
             Ok(r) => r,
             Err(_) => Err(PpError::Marqant("mq deadline exceeded".into())),
@@ -122,7 +123,9 @@ pub struct KompressMarqant {
 
 impl KompressMarqant {
     pub fn new() -> Self {
-        Self { pipeline: kompress_core::Pipeline::new() }
+        Self {
+            pipeline: kompress_core::Pipeline::new(),
+        }
     }
 }
 
@@ -138,13 +141,21 @@ impl Marqant for KompressMarqant {
         if findings.trim().is_empty() {
             return Ok(String::new());
         }
-        let inputs: Vec<String> =
-            findings.lines().filter(|l| !l.trim().is_empty()).map(str::to_string).collect();
+        let inputs: Vec<String> = findings
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_string)
+            .collect();
         let result = self
             .pipeline
             .run(inputs)
             .map_err(|e| PpError::Marqant(format!("kompress-core pipeline failed: {e}")))?;
-        Ok(result.units.into_iter().map(|u| u.content).collect::<Vec<_>>().join("\n"))
+        Ok(result
+            .units
+            .into_iter()
+            .map(|u| u.content)
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 }
 
@@ -158,9 +169,18 @@ mod tests {
         let m = KompressMarqant::new();
         let findings = "This is basically just a very simple finding about /usr/bin/cargo \
                          and it is obviously really quite verbose for no reason at all.";
-        let brief = m.compress(findings, Duration::from_millis(500)).await.unwrap();
-        assert!(brief.contains("/usr/bin/cargo"), "critical file path must survive: {brief:?}");
-        assert!(brief.len() < findings.len(), "output should be shorter than input: {brief:?}");
+        let brief = m
+            .compress(findings, Duration::from_millis(500))
+            .await
+            .unwrap();
+        assert!(
+            brief.contains("/usr/bin/cargo"),
+            "critical file path must survive: {brief:?}"
+        );
+        assert!(
+            brief.len() < findings.len(),
+            "output should be shorter than input: {brief:?}"
+        );
     }
 
     #[tokio::test]
@@ -173,7 +193,10 @@ mod tests {
     #[tokio::test]
     async fn stub_marqant_is_identity() {
         assert_eq!(
-            StubMarqant.compress("brief body", Duration::from_millis(10)).await.unwrap(),
+            StubMarqant
+                .compress("brief body", Duration::from_millis(10))
+                .await
+                .unwrap(),
             "brief body"
         );
     }
@@ -181,8 +204,13 @@ mod tests {
     #[tokio::test]
     async fn subprocess_missing_binary_errors_to_fallback() {
         let mq = SubprocessMarqant::new("definitely-not-mq-xyz");
-        let r = mq.compress("some findings", Duration::from_millis(500)).await;
-        assert!(matches!(r, Err(PpError::Marqant(_))), "absent mq → Err → fallback");
+        let r = mq
+            .compress("some findings", Duration::from_millis(500))
+            .await;
+        assert!(
+            matches!(r, Err(PpError::Marqant(_))),
+            "absent mq → Err → fallback"
+        );
     }
 
     #[tokio::test]
@@ -208,7 +236,13 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let mq = SubprocessMarqant::new(script.to_str().unwrap());
-        let out = mq.compress("auth login flow", Duration::from_millis(2000)).await.unwrap();
-        assert_eq!(out, "MQ:auth login flow", "compressor output flows back verbatim");
+        let out = mq
+            .compress("auth login flow", Duration::from_millis(2000))
+            .await
+            .unwrap();
+        assert_eq!(
+            out, "MQ:auth login flow",
+            "compressor output flows back verbatim"
+        );
     }
 }

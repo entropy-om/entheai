@@ -70,7 +70,10 @@ impl FrozenStore {
             if p.extension().and_then(|s| s.to_str()) != Some("md") {
                 continue;
             }
-            match std::fs::read_to_string(&p).ok().and_then(|raw| FrozenNode::parse(&raw)) {
+            match std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|raw| FrozenNode::parse(&raw))
+            {
                 Some(n) => nodes.push(n),
                 None => log::warn!("frozen: skipping malformed node {}", p.display()),
             }
@@ -85,7 +88,11 @@ impl FrozenStore {
         let mut cands: Vec<&FrozenNode> = self
             .nodes
             .iter()
-            .filter(|n| n.triggers.iter().any(|t| trigger_hit(&p, &t.to_lowercase())))
+            .filter(|n| {
+                n.triggers
+                    .iter()
+                    .any(|t| trigger_hit(&p, &t.to_lowercase()))
+            })
             .collect();
         cands.sort_by(|a, b| {
             let sa = crate::mesh::lexical_score(prompt, &a.knowledge) + 0.25 * a.rank;
@@ -110,7 +117,9 @@ impl FrozenStore {
 /// makes it a prefix-glob on whitespace-delimited words.
 fn trigger_hit(prompt_lc: &str, trigger_lc: &str) -> bool {
     if let Some(prefix) = trigger_lc.strip_suffix('*') {
-        prompt_lc.split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(prefix))
+        prompt_lc
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|w| w.starts_with(prefix))
     } else {
         prompt_lc.contains(trigger_lc)
     }
@@ -197,8 +206,14 @@ mod tests {
         let store = FrozenStore::from_nodes(nodes);
         let woken = store.wake("please deploy the service to hetzner", 1);
         assert_eq!(woken.len(), 1);
-        assert_eq!(woken[0].name, "nixos", "trigger match + relevance picks nixos");
-        assert!(store.wake("unrelated task about cats", 1).is_empty(), "no trigger → no wake");
+        assert_eq!(
+            woken[0].name, "nixos",
+            "trigger match + relevance picks nixos"
+        );
+        assert!(
+            store.wake("unrelated task about cats", 1).is_empty(),
+            "no trigger → no wake"
+        );
     }
 
     #[tokio::test]
@@ -213,18 +228,39 @@ mod tests {
             knowledge: "use nix flakes for pinned inputs".into(),
         };
         // StubMarqant is identity → the brief carries the knowledge, size-capped, tagged.
-        let brief = activate(&node, &StubMarqant, 4096, std::time::Duration::from_millis(50)).await;
+        let brief = activate(
+            &node,
+            &StubMarqant,
+            4096,
+            std::time::Duration::from_millis(50),
+        )
+        .await;
         assert!(brief.contains("frozen:nixos"), "brief is tagged: {brief}");
         assert!(brief.contains("nix flakes"), "brief carries the knowledge");
         // a tiny cap truncates
-        let short = activate(&node, &StubMarqant, 12, std::time::Duration::from_millis(50)).await;
-        assert!(short.len() <= 64, "respects the byte cap (+ tag): {}", short.len());
+        let short = activate(
+            &node,
+            &StubMarqant,
+            12,
+            std::time::Duration::from_millis(50),
+        )
+        .await;
+        assert!(
+            short.len() <= 64,
+            "respects the byte cap (+ tag): {}",
+            short.len()
+        );
     }
 
     #[test]
     fn loads_real_frozen_dir_nodes() {
         let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let frozen_dir = manifest_dir.parent().unwrap().parent().unwrap().join("frozen");
+        let frozen_dir = manifest_dir
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("frozen");
         if frozen_dir.exists() {
             let store = FrozenStore::load(&frozen_dir);
             assert_eq!(store.len(), 11, "real frozen/ dir contains 11 nodes");

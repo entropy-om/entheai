@@ -92,8 +92,8 @@ max_parallel = 4
 /// only the default filename falls through to the global / built-in configs.
 fn load_config(path: &str) -> anyhow::Result<Config> {
     if std::path::Path::new(path).exists() {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading config {path}"))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading config {path}"))?;
         return Ok(Config::from_toml_str(&text)?);
     }
 
@@ -122,7 +122,10 @@ fn load_config(path: &str) -> anyhow::Result<Config> {
         "entheai: no {DEFAULT_CONFIG_PATH} in {cwd} or {} — using built-in defaults \
          (provider keys still come from the environment / .env; run from a project \
          with an entheai.toml, or `entheai --config <path>`, for custom settings)",
-        global.parent().map(|p| p.display().to_string()).unwrap_or_default(),
+        global
+            .parent()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
     );
     Ok(Config::from_toml_str(DEFAULT_CONFIG_TOML)?)
 }
@@ -235,12 +238,10 @@ async fn main() -> anyhow::Result<()> {
                 // Federation event bus (F1): opt-in + fail-safe. With `[nats]`
                 // off or the hub unreachable, `connect` returns None and `tee`
                 // hands `None` straight to run_fanout — behavior unchanged.
-                let bus = entheai_bus::Bus::connect(
-                    &entheai_bus::BusOptions::from_config(&cfg.nats),
-                )
-                .await;
-                let (events, bus_session) =
-                    entheai_bus::tee(bus, session_id.clone(), None);
+                let bus =
+                    entheai_bus::Bus::connect(&entheai_bus::BusOptions::from_config(&cfg.nats))
+                        .await;
+                let (events, bus_session) = entheai_bus::tee(bus, session_id.clone(), None);
                 // Federation dispatch (F2.2): when `[federation]` is on and a
                 // worker is serving, coders run on the fleet; otherwise run_fanout
                 // runs them locally. Connect failure → None → local (fail-safe).
@@ -248,11 +249,16 @@ async fn main() -> anyhow::Result<()> {
                     if cfg.fanout.executor == "agy" {
                         // Recursive-dev path: each coder runs via the Antigravity CLI
                         // (depth-guarded). agy missing/at-cap → local fallback.
-                        Some(entheai_orchestrator::AgyExecutor::new(cfg.fanout.agy_model.clone())
-                            as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>)
+                        Some(
+                            entheai_orchestrator::AgyExecutor::new(cfg.fanout.agy_model.clone())
+                                as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>,
+                        )
                     } else if cfg.federation.enabled {
                         entheai_federation::Federation::connect(
-                            &entheai_federation::FedOptions::from_config(&cfg.nats, &cfg.federation),
+                            &entheai_federation::FedOptions::from_config(
+                                &cfg.nats,
+                                &cfg.federation,
+                            ),
                         )
                         .await
                         .map(|f| {
@@ -400,7 +406,12 @@ async fn run_skills_cmd(
     cfg: &entheai_config::Config,
     root: &std::path::Path,
 ) -> anyhow::Result<()> {
-    let dir_name = cfg.skills.dirs.first().map(String::as_str).unwrap_or("skills");
+    let dir_name = cfg
+        .skills
+        .dirs
+        .first()
+        .map(String::as_str)
+        .unwrap_or("skills");
     let skills_dir = root.join(dir_name);
     match args.first().map(String::as_str) {
         Some("add") if args.len() >= 2 => {
@@ -417,7 +428,12 @@ async fn run_skills_cmd(
                         a.path.display()
                     );
                 } else {
-                    println!("skills: added '{}' [{}] -> {}", a.name, a.tier, a.path.display());
+                    println!(
+                        "skills: added '{}' [{}] -> {}",
+                        a.name,
+                        a.tier,
+                        a.path.display()
+                    );
                 }
             }
             if added.iter().any(|a| !a.skipped_existing) {
@@ -444,7 +460,10 @@ async fn run_skills_cmd(
             let name = &args[1];
             match entheai_skills::remote::remove_from_dir(&skills_dir, name)? {
                 Some(p) => println!("skills: removed {}", p.display()),
-                None => println!("skills: no skill named {name:?} in {}", skills_dir.display()),
+                None => println!(
+                    "skills: no skill named {name:?} in {}",
+                    skills_dir.display()
+                ),
             }
             Ok(())
         }
@@ -537,8 +556,8 @@ fn build_prompt_processor(
     cfg: &Config,
 ) -> anyhow::Result<Option<entheai_memory_pp::PromptProcessor>> {
     use entheai_memory_pp::{
-        KompressMarqant, Marqant, MeshSearch, NativeMesh, PromptProcessor, RawStore,
-        RetrievalMode, SidecarMesh, StubMarqant, StubMesh, SubprocessMarqant,
+        KompressMarqant, Marqant, MeshSearch, NativeMesh, PromptProcessor, RawStore, RetrievalMode,
+        SidecarMesh, StubMarqant, StubMesh, SubprocessMarqant,
     };
 
     // Preview budget sent to the mesh per candidate, and how many ranked findings
@@ -563,9 +582,12 @@ fn build_prompt_processor(
     // "stub" always falls back to top-K. All share the raw store (cheap clone).
     let mesh: Box<dyn MeshSearch> = match pc.mesh_backend.trim() {
         "stub" => Box::new(StubMesh),
-        "sidecar" if !pc.sidecar_cmd.trim().is_empty() => {
-            Box::new(SidecarMesh::new(raw.clone(), &pc.sidecar_cmd, PP_PREVIEW_BYTES, PP_MESH_TOP_K))
-        }
+        "sidecar" if !pc.sidecar_cmd.trim().is_empty() => Box::new(SidecarMesh::new(
+            raw.clone(),
+            &pc.sidecar_cmd,
+            PP_PREVIEW_BYTES,
+            PP_MESH_TOP_K,
+        )),
         "sidecar" => Box::new(StubMesh), // requested but no sidecar_cmd → stub
         other => {
             if !other.is_empty() && other != "native" {
@@ -584,7 +606,12 @@ fn build_prompt_processor(
                 }
                 m
             };
-            Box::new(NativeMesh::new(raw.clone(), model, PP_PREVIEW_BYTES, PP_MESH_TOP_K))
+            Box::new(NativeMesh::new(
+                raw.clone(),
+                model,
+                PP_PREVIEW_BYTES,
+                PP_MESH_TOP_K,
+            ))
         }
     };
     let marqant: Box<dyn Marqant> = match pc.marqant_backend.trim() {

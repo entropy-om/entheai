@@ -15,13 +15,29 @@ use serde::Serialize;
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum BusEvent {
     Fallback,
-    Decomposed { tasks: Vec<(String, String)> },
+    Decomposed {
+        tasks: Vec<(String, String)>,
+    },
     #[serde(rename = "coder.started")]
-    CoderStarted { index: usize, role: String, task: String },
+    CoderStarted {
+        index: usize,
+        role: String,
+        task: String,
+    },
     #[serde(rename = "coder.finished")]
-    CoderFinished { index: usize, committed: bool, status: String },
-    Integrating { branches: usize },
-    Done { integration_branch: Option<String>, merged: usize, conflicted: usize },
+    CoderFinished {
+        index: usize,
+        committed: bool,
+        status: String,
+    },
+    Integrating {
+        branches: usize,
+    },
+    Done {
+        integration_branch: Option<String>,
+        merged: usize,
+        conflicted: usize,
+    },
 }
 
 impl BusEvent {
@@ -43,19 +59,31 @@ impl From<&FanoutEvent> for BusEvent {
     fn from(e: &FanoutEvent) -> Self {
         match e {
             FanoutEvent::Fallback => BusEvent::Fallback,
-            FanoutEvent::Decomposed { tasks } => BusEvent::Decomposed { tasks: tasks.clone() },
+            FanoutEvent::Decomposed { tasks } => BusEvent::Decomposed {
+                tasks: tasks.clone(),
+            },
             FanoutEvent::CoderStarted { index, role, task } => BusEvent::CoderStarted {
                 index: *index,
                 role: role.clone(),
                 task: task.clone(),
             },
-            FanoutEvent::CoderFinished { index, committed, status } => BusEvent::CoderFinished {
+            FanoutEvent::CoderFinished {
+                index,
+                committed,
+                status,
+            } => BusEvent::CoderFinished {
                 index: *index,
                 committed: *committed,
                 status: status.clone(),
             },
-            FanoutEvent::Integrating { branches } => BusEvent::Integrating { branches: *branches },
-            FanoutEvent::Done { integration_branch, merged, conflicted } => BusEvent::Done {
+            FanoutEvent::Integrating { branches } => BusEvent::Integrating {
+                branches: *branches,
+            },
+            FanoutEvent::Done {
+                integration_branch,
+                merged,
+                conflicted,
+            } => BusEvent::Done {
                 integration_branch: integration_branch.clone(),
                 merged: *merged,
                 conflicted: *conflicted,
@@ -73,14 +101,41 @@ mod tests {
         let suffixes = [
             BusEvent::Fallback.subject_suffix(),
             BusEvent::Decomposed { tasks: vec![] }.subject_suffix(),
-            BusEvent::CoderStarted { index: 0, role: String::new(), task: String::new() }.subject_suffix(),
-            BusEvent::CoderFinished { index: 0, committed: false, status: String::new() }.subject_suffix(),
+            BusEvent::CoderStarted {
+                index: 0,
+                role: String::new(),
+                task: String::new(),
+            }
+            .subject_suffix(),
+            BusEvent::CoderFinished {
+                index: 0,
+                committed: false,
+                status: String::new(),
+            }
+            .subject_suffix(),
             BusEvent::Integrating { branches: 0 }.subject_suffix(),
-            BusEvent::Done { integration_branch: None, merged: 0, conflicted: 0 }.subject_suffix(),
+            BusEvent::Done {
+                integration_branch: None,
+                merged: 0,
+                conflicted: 0,
+            }
+            .subject_suffix(),
         ];
         let unique: std::collections::HashSet<_> = suffixes.iter().collect();
-        assert_eq!(unique.len(), suffixes.len(), "subject suffixes must be unique");
-        assert_eq!(BusEvent::CoderStarted { index: 0, role: String::new(), task: String::new() }.subject_suffix(), "coder.started");
+        assert_eq!(
+            unique.len(),
+            suffixes.len(),
+            "subject suffixes must be unique"
+        );
+        assert_eq!(
+            BusEvent::CoderStarted {
+                index: 0,
+                role: String::new(),
+                task: String::new()
+            }
+            .subject_suffix(),
+            "coder.started"
+        );
     }
 
     #[test]
@@ -91,10 +146,22 @@ mod tests {
         let all = [
             BusEvent::Fallback,
             BusEvent::Decomposed { tasks: vec![] },
-            BusEvent::CoderStarted { index: 0, role: String::new(), task: String::new() },
-            BusEvent::CoderFinished { index: 0, committed: false, status: String::new() },
+            BusEvent::CoderStarted {
+                index: 0,
+                role: String::new(),
+                task: String::new(),
+            },
+            BusEvent::CoderFinished {
+                index: 0,
+                committed: false,
+                status: String::new(),
+            },
             BusEvent::Integrating { branches: 0 },
-            BusEvent::Done { integration_branch: None, merged: 0, conflicted: 0 },
+            BusEvent::Done {
+                integration_branch: None,
+                merged: 0,
+                conflicted: 0,
+            },
         ];
         for ev in &all {
             let json: serde_json::Value = serde_json::to_value(ev).unwrap();
@@ -111,24 +178,52 @@ mod tests {
         let cases = [
             (FanoutEvent::Fallback, BusEvent::Fallback),
             (
-                FanoutEvent::Decomposed { tasks: vec![("coder".into(), "t".into())] },
-                BusEvent::Decomposed { tasks: vec![("coder".into(), "t".into())] },
+                FanoutEvent::Decomposed {
+                    tasks: vec![("coder".into(), "t".into())],
+                },
+                BusEvent::Decomposed {
+                    tasks: vec![("coder".into(), "t".into())],
+                },
             ),
             (
-                FanoutEvent::CoderStarted { index: 1, role: "explore".into(), task: "look".into() },
-                BusEvent::CoderStarted { index: 1, role: "explore".into(), task: "look".into() },
+                FanoutEvent::CoderStarted {
+                    index: 1,
+                    role: "explore".into(),
+                    task: "look".into(),
+                },
+                BusEvent::CoderStarted {
+                    index: 1,
+                    role: "explore".into(),
+                    task: "look".into(),
+                },
             ),
             (
-                FanoutEvent::CoderFinished { index: 2, committed: true, status: "verified".into() },
-                BusEvent::CoderFinished { index: 2, committed: true, status: "verified".into() },
+                FanoutEvent::CoderFinished {
+                    index: 2,
+                    committed: true,
+                    status: "verified".into(),
+                },
+                BusEvent::CoderFinished {
+                    index: 2,
+                    committed: true,
+                    status: "verified".into(),
+                },
             ),
             (
                 FanoutEvent::Integrating { branches: 3 },
                 BusEvent::Integrating { branches: 3 },
             ),
             (
-                FanoutEvent::Done { integration_branch: Some("b".into()), merged: 2, conflicted: 1 },
-                BusEvent::Done { integration_branch: Some("b".into()), merged: 2, conflicted: 1 },
+                FanoutEvent::Done {
+                    integration_branch: Some("b".into()),
+                    merged: 2,
+                    conflicted: 1,
+                },
+                BusEvent::Done {
+                    integration_branch: Some("b".into()),
+                    merged: 2,
+                    conflicted: 1,
+                },
             ),
         ];
         for (fe, expected) in &cases {

@@ -101,9 +101,12 @@ impl entheai_orchestrator::CoderExecutor for FederationExecutor {
         // UNCOMMITTED changes; run_fanout's commit/verify/integrate does the rest.
         let tmp = tempfile::tempdir().ok()?;
         let rb = tmp.path().join("result.bundle");
-        tokio::fs::write(&rb, self.fed.get_bundle(&result.result_bundle_key).await.ok()?)
-            .await
-            .ok()?;
+        tokio::fs::write(
+            &rb,
+            self.fed.get_bundle(&result.result_bundle_key).await.ok()?,
+        )
+        .await
+        .ok()?;
         // Squash-apply the delta as UNCOMMITTED changes. On ANY failure, restore
         // the worktree to a clean base — otherwise a half-applied/conflicted merge
         // would be left for the local fallback (or `commit_all`) to snapshot and

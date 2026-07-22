@@ -80,7 +80,10 @@ fn write_skill(
     let skill_dir = skills_dir.join(&slug);
     // Defense in depth: the joined path must stay inside skills_dir.
     if skill_dir.parent() != Some(skills_dir) {
-        anyhow::bail!("refusing to write outside the skills dir: {}", skill_dir.display());
+        anyhow::bail!(
+            "refusing to write outside the skills dir: {}",
+            skill_dir.display()
+        );
     }
     let path = skill_dir.join("SKILL.md");
     if skill_dir.exists() {
@@ -211,7 +214,11 @@ async fn fetch_skill_md(
     }
     let md = read_capped(resp, BODY_CAP).await?;
     let (_n, d, b) = crate::parse_skill_md(&md, &entry.name);
-    let desc = if entry.description.is_empty() { d } else { entry.description.clone() };
+    let desc = if entry.description.is_empty() {
+        d
+    } else {
+        entry.description.clone()
+    };
     Ok((desc, b))
 }
 
@@ -219,9 +226,13 @@ async fn fetch_skill_md(
 /// under `skills_dir`. Returns what was written (incl. skip-if-exists). Errors
 /// only on a bad URL or when no tier yields anything.
 pub async fn add_from_url(url: &str, skills_dir: &Path) -> anyhow::Result<Vec<AddedSkill>> {
-    let parsed = reqwest::Url::parse(url).map_err(|e| anyhow::anyhow!("invalid URL {url:?}: {e}"))?;
+    let parsed =
+        reqwest::Url::parse(url).map_err(|e| anyhow::anyhow!("invalid URL {url:?}: {e}"))?;
     if !matches!(parsed.scheme(), "http" | "https") {
-        anyhow::bail!("only http/https URLs are supported (got {:?})", parsed.scheme());
+        anyhow::bail!(
+            "only http/https URLs are supported (got {:?})",
+            parsed.scheme()
+        );
     }
     let host = parsed.host_str().unwrap_or("skill").to_string();
     let client = reqwest::Client::builder()
@@ -265,7 +276,10 @@ pub async fn add_from_url(url: &str, skills_dir: &Path) -> anyhow::Result<Vec<Ad
                             (None, Some(u)) => match fetch_skill_md(&client, &parsed, s, u).await {
                                 Ok(v) => v,
                                 Err(e) => {
-                                    log::warn!("skills: manifest entry {:?}: {e} — skipping", s.name);
+                                    log::warn!(
+                                        "skills: manifest entry {:?}: {e} — skipping",
+                                        s.name
+                                    );
                                     continue;
                                 }
                             },
@@ -299,7 +313,8 @@ pub async fn add_from_url(url: &str, skills_dir: &Path) -> anyhow::Result<Vec<Ad
         if resp.status().is_success() {
             if let Ok(text) = read_capped(resp, BODY_CAP).await {
                 if !text.trim().is_empty() {
-                    let (name, desc, body) = synthesize_from_llms_txt(&text, &host, llms_url.as_str());
+                    let (name, desc, body) =
+                        synthesize_from_llms_txt(&text, &host, llms_url.as_str());
                     let mut a = write_skill(skills_dir, &name, &desc, &body, url)?;
                     a.tier = "llms.txt";
                     return Ok(vec![a]);
@@ -320,11 +335,15 @@ pub async fn add_from_url(url: &str, skills_dir: &Path) -> anyhow::Result<Vec<Ad
             let text = read_capped(resp, BODY_CAP).await?;
             if !text.trim().is_empty() {
                 let body = if is_html {
-                    format!("> auto-extracted from {url} (best-effort, may be noisy).\n\n{}", html_to_text(&text))
+                    format!(
+                        "> auto-extracted from {url} (best-effort, may be noisy).\n\n{}",
+                        html_to_text(&text)
+                    )
                 } else {
                     format!("> Added from {url}.\n\n{text}")
                 };
-                let mut a = write_skill(skills_dir, &host, &format!("Docs from {host}"), &body, url)?;
+                let mut a =
+                    write_skill(skills_dir, &host, &format!("Docs from {host}"), &body, url)?;
                 a.tier = "page";
                 return Ok(vec![a]);
             }
@@ -344,7 +363,10 @@ pub fn remove_from_dir(skills_dir: &Path, name: &str) -> anyhow::Result<Option<P
     let slug = slugify(name)?;
     let skill_dir = skills_dir.join(&slug);
     if skill_dir.parent() != Some(skills_dir) {
-        anyhow::bail!("refusing to remove outside the skills dir: {}", skill_dir.display());
+        anyhow::bail!(
+            "refusing to remove outside the skills dir: {}",
+            skill_dir.display()
+        );
     }
     if !skill_dir.exists() {
         return Ok(None);
@@ -375,7 +397,14 @@ mod tests {
     #[test]
     fn write_skill_creates_file_and_skips_existing() {
         let dir = tempfile::tempdir().unwrap();
-        let a = write_skill(dir.path(), "My Skill", "desc here", "body text", "https://x.example").unwrap();
+        let a = write_skill(
+            dir.path(),
+            "My Skill",
+            "desc here",
+            "body text",
+            "https://x.example",
+        )
+        .unwrap();
         assert_eq!(a.slug, "my-skill");
         assert!(!a.skipped_existing);
         let text = std::fs::read_to_string(&a.path).unwrap();
@@ -393,17 +422,19 @@ mod tests {
     #[test]
     fn synthesize_from_llms_txt_extracts_title_and_blurb() {
         let txt = "# Stripe Docs\n\n> Payments infrastructure for the internet.\n\n## Guides\n- [Quickstart](/q)\n";
-        let (name, desc, body) = synthesize_from_llms_txt(txt, "docs.stripe.com", "https://docs.stripe.com/llms.txt");
+        let (name, desc, body) =
+            synthesize_from_llms_txt(txt, "docs.stripe.com", "https://docs.stripe.com/llms.txt");
         assert_eq!(name, "Stripe Docs");
         assert_eq!(desc, "Payments infrastructure for the internet.");
         assert!(body.contains("https://docs.stripe.com/llms.txt")); // source note
-        assert!(body.contains("Quickstart"));                        // original index retained
+        assert!(body.contains("Quickstart")); // original index retained
     }
 
     #[test]
     fn synthesize_falls_back_to_host_and_first_paragraph() {
         let txt = "No heading here.\nSecond line.\n";
-        let (name, desc, _body) = synthesize_from_llms_txt(txt, "example.com", "https://example.com/llms.txt");
+        let (name, desc, _body) =
+            synthesize_from_llms_txt(txt, "example.com", "https://example.com/llms.txt");
         assert_eq!(name, "example.com");
         assert_eq!(desc, "No heading here.");
     }
@@ -425,17 +456,27 @@ mod tests {
         let manifest = r#"{"skills":[
             {"name":"Alpha","description":"a","body":"do alpha"},
             {"name":"Beta","description":"b","skill_md_url":"__BASE__/beta.md"}
-        ]}"#.replace("__BASE__", &server.uri());
-        Mock::given(method("GET")).and(path("/.well-known/skills.json"))
+        ]}"#
+        .replace("__BASE__", &server.uri());
+        Mock::given(method("GET"))
+            .and(path("/.well-known/skills.json"))
             .respond_with(ResponseTemplate::new(200).set_body_string(manifest))
-            .mount(&server).await;
-        Mock::given(method("GET")).and(path("/beta.md"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("---\nname: Beta\ndescription: b\n---\ndo beta"))
-            .mount(&server).await;
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/beta.md"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("---\nname: Beta\ndescription: b\n---\ndo beta"),
+            )
+            .mount(&server)
+            .await;
         // llms.txt also present — must be ignored because tier 1 matched.
-        Mock::given(method("GET")).and(path("/llms.txt"))
+        Mock::given(method("GET"))
+            .and(path("/llms.txt"))
             .respond_with(ResponseTemplate::new(200).set_body_string("# Should Not Win"))
-            .mount(&server).await;
+            .mount(&server)
+            .await;
 
         let dir = tempfile::tempdir().unwrap();
         let added = add_from_url(&server.uri(), dir.path()).await.unwrap();
@@ -443,7 +484,9 @@ mod tests {
         assert!(added.iter().all(|a| a.tier == "well-known"));
         assert!(dir.path().join("alpha/SKILL.md").exists());
         assert!(dir.path().join("beta/SKILL.md").exists());
-        assert!(std::fs::read_to_string(dir.path().join("beta/SKILL.md")).unwrap().contains("do beta"));
+        assert!(std::fs::read_to_string(dir.path().join("beta/SKILL.md"))
+            .unwrap()
+            .contains("do beta"));
     }
 
     #[tokio::test]
@@ -452,21 +495,31 @@ mod tests {
         let manifest = r#"{"skills":[
             {"name":"Good","description":"g","body":"do good"},
             {"name":"Bad","description":"b","skill_md_url":"__BASE__/missing.md"}
-        ]}"#.replace("__BASE__", &server.uri());
-        Mock::given(method("GET")).and(path("/.well-known/skills.json"))
+        ]}"#
+        .replace("__BASE__", &server.uri());
+        Mock::given(method("GET"))
+            .and(path("/.well-known/skills.json"))
             .respond_with(ResponseTemplate::new(200).set_body_string(manifest))
-            .mount(&server).await;
+            .mount(&server)
+            .await;
         // 404 with an HTML error page — must NOT be written as Bad's instructions.
-        Mock::given(method("GET")).and(path("/missing.md"))
-            .respond_with(ResponseTemplate::new(404).set_body_raw("<h1>not found</h1>", "text/html"))
-            .mount(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/missing.md"))
+            .respond_with(
+                ResponseTemplate::new(404).set_body_raw("<h1>not found</h1>", "text/html"),
+            )
+            .mount(&server)
+            .await;
 
         let dir = tempfile::tempdir().unwrap();
         let added = add_from_url(&server.uri(), dir.path()).await.unwrap();
         assert_eq!(added.len(), 1, "only the good entry installs");
         assert_eq!(added[0].slug, "good");
         assert!(dir.path().join("good/SKILL.md").exists());
-        assert!(!dir.path().join("bad/SKILL.md").exists(), "the 404 page must not become a skill");
+        assert!(
+            !dir.path().join("bad/SKILL.md").exists(),
+            "the 404 page must not become a skill"
+        );
     }
 
     #[tokio::test]
@@ -475,12 +528,16 @@ mod tests {
         // skill_md_url points at a different host → rejected; no manifest skill
         // installed → falls through to llms.txt.
         let manifest = r#"{"skills":[{"name":"X","description":"x","skill_md_url":"http://169.254.169.254/latest/meta-data"}]}"#;
-        Mock::given(method("GET")).and(path("/.well-known/skills.json"))
+        Mock::given(method("GET"))
+            .and(path("/.well-known/skills.json"))
             .respond_with(ResponseTemplate::new(200).set_body_string(manifest))
-            .mount(&server).await;
-        Mock::given(method("GET")).and(path("/llms.txt"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/llms.txt"))
             .respond_with(ResponseTemplate::new(200).set_body_string("# Fell Through\n\n> ok"))
-            .mount(&server).await;
+            .mount(&server)
+            .await;
         let dir = tempfile::tempdir().unwrap();
         let added = add_from_url(&server.uri(), dir.path()).await.unwrap();
         assert_eq!(added.len(), 1);
@@ -498,22 +555,28 @@ mod tests {
         assert!(!dir.path().join("zap-me").exists());
         assert!(dir.path().join("keep-me").exists()); // untouched
         assert_eq!(remove_from_dir(dir.path(), "nope").unwrap(), None); // missing → None
-        // A traversal attempt slugifies to a harmless in-dir name that doesn't exist.
+                                                                        // A traversal attempt slugifies to a harmless in-dir name that doesn't exist.
         assert_eq!(remove_from_dir(dir.path(), "../../etc").unwrap(), None);
     }
 
     #[tokio::test]
     async fn tier2_llms_txt_when_no_manifest() {
         let server = MockServer::start().await;
-        Mock::given(method("GET")).and(path("/llms.txt"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("# Docs\n\n> Great docs.\n\n- [X](/x)"))
-            .mount(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/llms.txt"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("# Docs\n\n> Great docs.\n\n- [X](/x)"),
+            )
+            .mount(&server)
+            .await;
         let dir = tempfile::tempdir().unwrap();
         let added = add_from_url(&server.uri(), dir.path()).await.unwrap();
         assert_eq!(added.len(), 1);
         assert_eq!(added[0].tier, "llms.txt");
         assert_eq!(added[0].slug, "docs");
-        assert!(std::fs::read_to_string(&added[0].path).unwrap().contains("Great docs."));
+        assert!(std::fs::read_to_string(&added[0].path)
+            .unwrap()
+            .contains("Great docs."));
     }
 
     #[tokio::test]
@@ -523,10 +586,13 @@ mod tests {
         // generate_response() time, overriding any `insert_header("content-type", ..)`
         // regardless of call order (wiremock 0.6.5). Use `set_body_raw(body, mime)`,
         // which sets both atomically, to actually get a `text/html` response.
-        Mock::given(method("GET")).and(path("/"))
-            .respond_with(ResponseTemplate::new(200)
-                .set_body_raw("<h1>Hello</h1><p>World</p>", "text/html"))
-            .mount(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("<h1>Hello</h1><p>World</p>", "text/html"),
+            )
+            .mount(&server)
+            .await;
         let dir = tempfile::tempdir().unwrap();
         let added = add_from_url(&server.uri(), dir.path()).await.unwrap();
         assert_eq!(added.len(), 1);
@@ -538,6 +604,8 @@ mod tests {
     #[tokio::test]
     async fn rejects_non_http_scheme() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(add_from_url("file:///etc/passwd", dir.path()).await.is_err());
+        assert!(add_from_url("file:///etc/passwd", dir.path())
+            .await
+            .is_err());
     }
 }

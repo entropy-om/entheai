@@ -127,9 +127,11 @@ async fn run_serve(
     let config_path = config_path.to_string();
     let test_coder = test_coder.map(|s| s.to_string());
     let opts = entheai_federation::FedOptions::from_config(&config.nats, &config.federation);
-    let fed = entheai_federation::Federation::connect(&opts).await.ok_or_else(|| {
-        anyhow::anyhow!("federation not available (check [federation].enabled + [nats] creds)")
-    })?;
+    let fed = entheai_federation::Federation::connect(&opts)
+        .await
+        .ok_or_else(|| {
+            anyhow::anyhow!("federation not available (check [federation].enabled + [nats] creds)")
+        })?;
     log::info!("entheai-worker: serving the coder work-queue");
 
     // Startup posture: one line reporting the active confinement mode and whether
@@ -230,11 +232,10 @@ async fn run_serve(
             config_path.clone(),
             test_coder.clone(),
         );
-        let (cache_c, presence_c, inflight_c) =
-            (cache.clone(), presence.clone(), inflight.clone());
+        let (cache_c, presence_c, inflight_c) = (cache.clone(), presence.clone(), inflight.clone());
         tokio::spawn(async move {
             let _permit = permit; // held for the task's lifetime → frees a slot on completion
-            // Reflect Working while any coder runs; the last to finish sets Idle.
+                                  // Reflect Working while any coder runs; the last to finish sets Idle.
             inflight_c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             presence_c.set(entheai_federation::WorkerState::Working {
                 task: claimed.item.task.clone(),
@@ -337,7 +338,8 @@ async fn process_one(
         {
             Some(_new_sha) => {
                 let key = entheai_federation::types::result_key(&item.session, item.index);
-                fed.put_bundle(&key, &tokio::fs::read(&result_bundle).await?).await?;
+                fed.put_bundle(&key, &tokio::fs::read(&result_bundle).await?)
+                    .await?;
                 Ok(entheai_federation::WorkResult {
                     session: item.session.clone(),
                     index: item.index,
@@ -468,7 +470,10 @@ async fn run_coder(
             } else if !status.success() {
                 anyhow::bail!("coder child failed: {status}");
             }
-            Ok(format!("coder ran in a confined child (role={})", item.role))
+            Ok(format!(
+                "coder ran in a confined child (role={})",
+                item.role
+            ))
         }
     }
 }
@@ -495,7 +500,8 @@ async fn run_dispatch(config: &Config, role: &str, task: &str) -> anyhow::Result
     let base_bundle = tmp.path().join("base.bundle");
     let base_sha = entheai_federation::repo::bundle_base(&repo, &base_bundle).await?;
     let base_key = entheai_federation::types::base_key(&session, index);
-    fed.put_bundle(&base_key, &tokio::fs::read(&base_bundle).await?).await?;
+    fed.put_bundle(&base_key, &tokio::fs::read(&base_bundle).await?)
+        .await?;
 
     // Subscribe BEFORE dispatch so the result isn't missed.
     let mut sub = fed.subscribe_result(&session, index).await?;
@@ -518,8 +524,13 @@ async fn run_dispatch(config: &Config, role: &str, task: &str) -> anyhow::Result
             let tip = entheai_federation::repo::apply_delta_bundle(&repo, &rb, &branch).await?;
             println!("worker committed → branch {branch} @ {tip}");
         }
-        Some(r) => println!("worker returned status={} (no change applied)\n{}", r.status, r.log),
-        None => println!("no worker result within the deadline — dispatch fell through (run locally)."),
+        Some(r) => println!(
+            "worker returned status={} (no change applied)\n{}",
+            r.status, r.log
+        ),
+        None => {
+            println!("no worker result within the deadline — dispatch fell through (run locally).")
+        }
     }
     Ok(())
 }
@@ -564,7 +575,10 @@ async fn serve_or_dispatch(cli: Cli) -> anyhow::Result<()> {
 
     if cli.dispatch {
         let role = cli.role.clone().unwrap_or_else(|| "coder".into());
-        let task = cli.task.clone().ok_or_else(|| anyhow::anyhow!("--dispatch needs --task"))?;
+        let task = cli
+            .task
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("--dispatch needs --task"))?;
         return run_dispatch(&config, &role, &task).await;
     }
 
@@ -678,7 +692,9 @@ fn run_sandboxed_coder_blocking(cli: Cli) -> anyhow::Result<()> {
     let output = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
-        .block_on(entheai_orchestrator::run_coder_once(&config, &role, &task, &work));
+        .block_on(entheai_orchestrator::run_coder_once(
+            &config, &role, &task, &work,
+        ));
     if is_error_output(&output) {
         eprintln!("[worker] {output}");
         std::process::exit(1);
@@ -723,9 +739,15 @@ mod tests {
         let cfg = Config::from_toml_str("").unwrap();
         let paths = sandbox_read_only_paths(&cfg, None);
         // Every returned path must exist on this host (the list is filtered).
-        assert!(paths.iter().all(|p| p.exists()), "unfiltered non-existent path leaked: {paths:?}");
+        assert!(
+            paths.iter().all(|p| p.exists()),
+            "unfiltered non-existent path leaked: {paths:?}"
+        );
         // A well-known always-present path must survive the filter on any Unix.
-        assert!(paths.iter().any(|p| p == Path::new("/usr")), "expected /usr in {paths:?}");
+        assert!(
+            paths.iter().any(|p| p == Path::new("/usr")),
+            "expected /usr in {paths:?}"
+        );
     }
 
     #[test]
@@ -736,12 +758,18 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let cfg_path = tmp.path();
         let paths = sandbox_read_only_paths(&cfg, Some(cfg_path));
-        assert!(paths.iter().any(|p| p == cfg_path), "config path missing from {paths:?}");
+        assert!(
+            paths.iter().any(|p| p == cfg_path),
+            "config path missing from {paths:?}"
+        );
 
         // A config path that does NOT exist must be filtered out.
         let missing = Path::new("/nonexistent/entheai-such-path-should-not-exist.toml");
         let paths = sandbox_read_only_paths(&cfg, Some(missing));
-        assert!(!paths.iter().any(|p| p == missing), "non-existent config path leaked");
+        assert!(
+            !paths.iter().any(|p| p == missing),
+            "non-existent config path leaked"
+        );
     }
 
     #[test]
@@ -754,8 +782,14 @@ mod tests {
         if let Some(home) = std::env::var_os("HOME") {
             let cargo = PathBuf::from(&home).join(".cargo");
             let rustup = PathBuf::from(&home).join(".rustup");
-            assert!(!paths.contains(&cargo), ".cargo present without verify: {paths:?}");
-            assert!(!paths.contains(&rustup), ".rustup present without verify: {paths:?}");
+            assert!(
+                !paths.contains(&cargo),
+                ".cargo present without verify: {paths:?}"
+            );
+            assert!(
+                !paths.contains(&rustup),
+                ".rustup present without verify: {paths:?}"
+            );
         }
     }
 }

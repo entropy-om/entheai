@@ -76,4 +76,3 @@ mod tests {
         pack_ternary(&[2]);
     }
 }
-

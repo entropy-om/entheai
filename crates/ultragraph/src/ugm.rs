@@ -126,7 +126,8 @@ impl UgmFile {
             let in_dim = u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().unwrap());
             let out_dim = u32::from_le_bytes(bytes[cursor + 4..cursor + 8].try_into().unwrap());
             cursor += 8;
-            let name_len = u16::from_le_bytes(bytes[cursor..cursor + 2].try_into().unwrap()) as usize;
+            let name_len =
+                u16::from_le_bytes(bytes[cursor..cursor + 2].try_into().unwrap()) as usize;
             cursor += 2;
             if cursor + name_len + 4 > bytes.len() {
                 return Err(std::io::Error::new(
@@ -254,7 +255,10 @@ impl UgmFile {
 
             for &ti in &remaining {
                 let edges = incoming.get(&ti).cloned().unwrap_or_default();
-                if !edges.iter().all(|e| outputs.contains_key(&(e.src_idx as usize))) {
+                if !edges
+                    .iter()
+                    .all(|e| outputs.contains_key(&(e.src_idx as usize)))
+                {
                     still.push(ti);
                     continue;
                 }
@@ -398,4 +402,3 @@ mod tests {
         assert_eq!(out, vec![vec![2.0, 4.0]]);
     }
 }
-

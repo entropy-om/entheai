@@ -18,7 +18,11 @@ const OMEGA: f64 = 0.06;
 const DECAY: f32 = 0.90;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FacultyKind { Model, Tools, Context }
+pub enum FacultyKind {
+    Model,
+    Tools,
+    Context,
+}
 
 #[derive(Debug, Clone)]
 pub struct Faculty {
@@ -57,16 +61,27 @@ pub struct BrainState {
 }
 
 impl Default for BrainState {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BrainState {
     pub fn new() -> Self {
         BrainState {
             faculties: vec![
-                Faculty { kind: FacultyKind::Model, activity: 0.0 },
-                Faculty { kind: FacultyKind::Tools, activity: 0.0 },
-                Faculty { kind: FacultyKind::Context, activity: 0.0 },
+                Faculty {
+                    kind: FacultyKind::Model,
+                    activity: 0.0,
+                },
+                Faculty {
+                    kind: FacultyKind::Tools,
+                    activity: 0.0,
+                },
+                Faculty {
+                    kind: FacultyKind::Context,
+                    activity: 0.0,
+                },
             ],
             fleet: Vec::new(),
             frozen: Vec::new(),
@@ -104,7 +119,10 @@ impl BrainState {
     }
 
     pub fn faculty(&self, kind: FacultyKind) -> &Faculty {
-        self.faculties.iter().find(|f| f.kind == kind).expect("faculty exists")
+        self.faculties
+            .iter()
+            .find(|f| f.kind == kind)
+            .expect("faculty exists")
     }
 
     pub fn flare(&mut self, kind: FacultyKind) {
@@ -127,13 +145,20 @@ impl BrainState {
     pub fn set_fleet(&mut self, workers: &[(String, bool)]) {
         self.fleet = workers
             .iter()
-            .map(|(id, working)| FleetNode { node_id: id.clone(), working: *working })
+            .map(|(id, working)| FleetNode {
+                node_id: id.clone(),
+                working: *working,
+            })
             .collect();
         self.worker_count = self.fleet.len();
     }
 
-    pub fn set_nats(&mut self, up: bool) { self.nats_up = up; }
-    pub fn set_ctx_pct(&mut self, pct: u16) { self.ctx_pct = pct; }
+    pub fn set_nats(&mut self, up: bool) {
+        self.nats_up = up;
+    }
+    pub fn set_ctx_pct(&mut self, pct: u16) {
+        self.ctx_pct = pct;
+    }
 
     pub fn set_compression(&mut self, ratio: f64, input_tokens: usize, output_tokens: usize) {
         self.compression_ratio = ratio;
@@ -164,7 +189,10 @@ pub fn render(state: &BrainState, area: Rect, buf: &mut Buffer, marker: Marker) 
     if area.width < 4 || area.height < 2 {
         return;
     }
-    let canvas_area = Rect { height: area.height - 1, ..area };
+    let canvas_area = Rect {
+        height: area.height - 1,
+        ..area
+    };
     let n_fac = state.faculties.len().max(1);
     let n_fleet = state.fleet.len().max(1);
 
@@ -177,10 +205,20 @@ pub fn render(state: &BrainState, area: Rect, buf: &mut Buffer, marker: Marker) 
                 let a = i as f64 / n_fac as f64 * std::f64::consts::TAU;
                 let (x, y, wz) = project(a, 0.45, 0.10, state.frame);
                 let g = (depth_brightness(wz, 0.45) * 90.0) as u8;
-                ctx.draw(&CanvasLine { x1: 0.0, y1: 0.0, x2: x, y2: y, color: Color::Rgb(0, g, g) });
+                ctx.draw(&CanvasLine {
+                    x1: 0.0,
+                    y1: 0.0,
+                    x2: x,
+                    y2: y,
+                    color: Color::Rgb(0, g, g),
+                });
             }
             ctx.layer();
-            ctx.print(0.0, 0.0, Span::styled("✦", Style::default().fg(Color::Rgb(120, 200, 220))));
+            ctx.print(
+                0.0,
+                0.0,
+                Span::styled("✦", Style::default().fg(Color::Rgb(120, 200, 220))),
+            );
             for (i, f) in state.faculties.iter().enumerate() {
                 let a = i as f64 / n_fac as f64 * std::f64::consts::TAU;
                 let (x, y, wz) = project(a, 0.45, 0.10, state.frame);
@@ -191,13 +229,21 @@ pub fn render(state: &BrainState, area: Rect, buf: &mut Buffer, marker: Marker) 
                     FacultyKind::Tools => "T",
                     FacultyKind::Context => "C",
                 };
-                ctx.print(x, y, Span::styled(glyph, Style::default().fg(Color::Rgb(0, v, v))));
+                ctx.print(
+                    x,
+                    y,
+                    Span::styled(glyph, Style::default().fg(Color::Rgb(0, v, v))),
+                );
             }
             for (i, node) in state.fleet.iter().enumerate() {
                 let a = i as f64 / n_fleet as f64 * std::f64::consts::TAU;
                 let (x, y, wz) = project(a, 0.85, -0.12, state.frame);
                 let db = depth_brightness(wz, 0.85);
-                let base: (u8, u8, u8) = if node.working { (0, 220, 90) } else { (90, 90, 90) };
+                let base: (u8, u8, u8) = if node.working {
+                    (0, 220, 90)
+                } else {
+                    (90, 90, 90)
+                };
                 let col = Color::Rgb(
                     (base.0 as f32 * db) as u8,
                     (base.1 as f32 * db) as u8,
@@ -211,8 +257,20 @@ pub fn render(state: &BrainState, area: Rect, buf: &mut Buffer, marker: Marker) 
                 let (x, y, wz) = project(a, 1.05, 0.05, state.frame);
                 let db = depth_brightness(wz, 1.05);
                 let v = ((0.20 + 0.80 * node.awake) * db * 255.0) as u8;
-                let ch = node.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "*".to_string());
-                ctx.print(x, y, Span::styled(ch, Style::default().fg(Color::Rgb(0, (v as u16 * 200 / 255) as u8, v))));
+                let ch = node
+                    .name
+                    .chars()
+                    .next()
+                    .map(|c| c.to_uppercase().to_string())
+                    .unwrap_or_else(|| "*".to_string());
+                ctx.print(
+                    x,
+                    y,
+                    Span::styled(
+                        ch,
+                        Style::default().fg(Color::Rgb(0, (v as u16 * 200 / 255) as u8, v)),
+                    ),
+                );
             }
         });
     Widget::render(canvas, canvas_area, buf);
@@ -235,16 +293,25 @@ fn footer_line(state: &BrainState) -> Line<'static> {
         Color::DarkGray
     };
     let mut spans = vec![
-        Span::styled(format!("wk {}", state.worker_count), Style::default().fg(Color::Gray)),
+        Span::styled(
+            format!("wk {}", state.worker_count),
+            Style::default().fg(Color::Gray),
+        ),
         Span::raw(" · nats "),
         Span::styled(nats_glyph, Style::default().fg(nats_col)),
         Span::raw(" · "),
-        Span::styled(format!("ctx {}%", state.ctx_pct), Style::default().fg(ctx_col)),
+        Span::styled(
+            format!("ctx {}%", state.ctx_pct),
+            Style::default().fg(ctx_col),
+        ),
     ];
     if state.compression_tokens.0 > 0 || state.compression_tokens.1 > 0 {
         let pct = (state.compression_ratio * 100.0).round() as i64;
         spans.push(Span::raw(" · "));
-        spans.push(Span::styled(format!("kx {pct}%"), Style::default().fg(Color::Magenta)));
+        spans.push(Span::styled(
+            format!("kx {pct}%"),
+            Style::default().fg(Color::Magenta),
+        ));
     }
     Line::from(spans)
 }
@@ -260,7 +327,9 @@ mod tests {
         assert_eq!(b.frozen_awake("nixos"), 0.0, "starts frozen");
         b.wake_frozen("nixos");
         assert_eq!(b.frozen_awake("nixos"), 1.0, "wakes fully");
-        for _ in 0..200 { b.tick(); }
+        for _ in 0..200 {
+            b.tick();
+        }
         assert!(b.frozen_awake("nixos") < 0.02, "melts back toward frozen");
     }
 
@@ -272,8 +341,13 @@ mod tests {
         assert_eq!(b.faculty(FacultyKind::Model).activity, 1.0);
         b.tick();
         let a1 = b.faculty(FacultyKind::Model).activity;
-        assert!((0.0..1.0).contains(&a1), "decays and stays non-negative: {a1}");
-        for _ in 0..200 { b.tick(); }
+        assert!(
+            (0.0..1.0).contains(&a1),
+            "decays and stays non-negative: {a1}"
+        );
+        for _ in 0..200 {
+            b.tick();
+        }
         let a = b.faculty(FacultyKind::Model).activity;
         assert!((0.0..0.02).contains(&a), "eases to ~0: {a}");
     }
@@ -326,7 +400,10 @@ mod tests {
         for x in area.left()..area.right() {
             row.push_str(buf[(x, y)].symbol());
         }
-        assert!(row.contains("kx 42%"), "footer compression readout missing: {row:?}");
+        assert!(
+            row.contains("kx 42%"),
+            "footer compression readout missing: {row:?}"
+        );
     }
 
     #[test]
@@ -343,7 +420,10 @@ mod tests {
         for x in area.left()..area.right() {
             row.push_str(buf[(x, y)].symbol());
         }
-        assert!(!row.contains("kx"), "no compression activity yet, readout should be absent: {row:?}");
+        assert!(
+            !row.contains("kx"),
+            "no compression activity yet, readout should be absent: {row:?}"
+        );
     }
 
     #[test]
@@ -351,8 +431,14 @@ mod tests {
         let period = (2.0 * std::f64::consts::PI / OMEGA).round() as u64;
         let (x0, y0, _) = project(0.0, 0.5, 0.0, 0);
         let (xp, yp, _) = project(0.0, 0.5, 0.0, period);
-        assert!((x0 - xp).abs() < 2e-2 && (y0 - yp).abs() < 2e-2, "one rotation returns near start");
-        assert!(depth_brightness(0.4, 0.5) > depth_brightness(-0.4, 0.5), "nearer = brighter");
+        assert!(
+            (x0 - xp).abs() < 2e-2 && (y0 - yp).abs() < 2e-2,
+            "one rotation returns near start"
+        );
+        assert!(
+            depth_brightness(0.4, 0.5) > depth_brightness(-0.4, 0.5),
+            "nearer = brighter"
+        );
         let db = depth_brightness(0.0, 0.5);
         assert!((0.0..=1.0).contains(&db));
     }

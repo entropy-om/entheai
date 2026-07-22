@@ -412,9 +412,10 @@ async fn event_loop<P: Provider + 'static>(
     // and stays behaviorally identical to B1: `None` when federation is off or the
     // connect failed, otherwise the `FederationExecutor` over that connection.
     let fleet_fed: Option<entheai_federation::Federation> = if config.federation.enabled {
-        entheai_federation::Federation::connect(
-            &entheai_federation::FedOptions::from_config(&config.nats, &config.federation),
-        )
+        entheai_federation::Federation::connect(&entheai_federation::FedOptions::from_config(
+            &config.nats,
+            &config.federation,
+        ))
         .await
     } else {
         None
@@ -422,8 +423,10 @@ async fn event_loop<P: Provider + 'static>(
     let fed_exec: Option<std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>> =
         if config.fanout.executor == "agy" {
             // Recursive-dev path: each coder runs via the Antigravity CLI (depth-guarded).
-            Some(entheai_orchestrator::AgyExecutor::new(config.fanout.agy_model.clone())
-                as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>)
+            Some(
+                entheai_orchestrator::AgyExecutor::new(config.fanout.agy_model.clone())
+                    as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>,
+            )
         } else {
             fleet_fed.clone().map(|f| {
                 entheai_federation::FederationExecutor::new(f, root.clone())
@@ -1800,7 +1803,8 @@ fn render(
     let show = show_brain(app.brain_enabled, full.width);
     let (area, brain_area) = if show {
         let [left, right] =
-            Layout::horizontal([Constraint::Min(1), Constraint::Length(app.brain_width)]).areas(full);
+            Layout::horizontal([Constraint::Min(1), Constraint::Length(app.brain_width)])
+                .areas(full);
         (left, Some(right))
     } else {
         (full, None)
@@ -2329,7 +2333,10 @@ mod tests {
         let app = test_app();
         let line = status_line(&app);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("WORK"), "pomodoro work phase in status line: {text:?}");
+        assert!(
+            text.contains("WORK"),
+            "pomodoro work phase in status line: {text:?}"
+        );
         assert!(text.contains(':'), "mm:ss countdown present: {text:?}");
     }
 
@@ -2340,13 +2347,19 @@ mod tests {
         app.osaurus_models = vec!["model-a".to_string(), "model-b".to_string()];
         let line = status_line(&app);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("osaurus ● 2"), "osaurus up in status line: {text:?}");
+        assert!(
+            text.contains("osaurus ● 2"),
+            "osaurus up in status line: {text:?}"
+        );
 
         app.osaurus_up = false;
         app.osaurus_models.clear();
         let line_down = status_line(&app);
         let text_down: String = line_down.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text_down.contains("osaurus ○"), "osaurus down in status line: {text_down:?}");
+        assert!(
+            text_down.contains("osaurus ○"),
+            "osaurus down in status line: {text_down:?}"
+        );
     }
 
     #[tokio::test]

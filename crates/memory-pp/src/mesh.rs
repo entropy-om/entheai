@@ -35,7 +35,12 @@ pub struct StubMesh;
 
 #[async_trait]
 impl MeshSearch for StubMesh {
-    async fn rerank(&self, _q: &str, _spans: &[RawSpan], _d: Duration) -> Result<Vec<RawSpan>, PpError> {
+    async fn rerank(
+        &self,
+        _q: &str,
+        _spans: &[RawSpan],
+        _d: Duration,
+    ) -> Result<Vec<RawSpan>, PpError> {
         Err(PpError::MeshUnavailable)
     }
 }
@@ -47,7 +52,12 @@ pub struct SlowStubMesh {
 
 #[async_trait]
 impl MeshSearch for SlowStubMesh {
-    async fn rerank(&self, _q: &str, spans: &[RawSpan], _d: Duration) -> Result<Vec<RawSpan>, PpError> {
+    async fn rerank(
+        &self,
+        _q: &str,
+        spans: &[RawSpan],
+        _d: Duration,
+    ) -> Result<Vec<RawSpan>, PpError> {
         tokio::time::sleep(self.sleep).await;
         Ok(spans.to_vec())
     }
@@ -58,7 +68,12 @@ pub struct IdentityMesh;
 
 #[async_trait]
 impl MeshSearch for IdentityMesh {
-    async fn rerank(&self, _q: &str, spans: &[RawSpan], _d: Duration) -> Result<Vec<RawSpan>, PpError> {
+    async fn rerank(
+        &self,
+        _q: &str,
+        spans: &[RawSpan],
+        _d: Duration,
+    ) -> Result<Vec<RawSpan>, PpError> {
         Ok(spans.to_vec())
     }
 }
@@ -73,8 +88,10 @@ fn build_rerank_request(
     deadline_ms: u64,
     top_k: usize,
 ) -> String {
-    let spans: Vec<Value> =
-        candidates.iter().map(|(id, text)| json!({ "id": id, "text": text })).collect();
+    let spans: Vec<Value> = candidates
+        .iter()
+        .map(|(id, text)| json!({ "id": id, "text": text }))
+        .collect();
     json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -99,10 +116,15 @@ fn parse_rerank_response(stdout: &str) -> Result<Vec<String>, PpError> {
         if let Some(err) = v.get("error") {
             return Err(PpError::Mesh(format!("sidecar error: {err}")));
         }
-        if let Some(arr) =
-            v.get("result").and_then(|r| r.get("ranked_span_ids")).and_then(Value::as_array)
+        if let Some(arr) = v
+            .get("result")
+            .and_then(|r| r.get("ranked_span_ids"))
+            .and_then(Value::as_array)
         {
-            return Ok(arr.iter().filter_map(|x| x.as_str().map(str::to_string)).collect());
+            return Ok(arr
+                .iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect());
         }
     }
     Err(PpError::Mesh("no ranked_span_ids in sidecar output".into()))
@@ -114,7 +136,9 @@ fn parse_rerank_response(stdout: &str) -> Result<Vec<String>, PpError> {
 fn reorder_by_ids(spans: &[RawSpan], ids: &[String]) -> Vec<RawSpan> {
     let by_id: std::collections::HashMap<&str, &RawSpan> =
         spans.iter().map(|s| (s.id.as_str(), s)).collect();
-    ids.iter().filter_map(|id| by_id.get(id.as_str()).map(|s| (*s).clone())).collect()
+    ids.iter()
+        .filter_map(|id| by_id.get(id.as_str()).map(|s| (*s).clone()))
+        .collect()
 }
 
 /// The production Slice-2 mesh: spawns `sidecar_cmd` as a stdio-JSON-RPC process
@@ -136,7 +160,13 @@ impl SidecarMesh {
         let mut parts = cmd.split_whitespace().map(str::to_string);
         let program = parts.next().unwrap_or_default();
         let args: Vec<String> = parts.collect();
-        SidecarMesh { raw, program, args, preview_bytes, top_k }
+        SidecarMesh {
+            raw,
+            program,
+            args,
+            preview_bytes,
+            top_k,
+        }
     }
 }
 
@@ -234,7 +264,10 @@ fn query_terms(query: &str) -> std::collections::HashSet<String> {
 /// no `.ugm` model is configured — mirrors the sidecar's reference scorer, in Rust.
 pub(crate) fn lexical_score(query: &str, text: &str) -> f32 {
     let text_lc = text.to_lowercase();
-    query_terms(query).iter().filter(|t| text_lc.contains(t.as_str())).count() as f32
+    query_terms(query)
+        .iter()
+        .filter(|t| text_lc.contains(t.as_str()))
+        .count() as f32
 }
 
 /// The native in-process mesh: reranks candidate spans without any subprocess.
@@ -255,7 +288,12 @@ impl NativeMesh {
         preview_bytes: usize,
         top_k: usize,
     ) -> Self {
-        NativeMesh { raw, model, preview_bytes, top_k }
+        NativeMesh {
+            raw,
+            model,
+            preview_bytes,
+            top_k,
+        }
     }
 
     /// Load a `.ugm` reranker, accepting it only if every source tree (one with no
@@ -283,7 +321,10 @@ impl NativeMesh {
         match &self.model {
             Some(m) => {
                 let feat = featurize(query, text);
-                m.run(&[feat]).first().and_then(|row| row.first().copied()).unwrap_or(0.0)
+                m.run(&[feat])
+                    .first()
+                    .and_then(|row| row.first().copied())
+                    .unwrap_or(0.0)
             }
             None => lexical_score(query, text),
         }
@@ -310,7 +351,9 @@ impl MeshSearch for NativeMesh {
         }
         // Highest score first; stable on ties (original recall order via the index).
         scored.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0))
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
         });
         scored.truncate(self.top_k);
         Ok(scored.into_iter().map(|(_, _, s)| s).collect())
@@ -335,13 +378,25 @@ async fn run_sidecar(program: &str, args: &[String], req: &str) -> Result<String
         .map_err(|e| PpError::Mesh(format!("spawn {program}: {e}")))?;
 
     {
-        let mut stdin = child.stdin.take().ok_or_else(|| PpError::Mesh("no stdin".into()))?;
-        stdin.write_all(req.as_bytes()).await.map_err(|e| PpError::Mesh(format!("write: {e}")))?;
-        stdin.write_all(b"\n").await.map_err(|e| PpError::Mesh(format!("write: {e}")))?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| PpError::Mesh("no stdin".into()))?;
+        stdin
+            .write_all(req.as_bytes())
+            .await
+            .map_err(|e| PpError::Mesh(format!("write: {e}")))?;
+        stdin
+            .write_all(b"\n")
+            .await
+            .map_err(|e| PpError::Mesh(format!("write: {e}")))?;
         // stdin dropped here → EOF for the sidecar.
     }
 
-    let stdout = child.stdout.take().ok_or_else(|| PpError::Mesh("no stdout".into()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| PpError::Mesh("no stdout".into()))?;
     let mut buf = Vec::new();
     stdout
         .take(MAX_SIDECAR_STDOUT)
@@ -365,7 +420,9 @@ mod tests {
 
     #[tokio::test]
     async fn slow_mesh_exceeds_deadline() {
-        let mesh = SlowStubMesh { sleep: Duration::from_millis(200) };
+        let mesh = SlowStubMesh {
+            sleep: Duration::from_millis(200),
+        };
         let r = tokio::time::timeout(
             Duration::from_millis(20),
             mesh.rerank("q", &[], Duration::from_millis(20)),
@@ -377,8 +434,16 @@ mod tests {
     #[tokio::test]
     async fn identity_mesh_returns_candidates_unchanged() {
         use crate::raw_store::{RawKind, RawSpan};
-        let spans = vec![RawSpan { id: "a".into(), kind: RawKind::Transcript, score: 1.0, created_at: 0 }];
-        let out = IdentityMesh.rerank("q", &spans, Duration::from_millis(10)).await.unwrap();
+        let spans = vec![RawSpan {
+            id: "a".into(),
+            kind: RawKind::Transcript,
+            score: 1.0,
+            created_at: 0,
+        }];
+        let out = IdentityMesh
+            .rerank("q", &spans, Duration::from_millis(10))
+            .await
+            .unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].id, "a");
     }
@@ -387,14 +452,22 @@ mod tests {
 
     fn span(id: &str) -> RawSpan {
         use crate::raw_store::RawKind;
-        RawSpan { id: id.into(), kind: RawKind::Transcript, score: 0.0, created_at: 0 }
+        RawSpan {
+            id: id.into(),
+            kind: RawKind::Transcript,
+            score: 0.0,
+            created_at: 0,
+        }
     }
 
     #[test]
     fn request_carries_query_ids_and_budget() {
         let req = build_rerank_request(
             "the auth thing",
-            &[("id1".into(), "auth login".into()), ("id2".into(), "disk usage".into())],
+            &[
+                ("id1".into(), "auth login".into()),
+                ("id2".into(), "disk usage".into()),
+            ],
             1500,
             8,
         );
@@ -417,7 +490,10 @@ mod tests {
         .unwrap();
         assert_eq!(ids, vec!["b".to_string(), "a".to_string()]);
         // A JSON-RPC error object → Err (fallback), not a silent empty ranking.
-        assert!(parse_rerank_response("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-1,\"message\":\"boom\"}}").is_err());
+        assert!(parse_rerank_response(
+            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-1,\"message\":\"boom\"}}"
+        )
+        .is_err());
         assert!(parse_rerank_response("not json at all").is_err());
         assert!(parse_rerank_response("").is_err());
     }
@@ -427,7 +503,10 @@ mod tests {
         let spans = vec![span("a"), span("b"), span("c")];
         // sidecar ranks c,a and invents "z" (must be ignored); "b" not returned → dropped.
         let out = reorder_by_ids(&spans, &["c".into(), "z".into(), "a".into()]);
-        assert_eq!(out.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["c", "a"]);
+        assert_eq!(
+            out.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            vec!["c", "a"]
+        );
     }
 
     // ---- Slice 2: subprocess glue ----
@@ -436,10 +515,18 @@ mod tests {
     async fn sidecar_missing_binary_errors_to_fallback() {
         use crate::raw_store::{RawKind, RawStore};
         let raw = RawStore::open_memory().unwrap();
-        let id = raw.ingest(RawKind::Transcript, "auth login flow", None).await.unwrap();
+        let id = raw
+            .ingest(RawKind::Transcript, "auth login flow", None)
+            .await
+            .unwrap();
         let mesh = SidecarMesh::new(raw, "definitely-not-a-real-binary-xyz", 4096, 8);
-        let r = mesh.rerank("auth", &[span(&id)], Duration::from_millis(200)).await;
-        assert!(matches!(r, Err(PpError::Mesh(_))), "absent sidecar → Err → fallback");
+        let r = mesh
+            .rerank("auth", &[span(&id)], Duration::from_millis(200))
+            .await;
+        assert!(
+            matches!(r, Err(PpError::Mesh(_))),
+            "absent sidecar → Err → fallback"
+        );
     }
 
     // Real subprocess round-trip against the in-repo Python sidecar. Proves the
@@ -450,13 +537,25 @@ mod tests {
     async fn sidecar_roundtrip_via_serve_py() {
         use crate::raw_store::{RawKind, RawStore};
         // Resolve serve.py relative to the workspace root (two levels up from the crate).
-        let serve = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sidecars/ultragraph/serve.py");
+        let serve = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../sidecars/ultragraph/serve.py"
+        );
         let raw = RawStore::open_memory().unwrap();
-        let a = raw.ingest(RawKind::Transcript, "the auth login flow and tokens", None).await.unwrap();
-        let b = raw.ingest(RawKind::Transcript, "unrelated disk usage report", None).await.unwrap();
+        let a = raw
+            .ingest(RawKind::Transcript, "the auth login flow and tokens", None)
+            .await
+            .unwrap();
+        let b = raw
+            .ingest(RawKind::Transcript, "unrelated disk usage report", None)
+            .await
+            .unwrap();
         let spans = vec![span(&b), span(&a)]; // deliberately auth-second
         let mesh = SidecarMesh::new(raw, &format!("python3 {serve}"), 8192, 8);
-        let out = mesh.rerank("auth tokens", &spans, Duration::from_millis(4000)).await.unwrap();
+        let out = mesh
+            .rerank("auth tokens", &spans, Duration::from_millis(4000))
+            .await
+            .unwrap();
         assert!(!out.is_empty(), "sidecar returned a ranking");
         // The reference scorer ranks the auth span first for an auth query.
         assert_eq!(out[0].id, a, "auth-relevant span ranked first");
@@ -472,7 +571,11 @@ mod tests {
         assert!((h[b'b' as usize] - 1.0 / 3.0).abs() < 1e-6);
         let sum: f32 = h.iter().sum();
         assert!((sum - 1.0).abs() < 1e-6, "histogram sums to 1");
-        assert_eq!(byte_histogram("").iter().sum::<f32>(), 0.0, "empty → all zero");
+        assert_eq!(
+            byte_histogram("").iter().sum::<f32>(),
+            0.0,
+            "empty → all zero"
+        );
     }
 
     #[test]
@@ -484,14 +587,27 @@ mod tests {
         assert_eq!(f.len(), FEATURE_DIM);
         assert!((f[b'a' as usize] - 0.5).abs() < 1e-6, "query half");
         assert!((f[256 + b'c' as usize] - 0.5).abs() < 1e-6, "text half");
-        assert!((f[512 + b'a' as usize] - 0.25).abs() < 1e-6, "interaction: shared byte 'a'");
-        assert!(f[512 + b'b' as usize].abs() < 1e-6, "interaction: 'b' not in text → 0");
+        assert!(
+            (f[512 + b'a' as usize] - 0.25).abs() < 1e-6,
+            "interaction: shared byte 'a'"
+        );
+        assert!(
+            f[512 + b'b' as usize].abs() < 1e-6,
+            "interaction: 'b' not in text → 0"
+        );
     }
 
     #[test]
     fn lexical_score_counts_distinct_query_terms() {
-        assert_eq!(lexical_score("auth token", "the auth login and token flow"), 2.0);
-        assert_eq!(lexical_score("AUTH", "auth auth auth"), 1.0, "distinct, case-insensitive");
+        assert_eq!(
+            lexical_score("auth token", "the auth login and token flow"),
+            2.0
+        );
+        assert_eq!(
+            lexical_score("AUTH", "auth auth auth"),
+            1.0,
+            "distinct, case-insensitive"
+        );
         assert_eq!(lexical_score("disk", "the auth login flow"), 0.0);
     }
 
@@ -499,12 +615,22 @@ mod tests {
     async fn native_lexical_ranks_relevant_span_first() {
         use crate::raw_store::{RawKind, RawStore};
         let raw = RawStore::open_memory().unwrap();
-        let disk = raw.ingest(RawKind::ToolOutput, "unrelated disk usage report", None).await.unwrap();
-        let auth = raw.ingest(RawKind::Transcript, "the auth login flow and tokens", None).await.unwrap();
+        let disk = raw
+            .ingest(RawKind::ToolOutput, "unrelated disk usage report", None)
+            .await
+            .unwrap();
+        let auth = raw
+            .ingest(RawKind::Transcript, "the auth login flow and tokens", None)
+            .await
+            .unwrap();
         let mesh = NativeMesh::new(raw, None, 8192, 8);
         // deliberately present the auth span second
         let out = mesh
-            .rerank("auth tokens", &[span(&disk), span(&auth)], Duration::from_millis(50))
+            .rerank(
+                "auth tokens",
+                &[span(&disk), span(&auth)],
+                Duration::from_millis(50),
+            )
             .await
             .unwrap();
         assert_eq!(out[0].id, auth, "native lexical ranks the auth span first");
@@ -530,16 +656,32 @@ mod tests {
             wq: Some(wq),
             bias: Some(vec![0.0]),
         };
-        let model = UgmFile { trees: vec![tree], ultra_edges: vec![] };
+        let model = UgmFile {
+            trees: vec![tree],
+            ultra_edges: vec![],
+        };
 
         let raw = RawStore::open_memory().unwrap();
-        let plain = raw.ingest(RawKind::Transcript, "aaaa bbbb", None).await.unwrap();
-        let zzz = raw.ingest(RawKind::Transcript, "zzz zebra", None).await.unwrap();
-        let mesh = NativeMesh::new(raw, Some(model), 8192, 8);
-        let out = mesh
-            .rerank("anything", &[span(&plain), span(&zzz)], Duration::from_millis(50))
+        let plain = raw
+            .ingest(RawKind::Transcript, "aaaa bbbb", None)
             .await
             .unwrap();
-        assert_eq!(out[0].id, zzz, "the 'z'-heavy span scores higher under the model");
+        let zzz = raw
+            .ingest(RawKind::Transcript, "zzz zebra", None)
+            .await
+            .unwrap();
+        let mesh = NativeMesh::new(raw, Some(model), 8192, 8);
+        let out = mesh
+            .rerank(
+                "anything",
+                &[span(&plain), span(&zzz)],
+                Duration::from_millis(50),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            out[0].id, zzz,
+            "the 'z'-heavy span scores higher under the model"
+        );
     }
 }

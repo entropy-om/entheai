@@ -380,14 +380,20 @@ mod tests {
     fn transcript_for_ingest_drops_only_injected_ctx() {
         let injected = "Memory context:\n\n[codebase score=0.90 key=k]\nbody\n";
         let messages = vec![
-            ChatMessage::system("you are helpful"),    // real system prompt — kept
+            ChatMessage::system("you are helpful"), // real system prompt — kept
             ChatMessage::system(injected.to_string()), // memory's injected brief — dropped
             ChatMessage::user("do the thing"),
         ];
         let clean = transcript_for_ingest(&messages, Some(injected));
         assert_eq!(clean.len(), 2);
-        assert!(clean.iter().all(|m| m.content != injected), "injected ctx filtered out");
-        assert!(clean.iter().any(|m| m.content == "you are helpful"), "real system prompt kept");
+        assert!(
+            clean.iter().all(|m| m.content != injected),
+            "injected ctx filtered out"
+        );
+        assert!(
+            clean.iter().any(|m| m.content == "you are helpful"),
+            "real system prompt kept"
+        );
 
         // No injection this turn → nothing dropped.
         let clean2 = transcript_for_ingest(&messages, None);

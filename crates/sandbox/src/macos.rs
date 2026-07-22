@@ -8,7 +8,11 @@ use std::ffi::{CStr, CString};
 use crate::{Availability, SandboxError, SandboxSpec};
 
 extern "C" {
-    fn sandbox_init(profile: *const libc::c_char, flags: u64, errorbuf: *mut *mut libc::c_char) -> libc::c_int;
+    fn sandbox_init(
+        profile: *const libc::c_char,
+        flags: u64,
+        errorbuf: *mut *mut libc::c_char,
+    ) -> libc::c_int;
     fn sandbox_free_error(errorbuf: *mut libc::c_char);
 }
 
@@ -25,7 +29,9 @@ pub fn confine(spec: &SandboxSpec) -> Result<(), SandboxError> {
         let msg = if err.is_null() {
             "sandbox_init failed".into()
         } else {
-            let s = unsafe { CStr::from_ptr(err) }.to_string_lossy().into_owned();
+            let s = unsafe { CStr::from_ptr(err) }
+                .to_string_lossy()
+                .into_owned();
             unsafe { sandbox_free_error(err) };
             s
         };
@@ -64,7 +70,10 @@ fn build_profile(spec: &SandboxSpec) -> Result<String, SandboxError> {
          (allow file-write* (subpath \"{work}\") (subpath \"/tmp\") (subpath \"/private/tmp\") \
          (subpath \"/private/var/folders\") (literal \"/dev/null\") (literal \"/dev/urandom\"))\n\
          (deny file-read* {ssh} {aws} {gnupg} {gcloud})\n",
-        ssh = sub(".ssh"), aws = sub(".aws"), gnupg = sub(".gnupg"), gcloud = sub(".config/gcloud"),
+        ssh = sub(".ssh"),
+        aws = sub(".aws"),
+        gnupg = sub(".gnupg"),
+        gcloud = sub(".config/gcloud"),
     ))
 }
 
@@ -140,7 +149,10 @@ mod tests {
 
         // Unique temp worktree under $TMPDIR (/private/var/folders on macOS).
         // Canonicalize so the SBPL `(subpath ...)` matches the resolved path.
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let work = std::env::temp_dir().join(format!("entheai-sbx-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&work).expect("create work dir");
         let work = std::fs::canonicalize(&work).expect("canonicalize work dir");

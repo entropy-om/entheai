@@ -19,10 +19,11 @@ pub fn is_critical_syntactic(content: &str) -> bool {
     content.contains('/') && content.len() > 3
         || content.len() == 64 && content.chars().all(|c| c.is_ascii_hexdigit())
         || content.contains("::")
-        || if content
-            .split('.')
-            .count()
-            .eq(&4) { content.split('.').all(|p| p.parse::<u8>().is_ok()) } else { false }
+        || if content.split('.').count().eq(&4) {
+            content.split('.').all(|p| p.parse::<u8>().is_ok())
+        } else {
+            false
+        }
 }
 
 pub fn effective_score(score: f64, content: &str) -> f64 {
@@ -67,11 +68,11 @@ mod tests {
     fn table_driven_asymmetric_loss() {
         // Table-driven test: (score, threshold, lambda) -> expected_loss
         let test_cases = vec![
-            (0.0, 0.35, 3.0, 1.05),      // below threshold: 3.0 * (0.35 - 0.0) = 1.05
-            (0.35, 0.35, 3.0, 0.0),      // exactly at threshold
-            (1.0, 0.35, 3.0, 0.65),      // above threshold: 1.0 - 0.35 = 0.65
-            (0.2, 0.5, 2.0, 0.6),        // below threshold: 2.0 * (0.5 - 0.2) = 0.6
-            (0.8, 0.5, 2.0, 0.3),        // above threshold: 0.8 - 0.5 = 0.3
+            (0.0, 0.35, 3.0, 1.05), // below threshold: 3.0 * (0.35 - 0.0) = 1.05
+            (0.35, 0.35, 3.0, 0.0), // exactly at threshold
+            (1.0, 0.35, 3.0, 0.65), // above threshold: 1.0 - 0.35 = 0.65
+            (0.2, 0.5, 2.0, 0.6),   // below threshold: 2.0 * (0.5 - 0.2) = 0.6
+            (0.8, 0.5, 2.0, 0.3),   // above threshold: 0.8 - 0.5 = 0.3
         ];
 
         for (score, threshold, lambda, expected) in test_cases {

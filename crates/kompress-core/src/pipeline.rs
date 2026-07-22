@@ -1,10 +1,6 @@
 use crate::{
-    circulator::Circulator,
-    composer::Composer,
-    loss::TARGET_RATIO,
-    pruner::Pruner,
-    rewriter::Rewriter,
-    types::ContextUnit,
+    circulator::Circulator, composer::Composer, loss::TARGET_RATIO, pruner::Pruner,
+    rewriter::Rewriter, types::ContextUnit,
 };
 use anyhow::Result;
 

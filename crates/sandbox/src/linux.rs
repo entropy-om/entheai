@@ -57,8 +57,14 @@ fn apply_fs_landlock(
         .set_compatibility(CompatLevel::BestEffort)
         .handle_access(AccessFs::from_all(abi))?
         .create()?
-        .add_rules(landlock::path_beneath_rules([work_dir], AccessFs::from_all(abi)))?
-        .add_rules(landlock::path_beneath_rules(ro.iter(), AccessFs::from_read(abi)))?
+        .add_rules(landlock::path_beneath_rules(
+            [work_dir],
+            AccessFs::from_all(abi),
+        ))?
+        .add_rules(landlock::path_beneath_rules(
+            ro.iter(),
+            AccessFs::from_read(abi),
+        ))?
         .restrict_self()
 }
 
@@ -159,7 +165,10 @@ mod tests {
     #[test]
     #[ignore = "irreversible confinement; forks. Linux+Landlock only, run with --ignored"]
     fn confine_blocks_escape_and_secret_read() {
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let base = std::env::temp_dir();
 
         let work = base.join(format!("entheai-sbx-{}-{nanos}", std::process::id()));

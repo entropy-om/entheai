@@ -81,7 +81,10 @@ mod tests {
     #[test]
     fn mode_parses_and_defaults() {
         assert_eq!(SandboxMode::parse("strict"), Some(SandboxMode::Strict));
-        assert_eq!(SandboxMode::parse("  Permissive "), Some(SandboxMode::Permissive));
+        assert_eq!(
+            SandboxMode::parse("  Permissive "),
+            Some(SandboxMode::Permissive)
+        );
         assert_eq!(SandboxMode::parse("off"), Some(SandboxMode::Off));
         assert_eq!(SandboxMode::parse("nope"), None);
         assert_eq!(SandboxMode::default(), SandboxMode::Permissive);

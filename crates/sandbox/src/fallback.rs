@@ -5,5 +5,7 @@ pub fn availability() -> Availability {
 }
 
 pub fn confine(_spec: &SandboxSpec) -> Result<(), SandboxError> {
-    Err(SandboxError::Unavailable("confinement unsupported on this OS".into()))
+    Err(SandboxError::Unavailable(
+        "confinement unsupported on this OS".into(),
+    ))
 }

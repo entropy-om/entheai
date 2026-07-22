@@ -36,4 +36,3 @@ mod tests {
         assert!(decoded.contains('\u{FFFD}'));
     }
 }
-
