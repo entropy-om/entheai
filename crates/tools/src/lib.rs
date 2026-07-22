@@ -55,6 +55,12 @@ impl ToolRegistry {
     pub fn schemas(&self) -> Vec<serde_json::Value> {
         self.tools.values().map(|t| t.schema()).collect()
     }
+
+    /// Consume the registry, yielding its tools for wrapping (e.g. into
+    /// `adk_core::Tool` adapters, which need owned `Arc`s, not registry-borrowed refs).
+    pub fn into_tools(self) -> Vec<Box<dyn Tool>> {
+        self.tools.into_values().collect()
+    }
 }
 
 #[cfg(test)]
@@ -62,6 +68,14 @@ mod tests {
     use super::*;
     use crate::fs::ReadFile;
     use std::io::Write;
+
+    #[test]
+    fn into_tools_yields_all_registered() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(ReadFile::new(std::env::temp_dir())));
+        let tools = reg.into_tools();
+        assert_eq!(tools.len(), 1);
+    }
 
     #[tokio::test]
     async fn read_file_returns_contents_within_root() {
