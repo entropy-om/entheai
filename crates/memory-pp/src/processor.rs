@@ -21,7 +21,6 @@ use log::warn;
 use serde_json::json;
 
 use entheai_memory::{MemoryScope, ToolEvidence};
-use entheai_providers::ChatMessage;
 
 use crate::error::PpError;
 use crate::marqant::Marqant;
@@ -182,20 +181,23 @@ impl PromptProcessor {
 
     /// Full session transcript (every turn + the final answer), captured RAW —
     /// the counterpart to `record_final_answer`, which stores previews only.
-    /// The caller passes a transcript already cleaned of the injected memory
-    /// context (see `transcript_for_ingest` in crates/core) so the raw store is
-    /// never contaminated by memory's own injected brief.
+    /// The caller passes `(role, content)` pairs already cleaned of the injected
+    /// memory context (see `transcript_for_ingest` in crates/core) so the raw
+    /// store is never contaminated by memory's own injected brief.
+    ///
+    /// Takes plain `(role, content)` pairs rather than `entheai_providers::ChatMessage`
+    /// so callers on the adk-rust path (which has no `ChatMessage`) don't need it either.
     pub async fn ingest_transcript(
         &self,
         scope: &MemoryScope,
-        messages: &[ChatMessage],
+        messages: &[(String, String)],
         final_answer: &str,
     ) {
         let mut buf = String::new();
-        for m in messages {
-            buf.push_str(&m.role);
+        for (role, content) in messages {
+            buf.push_str(role);
             buf.push_str(": ");
-            buf.push_str(&m.content);
+            buf.push_str(content);
             buf.push('\n');
         }
         buf.push_str("assistant: ");
@@ -342,7 +344,7 @@ mod tests {
             allowed: true,
         };
         pp.ingest_tool(&scope(), &ev).await;
-        let msgs = vec![entheai_providers::ChatMessage::user("hi")];
+        let msgs = vec![("user".to_string(), "hi".to_string())];
         pp.ingest_transcript(&scope(), &msgs, "done").await;
         assert_eq!(
             pp.raw().count().await.unwrap(),
@@ -405,7 +407,7 @@ mod tests {
 
         // Simulate a run's ingest.
         let sc = scope();
-        let msgs = vec![entheai_providers::ChatMessage::user("fix the auth bug")];
+        let msgs = vec![("user".to_string(), "fix the auth bug".to_string())];
         pp.ingest_transcript(&sc, &msgs, "fixed it").await;
         let ev = entheai_memory::ToolEvidence {
             call_id: "c".into(),

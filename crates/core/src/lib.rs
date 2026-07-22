@@ -396,11 +396,11 @@ fn truncate_preview(s: &str, max: usize) -> String {
 fn transcript_for_ingest(
     messages: &[entheai_providers::ChatMessage],
     injected_ctx: Option<&str>,
-) -> Vec<entheai_providers::ChatMessage> {
+) -> Vec<(String, String)> {
     messages
         .iter()
         .filter(|m| !(m.role == "system" && injected_ctx == Some(m.content.as_str())))
-        .cloned()
+        .map(|m| (m.role.clone(), m.content.clone()))
         .collect()
 }
 
@@ -422,11 +422,11 @@ mod tests {
         let clean = transcript_for_ingest(&messages, Some(injected));
         assert_eq!(clean.len(), 2);
         assert!(
-            clean.iter().all(|m| m.content != injected),
+            clean.iter().all(|(_, content)| content != injected),
             "injected ctx filtered out"
         );
         assert!(
-            clean.iter().any(|m| m.content == "you are helpful"),
+            clean.iter().any(|(_, content)| content == "you are helpful"),
             "real system prompt kept"
         );
 
