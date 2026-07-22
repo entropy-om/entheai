@@ -80,8 +80,9 @@ impl FrozenStore {
         FrozenStore { nodes }
     }
 
-    /// Load every `*.md` in `dir`; skip (warn) any that don't parse. A missing dir
-    /// yields an empty store (frozen simply never wakes) — never an error.
+    /// Load every `*.md` in `dir`; skip (warn) any that don't parse. A missing directory
+    /// yields an empty store because frozen nodes are optional domain priors; missing nodes
+    /// must gracefully fall back to baseline LLM reasoning rather than crashing agent startup.
     /// Logs a summary of loaded nodes at `info` level on success.
     pub fn load(dir: &std::path::Path) -> FrozenStore {
         let mut nodes = Vec::new();

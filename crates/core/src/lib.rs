@@ -26,8 +26,11 @@ pub enum AgentEvent {
     ToolFinished { name: String, result: String },
     /// A text delta streamed live from the model.
     Token(String),
-    /// A frozen node was woken and activated.
-    FrozenWoke { name: String },
+    /// A frozen node was woken and its knowledge injected as a system brief.
+    /// `name` is the frozen node's canonical name (from front-matter), used
+    /// by the brain viz panel to match the glow ring. The brief preview is the
+    /// first 120 chars of the activated knowledge, for inline display.
+    FrozenWoke { name: String, brief_preview: String },
 }
 
 /// Deadline for activating a frozen node (500 ms).
@@ -210,17 +213,21 @@ impl<P: Provider> Agent<P> {
             }
         }
 
-        // PP frozen-node wake/activate: runs unconditionally on `pp` regardless
-        // of whether `memory` is `Some`.
+        // Frozen nodes melt curated domain best-practice into the prompt transiently.
+        // We scan the latest user message for trigger hits regardless of raw vector store
+        // status because frozen nodes provide deterministic safety priors (e.g. NixOS/Rust
+        // verification gotchas) that must be present before tool execution begins.
         if let Some(p) = pp {
             if let Some(user_idx) = messages.iter().rposition(|m| m.role == "user") {
                 let user_msg = messages[user_idx].content.clone();
                 for node in p.wake_frozen(&user_msg, 1) {
                     let brief = p.activate_frozen(&node, FROZEN_ACTIVATE_DEADLINE).await;
-                    messages.insert(user_idx, ChatMessage::system(brief));
+                    messages.insert(user_idx, ChatMessage::system(brief.clone()));
                     if let Some(tx) = &events {
+                        let preview: String = brief.chars().take(120).collect();
                         let _ = tx.send(AgentEvent::FrozenWoke {
                             name: node.name.clone(),
+                            brief_preview: preview,
                         });
                     }
                 }
@@ -661,7 +668,7 @@ mod tests {
 
         let mut saw_wake = false;
         while let Ok(ev) = rx.try_recv() {
-            if let AgentEvent::FrozenWoke { name } = ev {
+            if let AgentEvent::FrozenWoke { name, .. } = ev {
                 assert_eq!(name, "nixos");
                 saw_wake = true;
             }
@@ -711,7 +718,10 @@ mod tests {
                 saw_wake = true;
             }
         }
-        assert!(!saw_wake, "no trigger matched, no FrozenWoke event expected");
+        assert!(
+            !saw_wake,
+            "no trigger matched, no FrozenWoke event expected"
+        );
     }
 
     struct AlwaysToolProvider;
