@@ -1,5 +1,8 @@
 pub mod adk_tool_adapter;
+pub mod entheai_agent;
 pub mod model_resolve;
+
+pub use entheai_agent::EntheaiAgent;
 
 use entheai_providers::{ChatMessage, Provider, StreamEvent};
 use futures::StreamExt;

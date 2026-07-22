@@ -18,6 +18,7 @@ async-trait.workspace = true
 futures.workspace = true
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["sync", "macros"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
