@@ -1,0 +1,30 @@
+# Non-gating, graph-aware PR review comment (code-review-graph).
+#
+# Builds a local Tree-sitter code graph on the runner and posts a single sticky
+# risk-scored review comment on each PR — local-first (no source leaves the
+# runner), keyless (default GITHUB_TOKEN). Trial mode: comment only, NOT a merge
+# gate (`fail-on-risk` left at its `none` default). Pinned to a commit SHA rather
+# than a tag so the third-party action can't change under us.
+#
+# See docs/GITHUB_ACTION.md in tirth8205/code-review-graph.
+name: code-review-graph
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write # post/update the sticky review comment
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so the graph can diff against the base branch
+      - uses: tirth8205/code-review-graph@6a1ee1c7063cc35cfa5ff12b8198c29360f3e4ad # v2.3.7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          comment: true
+          # fail-on-risk intentionally unset (none) — comment-only trial, not a merge gate.
