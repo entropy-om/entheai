@@ -34,6 +34,64 @@ pub fn effective_score(score: f64, content: &str) -> f64 {
     }
 }
 
+/// Mechanism B (must-keep override) from "Asymmetric Loss Modulation Resolves
+/// the Voting Ensemble Paradox in Learned Context-Pruning Ensembles" (the
+/// kompress-v8 paper): a deterministic, score-independent safety net that
+/// force-keeps units containing must-keep syntactic tokens — ALLCAPS
+/// identifiers/signal names, CamelCase identifiers, hex addresses, exit-code
+/// style bare numbers, CLI flags, and dotted file names — regardless of what
+/// `effective_score`/`asymmetric_loss` (Mechanism A) alone would decide.
+/// Conservative by construction: it can only prevent a prune, never cause one.
+pub fn is_must_keep(content: &str) -> bool {
+    is_critical_syntactic(content) || content.split_whitespace().any(is_must_keep_word)
+}
+
+fn is_must_keep_word(word: &str) -> bool {
+    let w = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.');
+    !w.is_empty()
+        && (is_allcaps_identifier(w)
+            || is_camel_case(w)
+            || is_hex_address(w)
+            || is_exit_code_number(w)
+            || is_cli_flag(w)
+            || is_dotted_filename(w))
+}
+
+fn is_allcaps_identifier(w: &str) -> bool {
+    w.len() >= 2
+        && w.chars().any(|c| c.is_ascii_uppercase())
+        && w.chars()
+            .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
+}
+
+fn is_camel_case(w: &str) -> bool {
+    w.chars().any(|c| c.is_ascii_lowercase())
+        && w.chars().any(|c| c.is_ascii_uppercase())
+        && w.chars()
+            .zip(w.chars().skip(1))
+            .any(|(a, b)| a.is_ascii_lowercase() && b.is_ascii_uppercase())
+}
+
+fn is_hex_address(w: &str) -> bool {
+    let rest = w.strip_prefix("0x").or_else(|| w.strip_prefix("0X"));
+    matches!(rest, Some(r) if !r.is_empty() && r.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+fn is_exit_code_number(w: &str) -> bool {
+    !w.is_empty() && w.chars().all(|c| c.is_ascii_digit())
+}
+
+fn is_cli_flag(w: &str) -> bool {
+    w.starts_with('-') && w.chars().nth(1).is_some_and(|c| c.is_ascii_alphanumeric())
+}
+
+fn is_dotted_filename(w: &str) -> bool {
+    match w.rsplit_once('.') {
+        Some((stem, ext)) => !stem.is_empty() && (1..=4).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphabetic()),
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,5 +222,46 @@ mod tests {
         let score = 0.5;
         let result = effective_score(score, regular_content);
         assert_eq!(result, score);
+    }
+
+    #[test]
+    fn must_keep_detects_allcaps_signal_name_embedded_in_prose() {
+        assert!(is_must_keep("the process died with SIGKILL after timeout"));
+    }
+
+    #[test]
+    fn must_keep_detects_camel_case_identifier() {
+        assert!(is_must_keep("failed inside ModernBERT during load"));
+    }
+
+    #[test]
+    fn must_keep_detects_hex_address() {
+        assert!(is_must_keep("segfault at address 0x7ffeeab12340"));
+    }
+
+    #[test]
+    fn must_keep_detects_bare_exit_code_number() {
+        assert!(is_must_keep("child process exited with code 127"));
+    }
+
+    #[test]
+    fn must_keep_detects_cli_flag() {
+        assert!(is_must_keep("compiled with -O2 --march=native"));
+    }
+
+    #[test]
+    fn must_keep_detects_dotted_filename() {
+        assert!(is_must_keep("see crates/core/src/main.rs for details"));
+    }
+
+    #[test]
+    fn must_keep_false_for_plain_prose() {
+        assert!(!is_must_keep("this is basically just a very simple sentence"));
+    }
+
+    #[test]
+    fn must_keep_still_covers_existing_critical_syntactic_cases() {
+        assert!(is_must_keep("/usr/bin/cargo"));
+        assert!(is_must_keep("abc::def"));
     }
 }
