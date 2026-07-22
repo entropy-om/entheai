@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 entheai-memory = { path = "../memory" }
+entheai-providers = { path = "../providers" }
 tokio = { workspace = true, features = ["rt", "time"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
