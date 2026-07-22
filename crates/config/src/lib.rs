@@ -910,8 +910,10 @@ impl Default for PromptProcessingConfig {
 
 fn default_pp_sidecar_cmd() -> String {
     // NOTE: the published `ultragraph-1bit` ships no stdio `rerank` module; the
-    // Slice-2 sidecar is a new in-repo script. Default points at it.
-    "python sidecars/ultragraph/serve.py".into()
+    // Slice-2 sidecar is a new in-repo script (uses ultragraph if importable, else
+    // a lexical reference scorer). Relative path resolves from the run cwd; set to
+    // "" to force the in-process stub (disable the mesh).
+    "python3 sidecars/ultragraph/serve.py".into()
 }
 fn default_pp_mesh_size() -> usize {
     8

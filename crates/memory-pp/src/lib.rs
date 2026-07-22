@@ -13,8 +13,8 @@ mod processor;
 mod raw_store;
 
 pub use error::PpError;
-pub use marqant::{Marqant, StubMarqant};
-pub use mesh::{IdentityMesh, MeshSearch, SlowStubMesh, StubMesh};
+pub use marqant::{Marqant, StubMarqant, SubprocessMarqant};
+pub use mesh::{IdentityMesh, MeshSearch, SidecarMesh, SlowStubMesh, StubMesh};
 pub use processor::PromptProcessor;
 pub use raw_store::{RawContent, RawKind, RawSpan, RawStore};
 

@@ -509,13 +509,24 @@ fn build_memory(cfg: &Config) -> anyhow::Result<Option<entheai_memory::SharedMem
 }
 
 /// Build the prompt-processing pipeline when `[memory] mode = "prompt-processing"`
-/// and memory is enabled. Slice 1 uses the in-process stubs (StubMesh /
-/// StubMarqant) — retrieval always falls back to top-K, but the raw tier ingests
-/// live. Returns `None` for the default `topk` mode. Mirrors `build_memory`.
+/// and memory is enabled. Slice 2 selects the real subprocess seams when their
+/// commands are configured (the non-empty defaults): the stdio-JSON-RPC mesh
+/// sidecar and the `mq compress --semantic` compressor. Both degrade to top-K via
+/// the pipeline's fail-safe when the tool is absent, so this is safe even without
+/// python/`mq` installed; an empty `sidecar_cmd`/`marqant_cmd` forces the in-process
+/// stub. Returns `None` for the default `topk` mode. Mirrors `build_memory`.
 fn build_prompt_processor(
     cfg: &Config,
 ) -> anyhow::Result<Option<entheai_memory_pp::PromptProcessor>> {
-    use entheai_memory_pp::{PromptProcessor, RawStore, RetrievalMode, StubMarqant, StubMesh};
+    use entheai_memory_pp::{
+        Marqant, MeshSearch, PromptProcessor, RawStore, RetrievalMode, SidecarMesh, StubMarqant,
+        StubMesh, SubprocessMarqant,
+    };
+
+    // Preview budget sent to the mesh per candidate, and how many ranked findings
+    // to rehydrate. Kept modest (compression runs after) — implementation tuning.
+    const PP_PREVIEW_BYTES: usize = 4096;
+    const PP_MESH_TOP_K: usize = 16;
 
     if !cfg.memory.enabled
         || RetrievalMode::parse(&cfg.memory.mode) != RetrievalMode::PromptProcessing
@@ -528,10 +539,23 @@ fn build_prompt_processor(
         std::fs::create_dir_all(parent).ok();
     }
     let raw = RawStore::open(&path)?;
+
+    let mesh: Box<dyn MeshSearch> = if pc.sidecar_cmd.trim().is_empty() {
+        Box::new(StubMesh)
+    } else {
+        // Shares the raw store (cheap clone) so the sidecar can fetch candidate previews.
+        Box::new(SidecarMesh::new(raw.clone(), &pc.sidecar_cmd, PP_PREVIEW_BYTES, PP_MESH_TOP_K))
+    };
+    let marqant: Box<dyn Marqant> = if pc.marqant_cmd.trim().is_empty() {
+        Box::new(StubMarqant)
+    } else {
+        Box::new(SubprocessMarqant::new(&pc.marqant_cmd))
+    };
+
     let pp = PromptProcessor::new(
         raw,
-        Box::new(StubMesh),    // Slice 2: stdio-JSON-RPC sidecar client
-        Box::new(StubMarqant), // Slice 2: `mq compress --semantic` subprocess
+        mesh,
+        marqant,
         std::time::Duration::from_millis(pc.search_deadline_ms),
         pc.recall_k,
         pc.max_ingest_bytes,

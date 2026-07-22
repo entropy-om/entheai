@@ -55,6 +55,9 @@ pub struct RawContent {
     pub created_at: i64,
 }
 
+/// Cheap to clone: every handle shares the one `Arc<Mutex<Connection>>`, so a
+/// clone sees the same rows (used by the Slice-2 sidecar mesh to fetch previews).
+#[derive(Clone)]
 pub struct RawStore {
     db: Arc<Mutex<Connection>>,
 }
@@ -289,6 +292,17 @@ mod tests {
     async fn get_missing_returns_none() {
         let s = RawStore::open_memory().unwrap();
         assert!(s.get("blake3:deadbeef").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn clone_shares_the_same_store() {
+        // Slice 2: the sidecar mesh client holds a cheap handle to the store so it
+        // can fetch candidate preview text — the clone must see the SAME rows.
+        let s = RawStore::open_memory().unwrap();
+        let handle = s.clone();
+        let id = s.ingest(RawKind::Transcript, "shared row", None).await.unwrap();
+        let got = handle.get(&id).await.unwrap().expect("clone sees the ingest");
+        assert_eq!(got.bytes, "shared row");
     }
 
     #[tokio::test]

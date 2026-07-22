@@ -19,6 +19,10 @@ pub enum PpError {
     Lock,
     #[error("mesh unavailable")]
     MeshUnavailable,
+    /// Slice-2 sidecar protocol/spawn/timeout failure — carries a reason for the
+    /// fallback log. (Distinct from `MeshUnavailable`, which is the no-sidecar stub.)
+    #[error("mesh: {0}")]
+    Mesh(String),
     #[error("marqant: {0}")]
     Marqant(String),
 }
