@@ -467,6 +467,13 @@ async fn event_loop<P: Provider + 'static>(
                 }
             }
             let scroll = app.scroll;
+            // Keep the brain panel's context readout current before painting.
+            let brain_ctx_pct = {
+                let cur = est_context_tokens(&app);
+                let max = max_context_window(&app.model_label).max(1);
+                (cur.saturating_mul(100) / max).min(999) as u16
+            };
+            app.brain.set_ctx_pct(brain_ctx_pct);
             terminal.draw(|frame| {
                 render(frame, &app, lines, scroll, plan_rows, swarm_rows, &env_line)
             })?;
@@ -684,12 +691,14 @@ async fn event_loop<P: Provider + 'static>(
                 dirty = true;
                 match maybe_progress {
                     Some(AgentEvent::Thinking) => {
+                        app.brain.flare(entheai_viz::FacultyKind::Model);
                         app.current_action = "thinking".to_string();
                         // Finalize any reasoning bubble from a prior turn so the next
                         // turn's tokens start a fresh one.
                         app.streaming_idx = None;
                     }
                     Some(AgentEvent::Token(t)) => {
+                        app.brain.flare(entheai_viz::FacultyKind::Model);
                         let idx = match app.streaming_idx {
                             Some(idx) => idx,
                             None => {
@@ -706,6 +715,7 @@ async fn event_loop<P: Provider + 'static>(
                         app.messages[idx].text.push_str(&t);
                     }
                     Some(AgentEvent::ToolStarted { name, args }) => {
+                        app.brain.flare(entheai_viz::FacultyKind::Tools);
                         if name == "todo" {
                             let parsed: serde_json::Value =
                                 serde_json::from_str(&args).unwrap_or(serde_json::Value::Null);
@@ -720,6 +730,7 @@ async fn event_loop<P: Provider + 'static>(
                         app.streaming_idx = None;
                     }
                     Some(AgentEvent::ToolFinished { name: _, result }) => {
+                        app.brain.flare(entheai_viz::FacultyKind::Tools);
                         app.messages.push(Msg {
                             role: Role::Tool,
                             text: format!("  ↳ {}", first_line_trunc(&result, 120)),
@@ -818,6 +829,13 @@ async fn event_loop<P: Provider + 'static>(
                 // is a no-op frame (no dirty flag).
                 if matches!(app.status, Status::Working) {
                     app.spinner_frame = (app.spinner_frame + 1) % FRAMES.len();
+                    dirty = true;
+                }
+                // Brain panel rotates + decays continuously while visible, independent
+                // of run state, so the graph is alive even at rest.
+                let brain_w = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(0);
+                if show_brain(app.brain_enabled, brain_w) {
+                    app.brain.tick();
                     dirty = true;
                 }
                 // Auto-dismiss a double-tap hint once its window has lapsed.
