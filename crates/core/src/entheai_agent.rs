@@ -40,7 +40,17 @@ impl EntheaiAgent {
         prompter: Arc<tokio::sync::Mutex<dyn Prompter>>,
         max_iterations: u32,
     ) -> anyhow::Result<Self> {
-        Self::build(model_spec, None, providers, registry, policy, prompter, max_iterations, None)
+        Self::build(
+            model_spec,
+            None,
+            &entheai_config::InferenceConfig::default(),
+            providers,
+            registry,
+            policy,
+            prompter,
+            max_iterations,
+            None,
+        )
     }
 
     /// Memory-aware constructor: wires pre-task retrieval/frozen-node
@@ -52,10 +62,17 @@ impl EntheaiAgent {
     /// the injection is transparent to the caller by design (same as the
     /// retrieval brief). See `crate::memory_callbacks` and
     /// `crate::event_bridge` for what is and isn't covered.
+    ///
+    /// `inference.request_timeout_secs`/`.retries` have no adk-rust 1.0.0
+    /// `OpenAIClient` equivalent (confirmed: it hardcodes `reqwest::Client::new()`
+    /// with no timeout/retry builder surface) and are intentionally NOT
+    /// applied — a known, accepted gap. `temperature`/`max_tokens` carry over
+    /// via `LlmAgentBuilder::temperature`/`max_output_tokens`.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_memory(
         model_spec: &str,
         instruction: Option<&str>,
+        inference: &entheai_config::InferenceConfig,
         providers: &HashMap<String, ProviderConfig>,
         registry: entheai_tools::ToolRegistry,
         policy: Arc<Policy>,
@@ -69,6 +86,7 @@ impl EntheaiAgent {
         Self::build(
             model_spec,
             instruction,
+            inference,
             providers,
             registry,
             policy,
@@ -82,6 +100,7 @@ impl EntheaiAgent {
     fn build(
         model_spec: &str,
         instruction: Option<&str>,
+        inference: &entheai_config::InferenceConfig,
         providers: &HashMap<String, ProviderConfig>,
         registry: entheai_tools::ToolRegistry,
         policy: Arc<Policy>,
@@ -96,6 +115,12 @@ impl EntheaiAgent {
             .max_iterations(max_iterations);
         if let Some(instruction) = instruction {
             builder = builder.instruction(instruction);
+        }
+        if let Some(temperature) = inference.temperature {
+            builder = builder.temperature(temperature);
+        }
+        if let Some(max_tokens) = inference.max_tokens {
+            builder = builder.max_output_tokens(max_tokens as i32);
         }
         for tool in registry.into_tools() {
             let adapter = crate::adk_tool_adapter::AdkToolAdapter::new(
@@ -292,6 +317,7 @@ mod tests {
         let agent = EntheaiAgent::new_with_memory(
             "test/model",
             None,
+            &entheai_config::InferenceConfig::default(),
             &providers,
             entheai_tools::ToolRegistry::new(),
             Arc::new(Policy::new(true, vec![])),
