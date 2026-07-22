@@ -14,6 +14,24 @@
   <a href="https://huggingface.co/datasets/PeetPedro/ultrawhale-dogfood"><img src="https://img.shields.io/badge/🤗%20dataset-ultrawhale--dogfood-ffbd45" alt="ultrawhale-dogfood dataset on Hugging Face"></a>
 </p>
 
+> ### disclaimer
+>
+> this is in a way a quantum-app. bare with me :)
+>
+> after around v0.2.0 (check git history) we switched to recursive-dogfeeding-development, kinda like an app self-developing itself. It's nothing new under the hood, it's rust and code, a lot of code, BUT you need to understand something before using it.
+>
+> It works, you can use it the same way as eg.: Claude Code or Crush, but the way we/I develop it is not prompting, not even loop-engineering, it's via well, philosophy.
+>
+> Stay with me. Many things exist in the docs and readme etc which either there or not there, like the visualization in the TUI, sometimes it's a beautiful animation, sometimes it's just like a TUI glitching, this is expected.
+>
+> Quantum is nothing else just an another word for cause&effect, in this app there is no randomness, the word random is for people who do not honestly and fully *believe* in karma. I think it's a beautiful new way of thinking and this app is our, we call ourselves, or well I call ourselves gardenists. So just enjoy and if you want to contibute or find and bug or have an idea open an issue and either a gardenist or Codex or `entheai` itself will pick it up and work on it. Enjoy and have fun!
+>
+> ps.: remember that this is just a toy, be honest with it cos it expect that and it does the same
+>
+> — peter
+> <br>karma is life
+> <br>entropy is the source
+
 `entheai` is a coding-agent CLI for Apple Silicon Macs. A strong cloud orchestrator (DeepSeek V4 Pro) plans and decomposes work, then **fans out** to a swarm of sub-agents — each matched to the *best model for its task* — that run in parallel inside isolated git worktrees and merge back only after building and passing tests. It runs local models via [Osaurus](https://github.com/osaurus-ai/osaurus), understands your codebase through a built-in knowledge graph, personalizes to how *you* work, and gets better over time.
 
 Built fresh in **Rust**, taking the best ideas from [Crush](https://github.com/charmbracelet/crush) (UX + YOLO), [CodeWhale](https://github.com/Hmbown/CodeWhale) (durable, sandboxed harness), [Ruflo](https://github.com/ruvnet/ruflo) (sub-agents, memory, self-learning), and [jcode](https://jcode.sh) (a lean Rust harness with graph memory + swarm coordination).
