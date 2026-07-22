@@ -40,10 +40,37 @@ impl EntheaiAgent {
         prompter: Arc<tokio::sync::Mutex<dyn Prompter>>,
         max_iterations: u32,
     ) -> anyhow::Result<Self> {
-        Self::build(
+        Self::new_with_instruction(
             model_spec,
             None,
             &entheai_config::InferenceConfig::default(),
+            providers,
+            registry,
+            policy,
+            prompter,
+            max_iterations,
+        )
+    }
+
+    /// Like [`Self::new`], with a system `instruction` and `[inference]`
+    /// settings applied — for callers with no memory but a per-agent system
+    /// prompt (e.g. the fan-out orchestrator's several differently-prompted
+    /// agents).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_instruction(
+        model_spec: &str,
+        instruction: Option<&str>,
+        inference: &entheai_config::InferenceConfig,
+        providers: &HashMap<String, ProviderConfig>,
+        registry: entheai_tools::ToolRegistry,
+        policy: Arc<Policy>,
+        prompter: Arc<tokio::sync::Mutex<dyn Prompter>>,
+        max_iterations: u32,
+    ) -> anyhow::Result<Self> {
+        Self::build(
+            model_spec,
+            instruction,
+            inference,
             providers,
             registry,
             policy,
