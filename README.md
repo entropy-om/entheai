@@ -1,13 +1,13 @@
 # entheai
 
 <p align="center">
-  <img src="docs/images/hero.jpg" alt="entheai — a coding agent with a brain that fans out" width="100%">
+  <img src="docs/images/hero-recursive.svg" alt="entheai — recursive development: entheai builds entheai, fanning out to agy coders in isolated worktrees, depth-guarded, then integrating" width="100%">
 </p>
 
 > A personal, macOS-native, **hybrid coding agent for the terminal** — with a brain that fans out.
 
 <p align="center">
-  <a href="https://github.com/entropy-om/entheai/releases/tag/v0.2.0"><img src="https://img.shields.io/badge/release-v0.2.0-00e5ff" alt="release v0.2.0"></a>
+  <a href="https://github.com/entropy-om/entheai/releases/tag/v0.2.1"><img src="https://img.shields.io/badge/release-v0.2.1-00e5ff" alt="release v0.2.1"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20·%20Apple%20Silicon-111" alt="platform">
   <img src="https://img.shields.io/badge/built%20in-Rust-orange" alt="Rust">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="license">
@@ -18,16 +18,17 @@
 
 Built fresh in **Rust**, taking the best ideas from [Crush](https://github.com/charmbracelet/crush) (UX + YOLO), [CodeWhale](https://github.com/Hmbown/CodeWhale) (durable, sandboxed harness), [Ruflo](https://github.com/ruvnet/ruflo) (sub-agents, memory, self-learning), and [jcode](https://jcode.sh) (a lean Rust harness with graph memory + swarm coordination).
 
-> **Status: `v0.2.0` released, built in the open.** Working today: the tiered **router** (role→model), **fan-out** (parallel coders in isolated git worktrees → verify → integrate), the agentic tool loop (read / write / **edit** / shell / search + a permission gate), an **MCP** client + supervisor, a **skills** system (incl. `--skills add <url>` from the web), live **token streaming**, the 5-namespace **memory** engine, the **companion** beacon, a live **swarm visualization** + a shader-backed **native app** (`--app` / `--doctor`), **Obsidian wiki-sync**, and **NATS federation** — an event bus (F1) plus a distributed swarm that runs coders on other tailnet nodes (F2.1). Install it in one line (below). Later layers — `Sonar` health UI, Honcho personalization, and the `dogfeed` self-improvement flywheel — are on the roadmap. See [`docs/superpowers/`](docs/superpowers/) for the full design spec and milestone plans.
+> **Status: `v0.2.1` released, built in the open — and now self-hosting.** Working today: the tiered **router** (role→model), **fan-out** (parallel coders in isolated git worktrees → verify → integrate), the agentic tool loop (read / write / **edit** / shell / search + a permission gate), an **MCP** client + supervisor, a **skills** system (incl. `--skills add <url>` from the web), live **token streaming**, the 5-namespace **memory** engine, the **companion** beacon, a live **swarm graph** + an always-on **brain panel** + a shader-backed **native app** (`--app` / `--doctor`), **Obsidian wiki-sync**, **NATS federation** (event bus F1 · distributed swarm F2.1 · fan-out offload F2.2 · **sandboxed workers** F2.3 — Landlock/seccomp on Linux), an opt-in **prompt-processing** retrieval pipeline (raw store → search → compress), and **recursive development** — fan-out coders can run on the Antigravity CLI (`agy`), so entheai develops entheai, depth-guarded. Install it in one line (below). Later layers — `Sonar` health UI, Honcho personalization, and the `dogfeed` self-improvement flywheel — are on the roadmap. See [`docs/superpowers/`](docs/superpowers/) for the full design spec and milestone plans.
 
 ## Highlights
 
 - **Tiered hybrid brain** — cloud orchestrator plans; fast local Osaurus workers execute; escalation when it's hard.
 - **Fan-out orchestration** — effort-gated decomposition → parallel *model-matched* coders in isolated git worktrees → merge + verify (build & test).
+- **Recursive development** *(opt-in)* — set `[fanout] executor = "agy"` and every fan-out coder runs on the **Antigravity CLI** (Google's Ultra models) inside its worktree, so **entheai develops entheai** — bounded by a depth guard (`ENTHEAI_FANOUT_DEPTH ≤ 3`) and layer-aware prompts.
 - **Deeply extensible** — native tools · **skills** (`SKILL.md` discovery + the `skill` tool) · **MCP** servers (spawned at startup, tools exposed to the agent).
 - **Memory that compounds** — a five-namespace store (codebase, learnings, trajectories, tool results, sub-agent scratch), wired into the loop with pre-task retrieval + tool-output spillover.
-- **Federation** *(opt-in)* — a NATS **event bus** streams every fan-out run to the tailnet (F1), and a **distributed swarm** runs coder sub-tasks on other nodes over a JetStream work-queue with git-bundle transport (F2.1). Fully fail-safe — off or unreachable, runs stay local.
-- **Visual by design** — a `ratatui` TUI (streaming chat, inline tool progress, permission modal, a live **swarm graph** during fan-out), a session **companion** beacon you can scan to pair a device over your tailnet, and a minimalist **native app** (`--app`) with a rain-on-glass shader behind the text.
+- **Federation** *(opt-in)* — a NATS **event bus** streams every fan-out run to the tailnet (F1); a **distributed swarm** runs coder sub-tasks on other nodes over a JetStream work-queue with git-bundle transport (F2.1); fan-out **offloads** coders to the fleet (F2.2); and each remote coder runs **sandboxed** — a Landlock filesystem jail + seccomp syscall denylist + drop-root on Linux (F2.3). Fully fail-safe — off or unreachable, runs stay local.
+- **Visual by design** — a `ratatui` TUI (streaming chat, inline tool progress, permission modal, a live **swarm graph** during fan-out, and an always-on **brain panel** — a rotating faculties+fleet graph with `wk N · nats ●/○ · ctx %`), a session **companion** beacon you can scan to pair a device over your tailnet, and a minimalist **native app** (`--app`) with a rain-on-glass shader behind the text.
 - **Self-improving** *(roadmap)* — a low-overhead flywheel feeds real agent trajectories to a growing dataset.
 - **macOS / Apple Silicon only** — and it leans all the way into it (mimalloc, native codegen, Seatbelt, terminal graphics).
 
