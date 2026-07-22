@@ -435,6 +435,14 @@ async fn event_loop<P: Provider + 'static>(
     // 0ms busy-loop.
     let tick_ms = config.viz.tick_ms.max(16);
     let mut ticker = tokio::time::interval(Duration::from_millis(tick_ms));
+    // Poll the remote fleet on a slow cadence (never per-frame — `list_workers`
+    // pings NATS): feeds the brain panel's `wk N` + `nats ●/○` without stalling a
+    // frame. Skip missed ticks so a slow poll can't burst-catch-up.
+    let mut fleet_poll = tokio::time::interval(Duration::from_millis(1500));
+    fleet_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Seed the NATS indicator from the initial connect results; the live poll below
+    // refreshes it whenever the fleet actually responds.
+    app.brain.set_nats(bus.is_some() || fleet_fed.is_some());
     let mut line_cache = LineCache::default();
     // Env banner (folders · seeded machine id · ip) — computed once, shown on the
     // status bar's second row every frame.
@@ -845,6 +853,32 @@ async fn event_loop<P: Provider + 'static>(
                 {
                     app.notice = None;
                     dirty = true;
+                }
+            }
+            _ = fleet_poll.tick() => {
+                match &fleet_fed {
+                    Some(fed) => {
+                        let workers = fed.list_workers(Duration::from_millis(600)).await;
+                        let tuples: Vec<(String, bool)> = workers
+                            .iter()
+                            .map(|w| {
+                                (
+                                    w.node_id.clone(),
+                                    matches!(w.state, entheai_federation::WorkerState::Working { .. }),
+                                )
+                            })
+                            .collect();
+                        app.brain.set_fleet(&tuples);
+                        app.brain.set_nats(true); // responded → NATS reachable
+                        dirty = true;
+                    }
+                    None => {
+                        // Federation off: keep the fleet ring empty.
+                        if !app.brain.fleet.is_empty() {
+                            app.brain.set_fleet(&[]);
+                            dirty = true;
+                        }
+                    }
                 }
             }
         }
