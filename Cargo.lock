@@ -2120,7 +2120,9 @@ name = "entheai-core"
 version = "0.2.1"
 dependencies = [
  "adk-rust",
+ "anyhow",
  "async-trait",
+ "entheai-config",
  "entheai-memory",
  "entheai-memory-pp",
  "entheai-permission",
