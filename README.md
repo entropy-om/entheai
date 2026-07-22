@@ -51,6 +51,43 @@ Built fresh in **Rust**, taking the best ideas from [Crush](https://github.com/c
 - **Self-improving** *(roadmap)* — a low-overhead flywheel feeds real agent trajectories to a growing dataset.
 - **macOS / Apple Silicon only** — and it leans all the way into it (mimalloc, native codegen, Seatbelt, terminal graphics).
 
+## Philosophy: Frozen Nodes & Prompt-Processing
+
+`entheai` is developed not through traditional prompt-engineering, but through **philosophy, deterministic anchors, and prompt-processing**.
+
+### Frozen Nodes — Knowledge as Ice
+
+Knowledge and preferences sit in the brain as **frozen nodes** (curated markdown units in [`frozen/`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen)). A frozen node stays **dormant** until a task's deterministic triggers wake it up.
+
+> **The Ice in Coca-Cola Analogy:**
+> When a task involves cloud deployment or server setup (triggers like `hetzner`, `ssh`, `nixos`), `entheai` auto-loads the [`nixos`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/nixos.md) frozen node (and associated MCP tools via Docker MCP interface). The node's distilled knowledge unfreezes and wakes into the prompt.
+> 
+> Like ice in Coca-Cola, as it completely dissolves into the active context, it **doesn't spill over or bloat the context window** — the drink won't spill, it just becomes colder, crisper, and perfectly tempered for the task. When the task passes, it re-freezes.
+
+#### Curated Deterministic Domain Anchors:
+- **Cloud & System Provisioning**: [`NixOS`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/nixos.md) + Flakes for atomic, reproducible, rollback-safe builds.
+- **Source Control**: [`GitHub`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/github.md) for versioning and automated CI gate checks.
+- **Backend Systems**: [`Rust`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/rust.md) & [`Go`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/go-parallelism.md) for high-performance, parallel concurrency.
+- **Quick Devsite Deploys**: [`ngrok`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/ngrok.md) / devbox for rapid web testing.
+- **Long-Running Quick Scripts**: [`Python + JIT`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/python-jit.md) / `uv` execution.
+- **Deep Research**: [`Valyu`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/valyu.md) via MCP for grounded, cited academic & web literature.
+
+**Dynamic Re-ranking:** Frozen nodes are not static dogma. They are continuously collected, evaluated, and re-ranked. If a simpler, more deterministic, reproducible, quick, or beautiful pattern is discovered for a problem space, the frozen node evolves.
+
+### Prompt-Processing Engine (`crates/memory-pp`)
+
+Instead of compressing early into lossy vector embeddings (where subtle nuances are lost before the question is even asked), `entheai` keeps past experiences **raw**:
+
+1. **Stage 1 (Raw Experiential Store)**: Append-only storage of full transcripts, tool diffs, docs, and codebase snapshots.
+2. **Stage 2 (1-Bit LLM Mesh Search)**: A mesh of ternary 1-bit LLMs ([`ultragraph-1bit`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/docs/superpowers/specs/2026-07-22-prompt-processing-design.md)) scans raw spans and agentically resolves references.
+3. **Stage 3 (Marqant Structure-Preserving Compression)**: Deterministically compresses findings with [`mq`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/crates/kompress-core) before model submission.
+
+*Specification & Implementation Links:*
+- [Frozen Nodes Design Spec](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/docs/superpowers/specs/2026-07-22-frozen-nodes-design.md) · [frozen.rs Rust Code](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/crates/memory-pp/src/frozen.rs) · [frozen/ directory](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen)
+- [Prompt-Processing Design Spec](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/docs/superpowers/specs/2026-07-22-prompt-processing-design.md) · [crates/memory-pp](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/crates/memory-pp)
+- [Rustybox Sandboxed Workers Spec](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/docs/superpowers/specs/2026-07-22-rustybox-workers-design.md)
+- [ADK Rust Core Migration Spec](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/docs/superpowers/specs/2026-07-22-adk-rust-core-migration-design.md)
+
 ## Gallery
 
 <p align="center">
