@@ -495,6 +495,23 @@ async fn event_loop<P: Provider + 'static>(
         slash_index: None,
     };
 
+    let fanout_status = if fanout { "ON" } else { "OFF" };
+    app.messages.push(Msg {
+        role: Role::Assistant,
+        text: format!(
+            "🜂 welcome to entheai v0.2.1 🜂\n\n\
+             depth-guarded swarm & model-matched workspace coders are online.\n\
+             type your instructions below to begin.\n\n\
+             useful slash commands:\n\
+               /help         list TUI features & key bindings\n\
+               /radio proc   activate procedural psychedelic desert stoner space metal\n\
+               /clear        clear chat history\n\
+               /fanout       toggle parallel fan-out swarms (currently: {})\n\n\
+             ad visionem — toward vision.",
+            fanout_status
+        ),
+    });
+
     // Background music player (yt-dlp + rodio); one per TUI session.
     // If the player thread fails to start (extremely rare — only on system
     // resource exhaustion), use a no-op stub and continue without music
