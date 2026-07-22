@@ -1,0 +1,20 @@
+[package]
+name = "entheai-memory-pp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+entheai-memory = { path = "../memory" }
+tokio = { workspace = true, features = ["rt", "time"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+rusqlite = { workspace = true }
+blake3 = "1"
+log = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
