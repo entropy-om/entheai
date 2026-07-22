@@ -81,6 +81,23 @@ fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+/// Turn arbitrary user prompt text into a syntactically valid FTS5 MATCH
+/// expression. Split on non-alphanumerics, quote each token (so FTS operators
+/// `"`, `*`, `-`, `:`, `(`, `AND`/`OR`/`NEAR` can't be misparsed), join with OR
+/// to maximise recall. Returns None when there is nothing to match on.
+pub(crate) fn sanitize_fts5_query(query: &str) -> Option<String> {
+    let terms: Vec<String> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect();
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms.join(" OR "))
+    }
+}
+
 impl RawStore {
     pub fn open(path: &Path) -> Result<Self, PpError> {
         let conn = Connection::open_with_flags(
@@ -202,6 +219,45 @@ impl RawStore {
         .await
         .map_err(|e| PpError::Join(e.to_string()))?
     }
+
+    /// Stage-1 lexical recall (FTS5/BM25). Returns candidate spans best-first,
+    /// ≤ `k`. The vector arm is Slice 2 (same signature). An unmatchable query
+    /// yields an empty Vec — which the processor treats as "fall back to top-K".
+    pub async fn recall(&self, query: &str, k: usize) -> Result<Vec<RawSpan>, PpError> {
+        let Some(match_expr) = sanitize_fts5_query(query) else {
+            return Ok(Vec::new());
+        };
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<RawSpan>, PpError> {
+            let conn = db.lock().map_err(|_| PpError::Lock)?;
+            let mut stmt = conn.prepare(
+                "SELECT r.id, r.kind, r.created_at, bm25(raw_fts) AS bm
+                 FROM raw_fts JOIN raw r ON r.id = raw_fts.id
+                 WHERE raw_fts MATCH ?1
+                 ORDER BY bm ASC
+                 LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![match_expr, k as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, f64>(3)?,
+                ))
+            })?;
+            let mut out = Vec::new();
+            for r in rows {
+                let (id, kind_s, created_at, bm) = r?;
+                if let Some(kind) = RawKind::parse(&kind_s) {
+                    // bm25 is lower-is-better (negative); flip so higher = better.
+                    out.push(RawSpan { id, kind, score: (-bm) as f32, created_at });
+                }
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| PpError::Join(e.to_string()))?
+    }
 }
 
 #[cfg(test)]
@@ -244,5 +300,43 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         assert_eq!(s.prune(0).await.unwrap(), 1, "cutoff=now drops older-than-now");
         assert_eq!(s.count().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn recall_finds_by_keyword_and_rehydrates() {
+        let s = RawStore::open_memory().unwrap();
+        s.ingest(RawKind::Transcript, "the auth login flow", None).await.unwrap();
+        s.ingest(RawKind::ToolOutput, "unrelated disk usage report", None).await.unwrap();
+        let spans = s.recall("auth", 10).await.unwrap();
+        assert_eq!(spans.len(), 1, "only the matching span");
+        assert_eq!(spans[0].kind, RawKind::Transcript);
+        let rc = s.get(&spans[0].id).await.unwrap().unwrap();
+        assert_eq!(rc.bytes, "the auth login flow", "span id rehydrates raw payload");
+    }
+
+    #[tokio::test]
+    async fn recall_respects_k() {
+        let s = RawStore::open_memory().unwrap();
+        for i in 0..5 {
+            s.ingest(RawKind::Transcript, &format!("auth event number {i}"), None).await.unwrap();
+        }
+        assert_eq!(s.recall("auth", 3).await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn recall_punctuated_query_does_not_error() {
+        let s = RawStore::open_memory().unwrap();
+        s.ingest(RawKind::Transcript, "fix the auth bug in v2", None).await.unwrap();
+        // A raw FTS5 MATCH of this string is a syntax error (quotes, parens, `?`);
+        // the sanitizer must turn it into a valid, recall-preserving query. Without
+        // this, PP would silently never fire for punctuated prompts.
+        let spans = s.recall("fix the \"auth\" bug (v2)?", 10).await.unwrap();
+        assert!(!spans.is_empty(), "punctuated prompt still recalls");
+    }
+
+    #[test]
+    fn sanitize_rejects_empty_and_quotes_tokens() {
+        assert_eq!(sanitize_fts5_query("   "), None);
+        assert_eq!(sanitize_fts5_query("a-b c"), Some("\"a\" OR \"b\" OR \"c\"".to_string()));
     }
 }
