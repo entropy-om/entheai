@@ -55,6 +55,19 @@ max_parallel = 4                         # cap on concurrently-running sub-agent
 #                       # `wk N · nats ●/○ · ctx %`. Toggle live with /brain.
 # brain_width = 26      # panel width in columns (auto-hides on narrow terminals)
 
+# ── Prompt-processing retrieval (opt-in, Slice 1) ─────────────────────────────
+# Keep the past RAW; search it; compress LAST. Off by default (mode = "topk" =
+# today's top-K). Slice 1 ingests raw experience + always falls back to top-K
+# (the mesh + marqant are stubbed); Slice 2 drops in the ultra-graph sidecar + mq.
+# [memory]
+# mode = "prompt-processing"        # default: "topk" (today's behaviour)
+# [memory.prompt_processing]
+#   search_deadline_ms = 1500       # fail fast to top-K past this deadline
+#   raw_retention_days = 90         # raw experiential store retention (pruned at startup)
+#   recall_k           = 64         # Stage-1 lexical recall breadth
+#   raw_path           = "~/.cache/entheai/raw.db"
+#   # Slice 2 (not yet active): sidecar_cmd, mesh_size, marqant_cmd
+
 # ── Federation event bus (entheai-bus, F1) ───────────────────────────────────
 # Opt-in + fail-safe: with enabled = false (default) or an unreachable hub,
 # entheai runs entirely locally — federation never blocks a run. When enabled,

@@ -255,4 +255,32 @@ mod tests {
         pp.ingest_transcript(&scope(), &msgs, "done").await;
         assert_eq!(pp.raw().count().await.unwrap(), 2, "one tool row + one transcript row");
     }
+
+    #[tokio::test]
+    #[ignore = "integration: exercised in the full suite / CI gate"]
+    async fn slice1_end_to_end_falls_back_and_ingest_is_idempotent() {
+        let pp = pp_with(Box::new(StubMesh)); // production stub
+
+        // Simulate a run's ingest.
+        let sc = scope();
+        let msgs = vec![entheai_providers::ChatMessage::user("fix the auth bug")];
+        pp.ingest_transcript(&sc, &msgs, "fixed it").await;
+        let ev = entheai_memory::ToolEvidence {
+            call_id: "c".into(),
+            name: "run_shell".into(),
+            args: "grep auth".into(),
+            result: "auth.rs:42".into(),
+            allowed: true,
+        };
+        pp.ingest_tool(&sc, &ev).await;
+        assert_eq!(pp.raw().count().await.unwrap(), 2);
+
+        // Retrieval with the production stub → fallback signal (core uses top-K).
+        assert_eq!(pp.retrieve("auth").await.unwrap(), None);
+
+        // Re-running the same session ingests nothing new (content-addressed).
+        pp.ingest_transcript(&sc, &msgs, "fixed it").await;
+        pp.ingest_tool(&sc, &ev).await;
+        assert_eq!(pp.raw().count().await.unwrap(), 2, "idempotent across re-runs");
+    }
 }
