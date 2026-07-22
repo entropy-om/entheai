@@ -579,6 +579,141 @@ mod tests {
         assert_eq!(policy.decide("echo"), Decision::Allow); // sanity
     }
 
+    struct FinalAnswerProvider;
+    #[async_trait]
+    impl Provider for FinalAnswerProvider {
+        async fn stream_chat(
+            &self,
+            _m: &str,
+            _msgs: &[ChatMessage],
+        ) -> Result<
+            BoxStream<'static, Result<StreamEvent, entheai_providers::ProviderError>>,
+            entheai_providers::ProviderError,
+        > {
+            Ok(Box::pin(stream::iter(vec![Ok(StreamEvent::Done)])))
+        }
+        async fn complete(
+            &self,
+            _m: &str,
+            _msgs: &[ChatMessage],
+            _tools: &[serde_json::Value],
+        ) -> Result<AssistantResponse, entheai_providers::ProviderError> {
+            Ok(AssistantResponse {
+                content: "final answer".into(),
+                tool_calls: vec![],
+            })
+        }
+    }
+
+    fn test_scope() -> entheai_memory::MemoryScope {
+        entheai_memory::MemoryScope {
+            session_id: "sess".into(),
+            task_id: "task".into(),
+            cwd: std::path::PathBuf::from("/tmp"),
+            role: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn run_task_with_memory_wakes_frozen_node_and_emits_event() {
+        use entheai_memory_pp::frozen::{FrozenNode, FrozenStore};
+        use entheai_memory_pp::{PromptProcessor, RawStore, StubMarqant, StubMesh};
+
+        let node = FrozenNode {
+            name: "nixos".into(),
+            domain: "cloud".into(),
+            triggers: vec!["hetzner".into()],
+            mcp: None,
+            rank: 1.0,
+            knowledge: "use nix flakes".into(),
+        };
+        let raw = RawStore::open_memory().unwrap();
+        let pp = PromptProcessor::new(
+            raw,
+            Box::new(StubMesh),
+            Box::new(StubMarqant),
+            std::time::Duration::from_millis(50),
+            16,
+            1 << 20,
+            FrozenStore::from_nodes(vec![node]),
+        );
+
+        let agent = Agent::new(FinalAnswerProvider, "m".into());
+        let registry = ToolRegistry::new();
+        let policy = Policy::new(true, vec![]);
+        let mut prompter = AllowAll;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+
+        let answer = agent
+            .run_task_with_memory(
+                vec![ChatMessage::user("please deploy to hetzner")],
+                &registry,
+                &policy,
+                &mut prompter,
+                Some(tx),
+                None,
+                Some(&pp),
+                test_scope(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer, "final answer");
+
+        let mut saw_wake = false;
+        while let Ok(ev) = rx.try_recv() {
+            if let AgentEvent::FrozenWoke { name } = ev {
+                assert_eq!(name, "nixos");
+                saw_wake = true;
+            }
+        }
+        assert!(saw_wake, "expected a FrozenWoke event for the matched node");
+    }
+
+    #[tokio::test]
+    async fn run_task_with_memory_no_frozen_match_emits_nothing() {
+        use entheai_memory_pp::frozen::FrozenStore;
+        use entheai_memory_pp::{PromptProcessor, RawStore, StubMarqant, StubMesh};
+
+        let raw = RawStore::open_memory().unwrap();
+        let pp = PromptProcessor::new(
+            raw,
+            Box::new(StubMesh),
+            Box::new(StubMarqant),
+            std::time::Duration::from_millis(50),
+            16,
+            1 << 20,
+            FrozenStore::from_nodes(vec![]),
+        );
+
+        let agent = Agent::new(FinalAnswerProvider, "m".into());
+        let registry = ToolRegistry::new();
+        let policy = Policy::new(true, vec![]);
+        let mut prompter = AllowAll;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+
+        let _ = agent
+            .run_task_with_memory(
+                vec![ChatMessage::user("unrelated question")],
+                &registry,
+                &policy,
+                &mut prompter,
+                Some(tx),
+                None,
+                Some(&pp),
+                test_scope(),
+            )
+            .await
+            .unwrap();
+
+        let mut saw_wake = false;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev, AgentEvent::FrozenWoke { .. }) {
+                saw_wake = true;
+            }
+        }
+        assert!(!saw_wake, "no trigger matched, no FrozenWoke event expected");
+    }
+
     struct AlwaysToolProvider;
     #[async_trait]
     impl Provider for AlwaysToolProvider {

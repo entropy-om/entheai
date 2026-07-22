@@ -864,6 +864,9 @@ async fn event_loop<P: Provider + 'static>(
                         });
                         app.current_action = "thinking".to_string();
                     }
+                    Some(AgentEvent::FrozenWoke { name }) => {
+                        app.brain.wake_frozen(&name);
+                    }
                     None => events_rx = None, // sender dropped -> run finished
                 }
             }
