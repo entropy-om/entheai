@@ -62,6 +62,11 @@ Built fresh in **Rust**, taking the best ideas from [Crush](https://github.com/c
   <img src="docs/images/threshold.png" alt="light through a narrow stone crevice" width="32%">
   <img src="docs/images/pulse.png" alt="a single pulse radiating outward in concentric arcs" width="32%">
 </p>
+<p align="center">
+  <img src="docs/images/swarm.png" alt="a glowing swarm network of model-matched sub-agent nodes" width="32%">
+  <img src="docs/images/resonance.png" alt="a glassmorphism prism refracting light in dark obsidian crystal" width="32%">
+  <img src="docs/images/quantum.png" alt="quantum harmonic wave interference radiating into the void" width="32%">
+</p>
 
 ## Quick start
 
