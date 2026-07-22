@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use adk_rust::serde_json::{json, Value};
 use adk_rust::{
-    async_trait, CallbackContext, Content, Result as AdkResult, Tool as AdkTool, ToolContext,
+    async_trait, Result as AdkResult, Tool as AdkTool, ToolContext,
 };
 use entheai_permission::{Decision, Policy, Prompter};
 use entheai_tools::Tool;
@@ -90,7 +90,8 @@ impl AdkTool for AdkToolAdapter {
 mod tests {
     use super::*;
     use adk_rust::{
-        async_trait, EventActions, MemoryEntry, ReadonlyContext, Result as AdkResult,
+        async_trait, CallbackContext, Content, EventActions, MemoryEntry, ReadonlyContext,
+        Result as AdkResult,
     };
     use entheai_permission::{Grant, Pin, Policy, Prompter};
     use entheai_tools::Tool;
@@ -236,7 +237,7 @@ mod tests {
         let result = adapter.execute(ctx, args).await.unwrap();
 
         assert!(
-            result["error"].as_str().map_or(false, |s| s.to_lowercase().contains("permission denied")),
+            result["error"].as_str().is_some_and(|s| s.to_lowercase().contains("permission denied")),
             "expected error about permission denied, got {result}"
         );
     }
