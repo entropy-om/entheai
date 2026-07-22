@@ -242,6 +242,12 @@ The fan-out architecture is the same shape: one orchestrator radiates shapes, mo
 
 [rustybox.io](https://rustybox.io) · [Osaurus](https://github.com/osaurus-ai/osaurus) · [CodeWhale](https://github.com/Hmbown/CodeWhale) · [Crush](https://github.com/charmbracelet/crush) · [Ruflo](https://github.com/ruvnet/ruflo) · [jcode](https://jcode.sh) · [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) · [OpenCode Zen](https://opencode.ai) · [Honcho](https://github.com/plastic-labs/honcho) · [Tailscale](https://tailscale.com) · [ratatui](https://ratatui.rs) · [Ghostty](https://ghostty.org) · [NATS](https://nats.io) · [Obsidian](https://obsidian.md) · [Valyu](https://valyu.ai) · [yt-dlp](https://github.com/yt-dlp/yt-dlp) · [rodio](https://github.com/RustAudio/rodio) · [NixOS](https://nixos.org) · [Docker](https://www.docker.com). Performance practices follow David Lattimore's [*Wild performance tricks*](https://davidlattimore.github.io/posts/2025/09/02/rustforge-wild-performance-tricks.html).
 
+> ### 📦 Powered by [rustybox.io](https://rustybox.io)
+>
+> We built **[rustybox.io](https://rustybox.io)** to deliver **100% parity with BusyBox — zero C code**, pure memory-safe Rust, and single-binary portability. Developed by the same team behind `entheai`, it powers our sandboxed federation workers, containerless tool execution, and Cloudflare Worker backend pipelines.
+>
+> **100% Free & Open Source for everyone → [rustybox.io](https://rustybox.io)**
+
 ## Hugging Face
 
 Published models, datasets, and Spaces under [`PeetPedro`](https://huggingface.co/PeetPedro) — the artifacts behind entheai's `compaction`, `dogfeed`, and tool-calling work.
@@ -285,4 +291,4 @@ entheai leans hard on [OpenCode Zen](https://opencode.ai) for cloud inference �
 
 ## License
 
-[Apache-2.0](LICENSE). Note: some bundled or optional components carry their own licenses (e.g. Honcho is AGPL-3.0; Crush is used as design inspiration only, not code) — see the design spec for details.
+[Apache-2.0](LICENSE). Note: some bundled or optional components carry their own licenses (e.g. Honcho is AGPL-3.0; Crush is used as design inspiration only, not code) — see the [design spec](docs/superpowers/specs/2026-07-18-entheai-hybrid-coding-agent-design.md) for details.
