@@ -6,7 +6,6 @@ rust-version.workspace = true
 
 [dependencies]
 entheai-core = { path = "../core" }
-entheai-providers = { path = "../providers" }
 entheai-memory = { path = "../memory" }
 entheai-memory-pp = { path = "../memory-pp" }
 entheai-tools = { path = "../tools" }

@@ -2065,7 +2065,6 @@ dependencies = [
  "entheai-obsidian",
  "entheai-orchestrator",
  "entheai-permission",
- "entheai-providers",
  "entheai-router",
  "entheai-skills",
  "entheai-tools",
@@ -2128,14 +2127,12 @@ dependencies = [
  "entheai-memory",
  "entheai-memory-pp",
  "entheai-permission",
- "entheai-providers",
  "entheai-tools",
  "futures",
  "log",
  "schemars",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
  "tokio",
  "uuid",
  "wiremock",
@@ -2279,21 +2276,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "entheai-providers"
-version = "0.2.1"
-dependencies = [
- "async-trait",
- "eventsource-stream",
- "futures",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "wiremock",
-]
-
-[[package]]
 name = "entheai-radio"
 version = "0.2.1"
 dependencies = [
@@ -2373,7 +2355,6 @@ dependencies = [
  "entheai-memory-pp",
  "entheai-orchestrator",
  "entheai-permission",
- "entheai-providers",
  "entheai-radio",
  "entheai-tools",
  "entheai-viz",

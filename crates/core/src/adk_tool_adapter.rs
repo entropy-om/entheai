@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use adk_rust::serde_json::{json, Value};
-use adk_rust::{
-    async_trait, Result as AdkResult, Tool as AdkTool, ToolContext,
-};
+use adk_rust::{async_trait, Result as AdkResult, Tool as AdkTool, ToolContext};
 use entheai_permission::{Decision, Policy, Prompter};
 use entheai_tools::Tool;
 use tokio::sync::Mutex;
@@ -170,10 +168,7 @@ mod tests {
         fn schema(&self) -> serde_json::Value {
             serde_json::json!({"type":"function","function":{"name":"echo","parameters":{"type":"object","properties":{}}}})
         }
-        async fn call(
-            &self,
-            args: serde_json::Value,
-        ) -> Result<String, entheai_tools::ToolError> {
+        async fn call(&self, args: serde_json::Value) -> Result<String, entheai_tools::ToolError> {
             Ok(format!("echoed: {}", args["text"].as_str().unwrap_or("")))
         }
     }
@@ -205,7 +200,10 @@ mod tests {
 
         let decl = adapter.declaration();
         let expected = inner.schema();
-        assert_eq!(decl, expected, "declaration must match inner tool's schema verbatim");
+        assert_eq!(
+            decl, expected,
+            "declaration must match inner tool's schema verbatim"
+        );
     }
 
     #[tokio::test]
@@ -237,7 +235,9 @@ mod tests {
         let result = adapter.execute(ctx, args).await.unwrap();
 
         assert!(
-            result["error"].as_str().is_some_and(|s| s.to_lowercase().contains("permission denied")),
+            result["error"]
+                .as_str()
+                .is_some_and(|s| s.to_lowercase().contains("permission denied")),
             "expected error about permission denied, got {result}"
         );
     }

@@ -274,4 +274,72 @@ mod tests {
         let result = callback(ctx, tool, json!({}), response).await.expect("callback succeeds");
         assert!(result.is_none(), "small output should not be overridden");
     }
+
+    #[tokio::test]
+    async fn before_model_callback_wakes_frozen_node_and_emits_event() {
+        use entheai_memory_pp::frozen::{FrozenNode, FrozenStore};
+        use entheai_memory_pp::{PromptProcessor, RawStore, StubMarqant, StubMesh};
+
+        let node = FrozenNode {
+            name: "nixos".into(),
+            domain: "cloud".into(),
+            triggers: vec!["hetzner".into()],
+            mcp: None,
+            rank: 1.0,
+            knowledge: "use nix flakes".into(),
+        };
+        let raw = RawStore::open_memory().unwrap();
+        let pp = Arc::new(PromptProcessor::new(
+            raw,
+            Box::new(StubMesh),
+            Box::new(StubMarqant),
+            std::time::Duration::from_millis(50),
+            16,
+            1 << 20,
+            FrozenStore::from_nodes(vec![node]),
+        ));
+
+        let store = SqliteStore::open_memory(None).unwrap();
+        // Disabled: isolates this test to frozen-wake, no retrieval interference.
+        let memory = Arc::new(MemoryRuntime::new(Arc::new(store), MemoryRuntimeConfig::default()));
+
+        let injected_sessions = Arc::new(Mutex::new(std::collections::HashSet::new()));
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let callback = before_model_retrieval_callback(
+            memory,
+            Some(pp),
+            injected_sessions,
+            Some(event_tx),
+        );
+
+        let ctx: Arc<dyn CallbackContext> = Arc::new(FakeCtx {
+            content: Content::new("user").with_text("please deploy to hetzner"),
+        });
+        let request = LlmRequest {
+            model: "m".to_string(),
+            contents: vec![Content::new("user").with_text("please deploy to hetzner")],
+            config: None,
+            tools: Default::default(),
+            previous_response_id: None,
+        };
+
+        let result = callback(ctx, request).await.expect("callback succeeds");
+        let BeforeModelResult::Continue(new_request) = result else {
+            panic!("expected Continue, callback did not short-circuit");
+        };
+        assert!(
+            new_request.contents.iter().any(|c| c
+                .parts
+                .iter()
+                .any(|p| p.text().is_some_and(|t| t.contains("frozen:nixos")))),
+            "expected the frozen brief injected into the request, got {:?}",
+            new_request.contents
+        );
+
+        let ev = event_rx.try_recv().expect("expected a FrozenWoke event");
+        assert!(
+            matches!(&ev, AgentEvent::FrozenWoke { name, .. } if name == "nixos"),
+            "expected FrozenWoke(nixos), got {ev:?}"
+        );
+    }
 }

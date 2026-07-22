@@ -4,7 +4,6 @@ use anyhow::Context;
 use clap::Parser;
 use entheai_companion::state::StateChange;
 use entheai_config::Config;
-use entheai_providers::ChatMessage;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixListener;
 
@@ -186,14 +185,9 @@ async fn main() -> anyhow::Result<()> {
         .or(cfg.default_model.clone())
         .unwrap_or_else(|| entheai_router::DEFAULT_ORCHESTRATOR.to_string());
     let yolo = cli.yolo || cfg.permission.yolo;
-    let agent = entheai_router::build_agent(&model_id, &cfg)?;
     // YOLO lifts the turn cap entirely — a long autonomous run shouldn't be cut
     // off at `[router].max_turns` (default 200).
-    let agent = if yolo {
-        agent.with_max_turns(usize::MAX)
-    } else {
-        agent
-    };
+    let max_iterations: u32 = if yolo { u32::MAX } else { cfg.router.max_turns as u32 };
     let mut policy = entheai_permission::Policy::new(yolo, cfg.permission.allowlist.clone());
     let mode = if yolo {
         entheai_permission::Mode::Yolo
@@ -213,6 +207,7 @@ async fn main() -> anyhow::Result<()> {
         };
         policy.pin(t, pin);
     }
+    let policy = std::sync::Arc::new(policy);
 
     // Shared memory store (open before any agent run so the DB + parent dir exist
     // even when the model call fails) + a session id for scoping.
@@ -276,16 +271,15 @@ async fn main() -> anyhow::Result<()> {
                 bus_session.finish().await;
                 println!("{answer}");
             } else {
-                let mut prompter = entheai_permission::StdinPrompter;
-                let mut messages = Vec::new();
-                if let Some(sp) = &system_prompt {
-                    messages.push(ChatMessage::system(sp.clone()));
-                }
-                messages.push(ChatMessage::user(prompt));
+                let prompter: std::sync::Arc<tokio::sync::Mutex<dyn entheai_permission::Prompter>> =
+                    std::sync::Arc::new(tokio::sync::Mutex::new(entheai_permission::StdinPrompter));
                 let runtime = shared_memory.clone().map(|m| {
-                    entheai_memory::MemoryRuntime::new(m, memory_runtime_config(&cfg.memory))
+                    std::sync::Arc::new(entheai_memory::MemoryRuntime::new(
+                        m,
+                        memory_runtime_config(&cfg.memory),
+                    ))
                 });
-                let pp = build_prompt_processor(&cfg)?;
+                let pp = build_prompt_processor(&cfg)?.map(std::sync::Arc::new);
                 if let Some(p) = &pp {
                     let retention = cfg
                         .memory
@@ -301,18 +295,47 @@ async fn main() -> anyhow::Result<()> {
                     cwd: root.clone(),
                     role: None,
                 };
-                let answer = agent
-                    .run_task_with_memory(
-                        messages,
+                // No live-progress consumer for the one-shot path — the final
+                // answer alone is printed, matching today's behavior. Sends
+                // to a channel with no reader never block (unbounded).
+                let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+                let agent = match &runtime {
+                    Some(mem) => entheai_core::EntheaiAgent::new_with_memory(
+                        &model_id,
+                        system_prompt.as_deref(),
+                        &cfg.inference,
+                        &cfg.providers,
                         &registry,
-                        &policy,
-                        &mut prompter,
-                        None,
-                        runtime.as_ref(),
-                        pp.as_ref(),
-                        scope,
-                    )
-                    .await?;
+                        std::sync::Arc::clone(&policy),
+                        std::sync::Arc::clone(&prompter),
+                        max_iterations,
+                        std::sync::Arc::clone(mem),
+                        pp.clone(),
+                        scope.clone(),
+                        Some(event_tx.clone()),
+                    )?,
+                    None => entheai_core::EntheaiAgent::new_with_instruction(
+                        &model_id,
+                        system_prompt.as_deref(),
+                        &cfg.inference,
+                        &cfg.providers,
+                        &registry,
+                        std::sync::Arc::clone(&policy),
+                        std::sync::Arc::clone(&prompter),
+                        max_iterations,
+                    )?,
+                };
+                let answer = entheai_core::event_bridge::run_with_events(
+                    &agent,
+                    &[],
+                    &prompt,
+                    &model_id,
+                    event_tx,
+                    runtime,
+                    pp,
+                    scope,
+                )
+                .await?;
                 println!("{answer}");
             }
         }
@@ -359,10 +382,10 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
             entheai_tui::run(
-                agent,
                 registry,
                 policy,
                 model_id.clone(),
+                max_iterations,
                 cfg,
                 root.clone(),
                 cli.fanout,

@@ -30,9 +30,8 @@ use ratatui::{
 use tokio::sync::{mpsc, oneshot};
 
 use entheai_companion::state::StateChange;
-use entheai_core::{Agent, AgentEvent};
+use entheai_core::AgentEvent;
 use entheai_permission::{Grant, Policy, Prompter};
-use entheai_providers::{ChatMessage, Provider};
 use entheai_radio::{Command as RadioCommand, Event as RadioEvent, Radio};
 use entheai_tools::ToolRegistry;
 
@@ -330,11 +329,11 @@ enum Action {
 /// always restores the terminal on exit (raw mode + alternate screen), even on
 /// error, via [`TerminalGuard`].
 #[allow(clippy::too_many_arguments)]
-pub async fn run<P: Provider + 'static>(
-    agent: Agent<P>,
+pub async fn run(
     registry: ToolRegistry,
-    policy: Policy,
+    policy: Arc<Policy>,
     model_label: String,
+    max_iterations: u32,
     config: entheai_config::Config,
     root: std::path::PathBuf,
     fanout: bool,
@@ -352,10 +351,10 @@ pub async fn run<P: Provider + 'static>(
     let guard = TerminalGuard;
     let result = event_loop(
         &mut terminal,
-        agent,
         registry,
         policy,
         model_label,
+        max_iterations,
         config,
         root,
         fanout,
@@ -392,12 +391,12 @@ fn init_terminal() -> anyhow::Result<Terminal<Backend>> {
 // stay easy to read side by side; grouping the fan-out/session params into a
 // struct would obscure that correspondence for one extra argument.
 #[allow(clippy::too_many_arguments)]
-async fn event_loop<P: Provider + 'static>(
+async fn event_loop(
     terminal: &mut Terminal<Backend>,
-    agent: Agent<P>,
     registry: ToolRegistry,
-    policy: Policy,
+    policy: Arc<Policy>,
     model_label: String,
+    max_iterations: u32,
     config: entheai_config::Config,
     root: std::path::PathBuf,
     fanout: bool,
@@ -421,10 +420,10 @@ async fn event_loop<P: Provider + 'static>(
     // `config.nats` here, before `config` is moved into the `Arc` below.
     let bus = entheai_bus::Bus::connect(&entheai_bus::BusOptions::from_config(&config.nats)).await;
 
-    // Arc so each spawned run task can share the agent/registry/policy/config.
-    let agent = Arc::new(agent);
+    // Arc so each spawned run task can share the registry/config; a fresh
+    // EntheaiAgent is built per turn instead (see the submit handler below —
+    // each turn needs its own MemoryScope.task_id).
     let registry = Arc::new(registry);
-    let policy = Arc::new(policy);
     let config = Arc::new(config);
 
     // Federation dispatch (F2.3): build the remote coder executor once per TUI
@@ -768,11 +767,14 @@ async fn event_loop<P: Provider + 'static>(
                                     let _ = result_tx.send(res.map_err(|e| e.to_string())).await;
                                 }));
                             } else {
-                                let history = build_history(app.system_prompt.as_deref(), &app.messages);
+                                // Everything but the just-pushed current turn (`text`,
+                                // passed separately to run_with_history/run_with_events).
+                                let prior_turns =
+                                    build_prior_turns(&app.messages[..app.messages.len() - 1]);
 
-                                let agent = Arc::clone(&agent);
                                 let registry = Arc::clone(&registry);
                                 let policy = Arc::clone(&policy);
+                                let config = Arc::clone(&config);
                                 let perm_tx = perm_tx.clone();
                                 let result_tx = result_tx.clone();
                                 let (event_tx, event_rx) = mpsc::unbounded_channel::<AgentEvent>();
@@ -783,20 +785,57 @@ async fn event_loop<P: Provider + 'static>(
                                     task_id: format!("turn-{}", uuid::Uuid::new_v4()),
                                     ..scope.clone()
                                 };
+                                let model_label = app.model_label.clone();
+                                let instruction = app.system_prompt.clone();
                                 run_handle = Some(tokio::spawn(async move {
-                                    let mut prompter = TuiPrompter { tx: perm_tx };
-                                    let res = agent
-                                        .run_task_with_memory(
-                                            history,
+                                    let prompter: Arc<tokio::sync::Mutex<dyn Prompter>> =
+                                        Arc::new(tokio::sync::Mutex::new(TuiPrompter { tx: perm_tx }));
+                                    // Fresh EntheaiAgent per turn — cheap (no network I/O
+                                    // at construction), and needed anyway since each turn
+                                    // gets its own MemoryScope.task_id (a shared, reused
+                                    // agent would bake in a stale one).
+                                    let agent = match &mem {
+                                        Some(m) => entheai_core::EntheaiAgent::new_with_memory(
+                                            &model_label,
+                                            instruction.as_deref(),
+                                            &config.inference,
+                                            &config.providers,
                                             &registry,
-                                            &policy,
-                                            &mut prompter,
-                                            Some(event_tx),
-                                            mem.as_deref(),
-                                            pp_clone.as_deref(),
-                                            sc,
-                                        )
-                                        .await;
+                                            Arc::clone(&policy),
+                                            Arc::clone(&prompter),
+                                            max_iterations,
+                                            Arc::clone(m),
+                                            pp_clone.clone(),
+                                            sc.clone(),
+                                            Some(event_tx.clone()),
+                                        ),
+                                        None => entheai_core::EntheaiAgent::new_with_instruction(
+                                            &model_label,
+                                            instruction.as_deref(),
+                                            &config.inference,
+                                            &config.providers,
+                                            &registry,
+                                            Arc::clone(&policy),
+                                            Arc::clone(&prompter),
+                                            max_iterations,
+                                        ),
+                                    };
+                                    let res = match agent {
+                                        Ok(agent) => {
+                                            entheai_core::event_bridge::run_with_events(
+                                                &agent,
+                                                &prior_turns,
+                                                &text,
+                                                &model_label,
+                                                event_tx,
+                                                mem,
+                                                pp_clone,
+                                                sc,
+                                            )
+                                            .await
+                                        }
+                                        Err(e) => Err(e),
+                                    };
                                     let _ = result_tx.send(res.map_err(|e| e.to_string())).await;
                                 }));
                             }
@@ -1859,20 +1898,19 @@ fn handle_radio_event(app: &mut App, ev: RadioEvent) {
     }
 }
 
-/// Map the display history to provider messages for the next run. Only User and
-/// Assistant turns are real conversation; Tool/Error lines are display-only. When
-/// `system_prompt` is set, it is pushed first as a system message.
-fn build_history(system_prompt: Option<&str>, messages: &[Msg]) -> Vec<ChatMessage> {
-    let mut out = Vec::new();
-    if let Some(sp) = system_prompt {
-        out.push(ChatMessage::system(sp));
-    }
-    out.extend(messages.iter().filter_map(|m| match m.role {
-        Role::User => Some(ChatMessage::user(m.text.clone())),
-        Role::Assistant => Some(ChatMessage::assistant(m.text.clone())),
-        Role::Tool | Role::Error => None,
-    }));
-    out
+/// Map the display history to `(role, text)` pairs for `EntheaiAgent::run_with_history`
+/// to seed as prior turns. Only User and Assistant turns are real conversation;
+/// Tool/Error lines are display-only. The system prompt is no longer part of
+/// this history — it's applied once at agent construction via `instruction`.
+fn build_prior_turns(messages: &[Msg]) -> Vec<(String, String)> {
+    messages
+        .iter()
+        .filter_map(|m| match m.role {
+            Role::User => Some(("user".to_string(), m.text.clone())),
+            Role::Assistant => Some(("assistant".to_string(), m.text.clone())),
+            Role::Tool | Role::Error => None,
+        })
+        .collect()
 }
 
 /// Hard-wrap `s` to `width` columns (character-based, no word boundaries) so the
@@ -2990,7 +3028,7 @@ mod tests {
     }
 
     #[test]
-    fn build_history_skips_tool_and_error() {
+    fn build_prior_turns_skips_tool_and_error() {
         let messages = vec![
             Msg {
                 role: Role::User,
@@ -3009,10 +3047,10 @@ mod tests {
                 text: "boom".into(),
             },
         ];
-        let hist = build_history(None, &messages);
+        let hist = build_prior_turns(&messages);
         assert_eq!(hist.len(), 2);
-        assert_eq!(hist[0].role, "user");
-        assert_eq!(hist[1].role, "assistant");
+        assert_eq!(hist[0].0, "user");
+        assert_eq!(hist[1].0, "assistant");
     }
 
     #[test]

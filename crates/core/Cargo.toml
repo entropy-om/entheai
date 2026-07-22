@@ -5,7 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-entheai-providers = { path = "../providers" }
 entheai-tools = { path = "../tools" }
 entheai-permission = { path = "../permission" }
 entheai-memory = { path = "../memory" }
@@ -13,7 +12,6 @@ entheai-memory-pp = { path = "../memory-pp" }
 entheai-config = { path = "../config" }
 adk-rust = { workspace = true }
 anyhow = { workspace = true }
-thiserror = { workspace = true }
 async-trait.workspace = true
 futures.workspace = true
 serde_json = { workspace = true }

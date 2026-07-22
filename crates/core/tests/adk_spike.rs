@@ -4,14 +4,14 @@ use std::sync::Arc;
 use adk_rust::agent::LlmAgentBuilder;
 use adk_rust::model::openai::{OpenAIClient, OpenAIConfig};
 use adk_rust::runner::Runner;
+use adk_rust::serde_json::{json, Value};
 use adk_rust::session::{CreateRequest, InMemorySessionService, SessionService};
 use adk_rust::tool::FunctionTool;
 use adk_rust::{AdkError, Content, Result as AdkResult, Tool, ToolContext};
-use adk_rust::serde_json::{json, Value};
 use futures::StreamExt;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
-use schemars::JsonSchema;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -21,9 +21,8 @@ struct EchoArgs {
 }
 
 async fn echo(_ctx: Arc<dyn ToolContext>, args: Value) -> AdkResult<Value> {
-    let echo_args: EchoArgs = serde_json::from_value(args).map_err(|e| {
-        AdkError::tool(format!("failed to deserialize EchoArgs: {e}"))
-    })?;
+    let echo_args: EchoArgs = serde_json::from_value(args)
+        .map_err(|e| AdkError::tool(format!("failed to deserialize EchoArgs: {e}")))?;
     Ok(json!({ "echoed": echo_args.text }))
 }
 
@@ -80,7 +79,11 @@ async fn spike_llm_agent_runner_session_roundtrip() {
         .expect("runner builds");
 
     let mut stream = runner
-        .run_str("spike-user", "spike-session", Content::new("user").with_text("say hi"))
+        .run_str(
+            "spike-user",
+            "spike-session",
+            Content::new("user").with_text("say hi"),
+        )
         .await
         .expect("run starts");
 
@@ -95,5 +98,8 @@ async fn spike_llm_agent_runner_session_roundtrip() {
             }
         }
     }
-    assert!(final_text.contains("spike ok"), "expected mocked reply, got {final_text:?}");
+    assert!(
+        final_text.contains("spike ok"),
+        "expected mocked reply, got {final_text:?}"
+    );
 }
