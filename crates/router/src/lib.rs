@@ -1,6 +1,7 @@
 use entheai_config::Config;
-use entheai_core::Agent;
-use entheai_providers::OpenAiCompatProvider;
+use entheai_core::EntheaiAgent;
+use entheai_permission::{Policy, Prompter};
+use std::sync::Arc;
 
 /// The built-in strong orchestrator when none is configured — the current
 /// strongest cheap MoE. Overridable via `[router].orchestrator` / `default_model`.
@@ -46,29 +47,31 @@ pub fn model_for_role(config: &Config, role: &str) -> anyhow::Result<String> {
     orchestrator_model(config)
 }
 
-/// Build an `Agent` for a `"<provider>/<model>"` id using the config's providers.
-/// The API key is read from the provider's `api_key_env` at call time.
-pub fn build_agent(model_id: &str, config: &Config) -> anyhow::Result<Agent<OpenAiCompatProvider>> {
-    let (provider_name, model) = model_id
-        .split_once('/')
-        .ok_or_else(|| anyhow::anyhow!("model must be '<provider>/<model>': {model_id}"))?;
-    let pcfg = config
-        .providers
-        .get(provider_name)
-        .ok_or_else(|| anyhow::anyhow!("unknown provider '{provider_name}'"))?;
-    let api_key = pcfg
-        .api_key_env
-        .as_ref()
-        .and_then(|e| std::env::var(e).ok());
-    let provider = OpenAiCompatProvider::new(pcfg.base_url.clone(), api_key).with_inference(
-        entheai_providers::InferenceSettings {
-            request_timeout: std::time::Duration::from_secs(config.inference.request_timeout_secs),
-            max_tokens: config.inference.max_tokens,
-            temperature: config.inference.temperature,
-            retries: config.inference.retries,
-        },
-    );
-    Ok(Agent::new(provider, model.to_string()).with_max_turns(config.router.max_turns))
+/// Build an `EntheaiAgent` for a `"<provider>/<model>"` id using the config's
+/// providers and `[inference]` settings. The API key is read from the
+/// provider's `api_key_env` at call time (via `EntheaiAgent`'s own model
+/// resolution — `provider_name` is validated there, not here).
+///
+/// `instruction` becomes the agent's system prompt (`LlmAgentBuilder::instruction`),
+/// replacing the old pattern of prepending a system `ChatMessage` to every call.
+pub fn build_agent(
+    model_id: &str,
+    config: &Config,
+    instruction: Option<&str>,
+    registry: entheai_tools::ToolRegistry,
+    policy: Arc<Policy>,
+    prompter: Arc<tokio::sync::Mutex<dyn Prompter>>,
+) -> anyhow::Result<EntheaiAgent> {
+    EntheaiAgent::new_with_instruction(
+        model_id,
+        instruction,
+        &config.inference,
+        &config.providers,
+        registry,
+        policy,
+        prompter,
+        config.router.max_turns as u32,
+    )
 }
 
 #[cfg(test)]
@@ -161,21 +164,57 @@ mod tests {
         );
     }
 
+    struct AllowAll;
+    #[async_trait::async_trait]
+    impl Prompter for AllowAll {
+        async fn confirm(&mut self, _tool: &str, _args: &str) -> entheai_permission::Grant {
+            entheai_permission::Grant::Allow
+        }
+    }
+
+    fn test_prompter() -> Arc<tokio::sync::Mutex<dyn Prompter>> {
+        Arc::new(tokio::sync::Mutex::new(AllowAll))
+    }
+
     #[test]
     fn build_agent_succeeds_for_valid_model_id() {
         let cfg = cfg_with_router_and_agents();
-        assert!(build_agent("osaurus/qwen3-coder", &cfg).is_ok());
+        assert!(build_agent(
+            "osaurus/qwen3-coder",
+            &cfg,
+            None,
+            entheai_tools::ToolRegistry::new(),
+            Arc::new(Policy::new(true, vec![])),
+            test_prompter(),
+        )
+        .is_ok());
     }
 
     #[test]
     fn build_agent_errors_on_missing_slash() {
         let cfg = cfg_with_router_and_agents();
-        assert!(build_agent("no-slash-here", &cfg).is_err());
+        assert!(build_agent(
+            "no-slash-here",
+            &cfg,
+            None,
+            entheai_tools::ToolRegistry::new(),
+            Arc::new(Policy::new(true, vec![])),
+            test_prompter(),
+        )
+        .is_err());
     }
 
     #[test]
     fn build_agent_errors_on_unknown_provider() {
         let cfg = cfg_with_router_and_agents();
-        assert!(build_agent("nonexistent/some-model", &cfg).is_err());
+        assert!(build_agent(
+            "nonexistent/some-model",
+            &cfg,
+            None,
+            entheai_tools::ToolRegistry::new(),
+            Arc::new(Policy::new(true, vec![])),
+            test_prompter(),
+        )
+        .is_err());
     }
 }

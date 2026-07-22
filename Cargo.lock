@@ -2258,7 +2258,6 @@ dependencies = [
  "entheai-config",
  "entheai-mapper",
  "entheai-permission",
- "entheai-providers",
  "entheai-router",
  "entheai-tools",
  "futures",
@@ -2308,9 +2307,12 @@ name = "entheai-router"
 version = "0.2.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "entheai-config",
  "entheai-core",
- "entheai-providers",
+ "entheai-permission",
+ "entheai-tools",
+ "tokio",
 ]
 
 [[package]]

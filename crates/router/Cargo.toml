@@ -6,6 +6,11 @@ rust-version.workspace = true
 
 [dependencies]
 entheai-config = { path = "../config" }
-entheai-providers = { path = "../providers" }
 entheai-core = { path = "../core" }
+entheai-permission = { path = "../permission" }
+entheai-tools = { path = "../tools" }
+tokio = { workspace = true, features = ["sync"] }
 anyhow.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true

@@ -19,7 +19,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use entheai_config::Config;
-use entheai_providers::ChatMessage;
 use futures::stream::{self, StreamExt};
 use serde::Deserialize;
 
@@ -157,11 +156,8 @@ Each sub-task has a `role` (one of: explore, coder, reviewer, test, docs) and a 
 Sub-agents can only READ and SEARCH the codebase, so scope sub-tasks to analysis/exploration, not edits. \
 Respond with ONLY a JSON array, e.g. [{\"role\":\"explore\",\"task\":\"map the auth module\"}]. No prose.";
 
-fn decompose_messages(task: &str) -> Vec<ChatMessage> {
-    vec![
-        ChatMessage::system(DECOMPOSE_SYSTEM),
-        ChatMessage::user(task),
-    ]
+fn decompose_messages(task: &str) -> (String, String) {
+    (DECOMPOSE_SYSTEM.to_string(), task.to_string())
 }
 
 /// Decompose prompt for the v2 coder path (isolated git worktrees, full tools).
@@ -178,11 +174,8 @@ Any change to the codebase MUST be performed by a `coder` sub-task that actually
 If the task requires changing code, include at least one `coder` sub-task that implements it. \
 Respond with ONLY a JSON array, e.g. [{\"role\":\"coder\",\"task\":\"add a module doc comment to crates/foo/src/lib.rs\"}]. No prose.";
 
-fn decompose_messages_coder(task: &str) -> Vec<ChatMessage> {
-    vec![
-        ChatMessage::system(DECOMPOSE_SYSTEM_CODER),
-        ChatMessage::user(task),
-    ]
+fn decompose_messages_coder(task: &str) -> (String, String) {
+    (DECOMPOSE_SYSTEM_CODER.to_string(), task.to_string())
 }
 
 /// v2 safety net: the coder path exists to CHANGE code, so a run must contain at
@@ -203,12 +196,12 @@ fn ensure_coder(mut subtasks: Vec<SubTask>, task: &str) -> Vec<SubTask> {
     subtasks
 }
 
-fn subagent_messages(role: &str, task: &str) -> Vec<ChatMessage> {
+fn subagent_messages(role: &str, task: &str) -> (String, String) {
     let sys = format!(
         "You are a `{role}` sub-agent in a fan-out coding agent. Use read_file/search to \
          investigate, then report your findings concisely. You cannot modify files."
     );
-    vec![ChatMessage::system(sys), ChatMessage::user(task)]
+    (sys, task.to_string())
 }
 
 /// Build the synthesis user message from the original task + all sub-results.
@@ -227,13 +220,12 @@ pub fn synthesis_user_message(task: &str, results: &[SubResult]) -> String {
     s
 }
 
-fn synthesis_messages(task: &str, results: &[SubResult]) -> Vec<ChatMessage> {
-    vec![
-        ChatMessage::system(
-            "You are the orchestrator. Synthesize the sub-agent results into one clear final answer.",
-        ),
-        ChatMessage::user(synthesis_user_message(task, results)),
-    ]
+fn synthesis_messages(task: &str, results: &[SubResult]) -> (String, String) {
+    (
+        "You are the orchestrator. Synthesize the sub-agent results into one clear final answer."
+            .to_string(),
+        synthesis_user_message(task, results),
+    )
 }
 
 /// Extract a JSON array substring from possibly-prose/fenced model output.
@@ -259,32 +251,33 @@ pub fn parse_decomposition(content: &str, max: usize) -> Vec<SubTask> {
         .collect()
 }
 
+/// An `Arc<Mutex<dyn Prompter>>` around `AutoAllow`, for the unattended,
+/// no-tool-confirmation agents `orchestrate_once`/`run_subagent`/`run_coder_once` build.
+fn auto_allow_prompter() -> Arc<tokio::sync::Mutex<dyn entheai_permission::Prompter>> {
+    Arc::new(tokio::sync::Mutex::new(AutoAllow))
+}
+
 /// Run the orchestrator model once (empty registry = a single completion).
+/// `system`, if `None`, falls back to the orchestrator identity prompt —
+/// mirrors the old "prepend the identity prompt unless the caller already
+/// set one" behavior, modeled as `Option` instead of message-list inspection.
 async fn orchestrate_once(
     config: &Config,
     model_id: &str,
-    messages: Vec<ChatMessage>,
+    system: Option<&str>,
+    user: &str,
 ) -> anyhow::Result<String> {
-    // Prepend the orchestrator identity prompt unless the caller already set one.
-    let mut messages = messages;
-    if !messages
-        .first()
-        .map(|m| m.role == "system")
-        .unwrap_or(false)
-    {
-        messages.insert(
-            0,
-            ChatMessage::system(entheai_router::orchestrator_system_prompt(config)),
-        );
-    }
-    let agent = entheai_router::build_agent(model_id, config)?;
-    let registry = entheai_tools::ToolRegistry::new();
-    let policy = fanout_policy(config);
-    let mut prompter = AutoAllow;
-    let out = agent
-        .run_task(messages, &registry, &policy, &mut prompter, None)
-        .await?;
-    Ok(out)
+    let default_system = entheai_router::orchestrator_system_prompt(config);
+    let instruction = system.unwrap_or(&default_system);
+    let agent = entheai_router::build_agent(
+        model_id,
+        config,
+        Some(instruction),
+        entheai_tools::ToolRegistry::new(),
+        Arc::new(fanout_policy(config)),
+        auto_allow_prompter(),
+    )?;
+    agent.run_to_text(user).await
 }
 
 /// Run one sub-agent to completion. Never returns Err — a failure is captured as
@@ -292,20 +285,16 @@ async fn orchestrate_once(
 async fn run_subagent(config: &Config, root: &Path, st: SubTask) -> SubResult {
     let output = async {
         let model_id = entheai_router::model_for_role(config, &st.role)?;
-        let agent = entheai_router::build_agent(&model_id, config)?;
-        let registry = read_only_registry(root);
-        let policy = fanout_policy(config);
-        let mut prompter = AutoAllow;
-        let out = agent
-            .run_task(
-                subagent_messages(&st.role, &st.task),
-                &registry,
-                &policy,
-                &mut prompter,
-                None,
-            )
-            .await?;
-        Ok::<String, anyhow::Error>(out)
+        let (system, user) = subagent_messages(&st.role, &st.task);
+        let agent = entheai_router::build_agent(
+            &model_id,
+            config,
+            Some(&system),
+            read_only_registry(root),
+            Arc::new(fanout_policy(config)),
+            auto_allow_prompter(),
+        )?;
+        agent.run_to_text(&user).await
     }
     .await
     .unwrap_or_else(|e| format!("error: sub-agent failed: {e}"));
@@ -324,7 +313,9 @@ async fn run_fanout_readonly(config: &Config, root: &Path, task: &str) -> anyhow
 
     // 1. Map + decompose.
     let mapped = entheai_mapper::Mapper::map(root, task, &[]).await;
-    let raw = orchestrate_once(config, &orch_model, decompose_messages(&mapped.render())).await?;
+    let (decompose_system, decompose_user) = decompose_messages(&mapped.render());
+    let raw =
+        orchestrate_once(config, &orch_model, Some(&decompose_system), &decompose_user).await?;
     let max_par = config.router.max_parallel.max(1);
     let subtasks = parse_decomposition(&raw, max_par);
 
@@ -332,12 +323,7 @@ async fn run_fanout_readonly(config: &Config, root: &Path, task: &str) -> anyhow
     // Uses `mapped.render()`, not raw `task`: `orchestrate_once` never registers any
     // tools, so a raw `@{file}` marker here would be a dead end the model can't resolve.
     if subtasks.is_empty() {
-        return orchestrate_once(
-            config,
-            &orch_model,
-            vec![ChatMessage::user(mapped.render())],
-        )
-        .await;
+        return orchestrate_once(config, &orch_model, None, &mapped.render()).await;
     }
 
     // 2. Fan out, bounded by max_parallel.
@@ -349,12 +335,8 @@ async fn run_fanout_readonly(config: &Config, root: &Path, task: &str) -> anyhow
 
     // 3. Synthesize. Same reasoning as the fallback above: the synthesis call has no
     // tool access either, so it needs the resolved file content, not a raw marker.
-    orchestrate_once(
-        config,
-        &orch_model,
-        synthesis_messages(&mapped.render(), &results),
-    )
-    .await
+    let (synth_system, synth_user) = synthesis_messages(&mapped.render(), &results);
+    orchestrate_once(config, &orch_model, Some(&synth_system), &synth_user).await
 }
 
 /// Full (read/write/shell/search) tool set for a coder sub-agent, rooted at its
@@ -380,13 +362,13 @@ fn write_registry(root: &Path) -> entheai_tools::ToolRegistry {
     r
 }
 
-fn coder_messages(role: &str, task: &str) -> Vec<ChatMessage> {
+fn coder_messages(role: &str, task: &str) -> (String, String) {
     let sys = format!(
         "You are a `{role}` sub-agent working in an ISOLATED git worktree. Make the necessary \
          code changes with write_file/run_shell to accomplish your task. Keep changes minimal \
          and focused."
     );
-    vec![ChatMessage::system(sys), ChatMessage::user(task)]
+    (sys, task.to_string())
 }
 
 /// One coder sub-agent's finished run: its isolated worktree + what it produced.
@@ -414,20 +396,16 @@ pub async fn run_coder_once(
 ) -> String {
     async {
         let model_id = entheai_router::model_for_role(config, role)?;
-        let agent = entheai_router::build_agent(&model_id, config)?;
-        let registry = write_registry(worktree_path);
-        let policy = fanout_policy(config);
-        let mut prompter = AutoAllow;
-        let out = agent
-            .run_task(
-                coder_messages(role, task),
-                &registry,
-                &policy,
-                &mut prompter,
-                None,
-            )
-            .await?;
-        Ok::<String, anyhow::Error>(out)
+        let (system, user) = coder_messages(role, task);
+        let agent = entheai_router::build_agent(
+            &model_id,
+            config,
+            Some(&system),
+            write_registry(worktree_path),
+            Arc::new(fanout_policy(config)),
+            auto_allow_prompter(),
+        )?;
+        agent.run_to_text(&user).await
     }
     .await
     .unwrap_or_else(|e| format!("error: coder failed: {e}"))
@@ -594,12 +572,9 @@ pub async fn run_fanout(
 
     // 1. Map + decompose.
     let mapped = entheai_mapper::Mapper::map(root, task, &[]).await;
-    let raw = orchestrate_once(
-        config,
-        &orch_model,
-        decompose_messages_coder(&mapped.render()),
-    )
-    .await?;
+    let (decompose_system, decompose_user) = decompose_messages_coder(&mapped.render());
+    let raw =
+        orchestrate_once(config, &orch_model, Some(&decompose_system), &decompose_user).await?;
     // The v2 coder path exists to CHANGE code, so guarantee at least one `coder`
     // sub-task: a weak orchestrator model sometimes returns an explore-only (or
     // empty) plan, which would analyze the task and integrate nothing. `ensure_coder`
@@ -975,17 +950,13 @@ mod tests {
         let task = "# Fix bug\nlook at @{notes.txt}";
 
         let mapped = entheai_mapper::Mapper::map(dir.path(), task, &[]).await;
-        let messages = decompose_messages(&mapped.render());
+        let (_, user_msg) = decompose_messages(&mapped.render());
 
-        let user_msg = messages
-            .iter()
-            .find(|m| m.role == "user")
-            .expect("user message");
-        assert!(user_msg.content.contains("## Section: Fix bug"));
-        assert!(user_msg.content.contains("[file: notes.txt]"));
-        assert!(user_msg.content.contains("### File: "));
-        assert!(user_msg.content.contains("line one"));
-        assert_ne!(user_msg.content, task);
+        assert!(user_msg.contains("## Section: Fix bug"));
+        assert!(user_msg.contains("[file: notes.txt]"));
+        assert!(user_msg.contains("### File: "));
+        assert!(user_msg.contains("line one"));
+        assert_ne!(user_msg, task);
     }
 
     #[tokio::test]
@@ -1002,22 +973,18 @@ mod tests {
 
         let mapped = entheai_mapper::Mapper::map(dir.path(), task, &[]).await;
 
-        // Fallback path: a single-shot ChatMessage::user built from mapped content.
-        let fallback_msg = ChatMessage::user(mapped.render());
-        assert!(fallback_msg.content.contains("spec content"));
-        assert!(fallback_msg.content.contains("[file: spec.md]"));
-        assert_ne!(fallback_msg.content, task);
+        // Fallback path: orchestrate_once is called directly with mapped.render().
+        let fallback_user = mapped.render();
+        assert!(fallback_user.contains("spec content"));
+        assert!(fallback_user.contains("[file: spec.md]"));
+        assert_ne!(fallback_user, task);
 
         // Synthesis path: synthesis_messages built from mapped content, not raw task.
         let results = vec![sub_task_result("coder", "did the work", "done")];
-        let synth_messages = synthesis_messages(&mapped.render(), &results);
-        let synth_user_msg = synth_messages
-            .iter()
-            .find(|m| m.role == "user")
-            .expect("user message");
-        assert!(synth_user_msg.content.contains("spec content"));
-        assert!(synth_user_msg.content.contains("[file: spec.md]"));
-        assert!(!synth_user_msg.content.contains(task));
+        let (_, synth_user_msg) = synthesis_messages(&mapped.render(), &results);
+        assert!(synth_user_msg.contains("spec content"));
+        assert!(synth_user_msg.contains("[file: spec.md]"));
+        assert!(!synth_user_msg.contains(task));
     }
 
     fn sub_task_result(role: &str, task: &str, output: &str) -> SubResult {
