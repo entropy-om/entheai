@@ -144,10 +144,12 @@ struct Msg {
 }
 
 /// What the UI is currently doing.
+#[derive(Clone, Debug, PartialEq)]
 enum Status {
     Idle,
     Working,
     AwaitingPermission { tool: String, args: String },
+    ConfigMenu { selected_idx: usize },
 }
 
 /// A tool-permission question raised by a running task, forwarded to the UI.
@@ -658,6 +660,9 @@ async fn event_loop<P: Provider + 'static>(
                         Action::Submit(text) if is_clear_command(&text) => {
                             handle_clear_command(&mut app);
                         }
+                        Action::Submit(text) if is_config_command(&text) => {
+                            handle_config_command(&mut app);
+                        }
                         Action::Submit(text) if is_fanout_command(&text) => {
                             handle_fanout_command(&mut app, &text);
                         }
@@ -1115,6 +1120,70 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         return Action::None;
     }
 
+    // The configuration menu captures all keys while it is up.
+    if let Status::ConfigMenu { selected_idx } = app.status {
+        match key.code {
+            KeyCode::Up => {
+                app.status = Status::ConfigMenu {
+                    selected_idx: if selected_idx == 0 {
+                        7
+                    } else {
+                        selected_idx - 1
+                    },
+                };
+            }
+            KeyCode::Down => {
+                app.status = Status::ConfigMenu {
+                    selected_idx: (selected_idx + 1) % 8,
+                };
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Enter => {
+                match selected_idx {
+                    0 => {
+                        app.mode = match app.mode {
+                            entheai_permission::Mode::Ask => entheai_permission::Mode::Auto,
+                            entheai_permission::Mode::Auto => entheai_permission::Mode::Yolo,
+                            entheai_permission::Mode::Yolo => entheai_permission::Mode::Plan,
+                            entheai_permission::Mode::Plan => entheai_permission::Mode::Ask,
+                        };
+                        app.policy.set_mode(app.mode);
+                    }
+                    1 => {
+                        app.fanout = !app.fanout;
+                    }
+                    2 => {
+                        app.brain_enabled = !app.brain_enabled;
+                    }
+                    3 => {
+                        app.viz_swarm = !app.viz_swarm;
+                    }
+                    4 => {
+                        if app.model_label == "zen/deepseek-v4-pro" {
+                            app.model_label = "zen/deepseek-v4-flash".to_string();
+                        } else if app.model_label == "zen/deepseek-v4-flash" {
+                            app.model_label = "osaurus/qwen3-coder".to_string();
+                        } else {
+                            app.model_label = "zen/deepseek-v4-pro".to_string();
+                        }
+                    }
+                    5 => {} // Read-only Local Osaurus status
+                    6 => {
+                        return Action::RadioToggle;
+                    }
+                    7 => {
+                        app.status = Status::Idle;
+                    }
+                    _ => {}
+                }
+            }
+            KeyCode::Esc => {
+                app.status = Status::Idle;
+            }
+            _ => {}
+        }
+        return Action::None;
+    }
+
     let idle = matches!(app.status, Status::Idle);
 
     // Double-tap bookkeeping: take the prior Esc / Ctrl-C timestamps so any
@@ -1228,6 +1297,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 || is_brain_command(trimmed)
                 || is_help_command(trimmed)
                 || is_fleet_command(trimmed)
+                || is_config_command(trimmed)
                 || is_model_command(trimmed);
             if !trimmed.is_empty() && (idle || is_local_command) {
                 return Action::Submit(std::mem::take(&mut app.input));
@@ -1487,6 +1557,27 @@ fn handle_help_command(app: &mut App) {
     app.messages.push(Msg {
         role: Role::Tool,
         text: body,
+    });
+    app.follow = true;
+}
+
+/// True for `/config` — opens the interactive TUI configuration menu.
+fn is_config_command(text: &str) -> bool {
+    text.trim() == "/config"
+}
+
+/// Open the interactive configuration menu overlay.
+fn handle_config_command(app: &mut App) {
+    app.messages.push(Msg {
+        role: Role::User,
+        text: "/config".to_string(),
+    });
+    app.status = Status::ConfigMenu { selected_idx: 0 };
+    app.messages.push(Msg {
+        role: Role::Tool,
+        text:
+            "◧ configuration menu opened. Use Arrow Keys to navigate, Left/Right/Enter to toggle."
+                .to_string(),
     });
     app.follow = true;
 }
@@ -1996,16 +2087,28 @@ fn render(
     let progress = match &app.status {
         Status::Working => {
             let elapsed = app.run_started.map(|t| t.elapsed().as_secs()).unwrap_or(0);
-            let label = if app.current_action.starts_with("running ") {
+            let label = if app.current_action == "thinking" {
+                let dots = match app.spinner_frame % 4 {
+                    0 => "   ",
+                    1 => ".  ",
+                    2 => ".. ",
+                    _ => "...",
+                };
+                format!("thinking{}", dots)
+            } else if app.current_action.starts_with("running ") {
                 app.current_action.clone()
             } else {
                 format!("{}…", verb_for(app.verb_idx))
             };
+            let spinner_color = match app.spinner_frame % 2 {
+                0 => Color::Magenta,
+                _ => Color::Cyan,
+            };
             Line::from(vec![
                 Span::styled(
-                    FRAMES[app.spinner_frame],
+                    FRAMES[app.spinner_frame % FRAMES.len()],
                     Style::default()
-                        .fg(Color::Magenta)
+                        .fg(spinner_color)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),
@@ -2022,6 +2125,7 @@ fn render(
             "awaiting approval",
             Style::default().add_modifier(Modifier::DIM),
         ),
+        Status::ConfigMenu { .. } => Line::from(""),
         Status::Idle => Line::from(""),
     };
     frame.render_widget(Paragraph::new(progress), progress_area);
@@ -2061,15 +2165,74 @@ fn render(
             .wrap(Wrap { trim: false });
         frame.render_widget(modal, modal_area);
     }
+
+    // Configuration menu modal, centered over history.
+    if let Status::ConfigMenu { selected_idx } = app.status {
+        let perm_val = match app.mode {
+            entheai_permission::Mode::Ask => "Ask",
+            entheai_permission::Mode::Auto => "Auto",
+            entheai_permission::Mode::Yolo => "Yolo",
+            entheai_permission::Mode::Plan => "Plan",
+        };
+        let fanout_val = if app.fanout { "Enabled" } else { "Disabled" };
+        let brain_val = if app.brain_enabled {
+            "Visible"
+        } else {
+            "Hidden"
+        };
+        let swarm_val = if app.viz_swarm { "Visible" } else { "Hidden" };
+        let osaurus_val = if app.osaurus_up { "Online" } else { "Offline" };
+
+        let options = [
+            format!("Permission Mode:  <{}>", perm_val),
+            format!("Fan-Out Swarm:     <{}>", fanout_val),
+            format!("Brain Side Panel:  <{}>", brain_val),
+            format!("Swarm Visuals:     <{}>", swarm_val),
+            format!("Default Model:     <{}>", app.model_label),
+            format!("Local Osaurus:     <{}>", osaurus_val),
+            "Procedural Radio:  Toggle Pause/Resume".to_string(),
+            "Exit Configuration Menu".to_string(),
+        ];
+
+        let mut lines = Vec::new();
+        for (i, opt) in options.iter().enumerate() {
+            if i == selected_idx {
+                lines.push(Line::from(Span::styled(
+                    format!(" > {} ", opt),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!("   {} ", opt),
+                    Style::default().fg(Color::Magenta),
+                )));
+            }
+        }
+
+        let modal_w = 52;
+        let modal_h = options.len() as u16 + 2;
+        let modal_area = centered_rect(modal_w, modal_h, area);
+        frame.render_widget(Clear, modal_area);
+        let modal = Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" entheai configuration ")
+                .border_style(Style::default().fg(Color::Magenta)),
+        );
+        frame.render_widget(modal, modal_area);
+    }
 }
 
 /// Build the top status bar line: `entheai · <model> · [fan-out ·] <state>
-/// [· ♪ track]`. Shared by the chat and full-screen swarm views.
 fn status_line(app: &App) -> Line<'static> {
     let state = match &app.status {
         Status::Idle => "idle",
         Status::Working => "working…",
         Status::AwaitingPermission { .. } => "awaiting permission",
+        Status::ConfigMenu { .. } => "config menu",
     };
     let mut status_spans: Vec<Span<'static>> = vec![
         Span::styled("entheai", Style::default().add_modifier(Modifier::BOLD)),
@@ -2183,6 +2346,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/clear", "clear the conversation — fresh context"),
     ("/fanout", "toggle swarm fan-out — on · off"),
     ("/model", "show the active model"),
+    ("/config", "open interactive configuration menu"),
     (
         "/radio",
         "music — add <url> · pause · next · stop  (Ctrl-P / Ctrl-N)",
