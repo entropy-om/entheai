@@ -210,6 +210,12 @@ pub struct VizConfig {
     /// Max rows shown in the swarm pane. Default: 8.
     #[serde(default = "default_viz_swarm_rows_cap")]
     pub swarm_rows_cap: u16,
+    /// Show the brain panel. Default: true.
+    #[serde(default = "default_viz_brain")]
+    pub brain: bool,
+    /// Width of the brain panel in columns. Default: 26.
+    #[serde(default = "default_viz_brain_width")]
+    pub brain_width: u16,
 }
 
 fn default_viz_swarm() -> bool {
@@ -228,6 +234,14 @@ fn default_viz_swarm_rows_cap() -> u16 {
     8
 }
 
+fn default_viz_brain() -> bool {
+    true
+}
+
+fn default_viz_brain_width() -> u16 {
+    26
+}
+
 impl Default for VizConfig {
     fn default() -> Self {
         Self {
@@ -235,6 +249,8 @@ impl Default for VizConfig {
             tick_ms: default_viz_tick_ms(),
             plan_rows_cap: default_viz_plan_rows_cap(),
             swarm_rows_cap: default_viz_swarm_rows_cap(),
+            brain: default_viz_brain(),
+            brain_width: default_viz_brain_width(),
         }
     }
 }
@@ -591,6 +607,20 @@ mod tests {
     fn viz_swarm_can_be_disabled() {
         let cfg = Config::from_toml_str("[viz]\nswarm = false\n").unwrap();
         assert!(!cfg.viz.swarm);
+    }
+
+    #[test]
+    fn viz_brain_defaults_on() {
+        let cfg = Config::from_toml_str("").unwrap();
+        assert!(cfg.viz.brain);
+        assert_eq!(cfg.viz.brain_width, 26);
+    }
+
+    #[test]
+    fn viz_brain_overrides() {
+        let cfg = Config::from_toml_str("[viz]\nbrain = false\nbrain_width = 30\n").unwrap();
+        assert!(!cfg.viz.brain);
+        assert_eq!(cfg.viz.brain_width, 30);
     }
 
     #[test]
