@@ -246,6 +246,9 @@ struct App {
     /// Transient one-line hint on the progress row (e.g. "press Esc again to
     /// stop the run"), cleared on the next key or when the window lapses.
     notice: Option<String>,
+    /// When the TUI launched — anchors the always-on 25/5 Pomodoro shown in the
+    /// status bar. Wall-clock (not frame count) so it tracks real minutes.
+    pomodoro_started: Instant,
 }
 
 /// Which main view the TUI is showing.
@@ -427,6 +430,7 @@ async fn event_loop<P: Provider + 'static>(
         last_esc: None,
         last_ctrl_c: None,
         notice: None,
+        pomodoro_started: Instant::now(),
     };
 
     // Background music player (yt-dlp + rodio); one per TUI session.
@@ -456,6 +460,10 @@ async fn event_loop<P: Provider + 'static>(
     // Redraw gate: only `terminal.draw` when something visible changed, so an
     // idle session (no keys, no running task) doesn't repaint every tick.
     let mut dirty = true;
+    // Last whole-second shown by the always-on Pomodoro. An idle session repaints
+    // at ~1 Hz — only when this digit changes — so the timer stays live without the
+    // per-frame idle cost the brain panel incurs.
+    let mut last_pomo_sec = app.pomodoro_started.elapsed().as_secs();
 
     loop {
         if dirty {
@@ -850,6 +858,14 @@ async fn event_loop<P: Provider + 'static>(
                 let brain_w = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(0);
                 if show_brain(app.brain_enabled, brain_w) {
                     app.brain.tick();
+                    dirty = true;
+                }
+                // Keep the always-on Pomodoro countdown live at ~1 Hz even when
+                // idle and the brain panel is hidden: repaint only when the shown
+                // second changes, never busy-repaint.
+                let pomo_sec = app.pomodoro_started.elapsed().as_secs();
+                if pomo_sec != last_pomo_sec {
+                    last_pomo_sec = pomo_sec;
                     dirty = true;
                 }
                 // Auto-dismiss a double-tap hint once its window has lapsed.
@@ -1865,6 +1881,17 @@ fn status_line(app: &App) -> Line<'static> {
             Style::default().fg(Color::Magenta),
         ));
     }
+    // Always-on 25/5 Pomodoro (pure ASCII), green while focusing, cyan on break.
+    let pv = entheai_viz::Pomodoro::default().at(app.pomodoro_started.elapsed().as_secs());
+    let pomo_color = match pv.phase {
+        entheai_viz::PomoPhase::Work => Color::Green,
+        entheai_viz::PomoPhase::Break => Color::Cyan,
+    };
+    status_spans.push(Span::raw(" · "));
+    status_spans.push(Span::styled(
+        entheai_viz::pomodoro::label(&pv),
+        Style::default().fg(pomo_color),
+    ));
     Line::from(status_spans)
 }
 
@@ -2144,7 +2171,18 @@ mod tests {
             last_esc: None,
             last_ctrl_c: None,
             notice: None,
+            pomodoro_started: Instant::now(),
         }
+    }
+
+    #[test]
+    fn status_line_shows_automatic_pomodoro() {
+        // A fresh app just launched → the always-on timer opens in its WORK block.
+        let app = test_app();
+        let line = status_line(&app);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("WORK"), "pomodoro work phase in status line: {text:?}");
+        assert!(text.contains(':'), "mm:ss countdown present: {text:?}");
     }
 
     #[test]
@@ -2481,6 +2519,7 @@ mod tests {
             last_esc: None,
             last_ctrl_c: None,
             notice: None,
+            pomodoro_started: Instant::now(),
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -2520,6 +2559,7 @@ mod tests {
             last_esc: None,
             last_ctrl_c: None,
             notice: None,
+            pomodoro_started: Instant::now(),
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -2557,6 +2597,7 @@ mod tests {
             last_esc: None,
             last_ctrl_c: None,
             notice: None,
+            pomodoro_started: Instant::now(),
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -2649,6 +2690,7 @@ mod tests {
             last_esc: None,
             last_ctrl_c: None,
             notice: None,
+            pomodoro_started: Instant::now(),
         };
         handle_workers_command(&mut app, "/workers list");
         assert!(app
@@ -2689,6 +2731,7 @@ mod tests {
             last_esc: None,
             last_ctrl_c: None,
             notice: None,
+            pomodoro_started: Instant::now(),
         };
         handle_radio_event(
             &mut app,
