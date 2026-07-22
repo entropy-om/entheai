@@ -2644,6 +2644,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kompress-core"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "kqueue"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
