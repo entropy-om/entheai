@@ -3,6 +3,9 @@ name = "entheai-worker"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+description.workspace = true
+homepage.workspace = true
 
 [dependencies]
 entheai-config = { path = "../../crates/config" }

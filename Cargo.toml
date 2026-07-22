@@ -8,6 +8,9 @@ members = ["crates/config", "crates/providers", "crates/core", "crates/tools", "
 version = "0.2.1"
 edition = "2021"
 rust-version = "1.80"
+repository = "https://github.com/entropy-om/entheai"
+description = "Autonomous AI coding agent and orchestration engine"
+homepage = "https://github.com/entropy-om/entheai"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
@@ -45,3 +48,24 @@ codegen-units = 1        # maximize LLVM optimization scope
 panic = "unwind"         # explicit: sub-agent tokio-task panics must stay catchable (never "abort")
 strip = "none"           # keep symbols + debuginfo for readable Sentry/Sonar backtraces
 overflow-checks = false  # release default; explicit for raw speed
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+# Config for 'dist'
+[workspace.metadata.dist]
+cargo-dist-version = "0.32.0"
+ci = ["github"]
+# CI is managed out-of-band (the signed/notarized .github/workflows/release.yml owns
+# tagged releases); dist is used to BUILD the installers. This stops `dist build`/`plan`
+# from insisting its own generated workflow be present. Wiring dist's CI publish + an
+# in-pipeline macOS signing job is a deliberate follow-up, validated on a test tag.
+allow-dirty = ["ci"]
+installers = ["shell", "homebrew", "npm", "powershell"]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
+tap = "entropy-om/homebrew-entheai"
+formula = "entheai"
+publish-jobs = ["homebrew", "npm"]
+
