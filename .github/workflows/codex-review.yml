@@ -1,0 +1,107 @@
+name: Codex — recent-commit review
+
+# Runs the OpenAI Codex CLI over the last 3 commits every 30 minutes and on
+# demand. To save tokens it SKIPS when nothing was committed in the last ~35 min
+# (no new work to review). Output goes to the run's job summary + an artifact.
+#
+# Requires the `OPENAI_API_KEY` repo secret; without it the job no-ops (never red).
+# First run may need the codex flags below tweaked to your installed CLI version.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-review
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout (enough history for a 3-commit diff)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 5
+
+      - name: Gate — need OPENAI_API_KEY, and a commit in the last 35 min
+        id: gate
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "OPENAI_API_KEY unset → skipping (set it in repo secrets to enable)." >> "$GITHUB_STEP_SUMMARY"
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # workflow_dispatch always runs; scheduled runs only when there's new work.
+          if [ "${{ github.event_name }}" != "schedule" ] || \
+             [ -n "$(git log --since='35 minutes ago' --format=%H -n 1)" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No commits in the last 35 min → nothing to review." >> "$GITHUB_STEP_SUMMARY"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Codex CLI
+        if: steps.gate.outputs.run == 'true'
+        run: npm install -g @openai/codex
+
+      - name: Build the last-3-commit review prompt
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          {
+            echo "Review the following recent changes to the entheai repository."
+            echo "Focus on correctness bugs, security issues, and clear simplifications."
+            echo "Do NOT modify any files — output a concise markdown review only."
+            echo
+            echo "## Commits"
+            git log -3 --format='- %h %s (%an)'
+            echo
+            echo "## Diff (last 3 commits)"
+            echo '```diff'
+            # HEAD~3 may not exist on a very young repo; fall back to the root.
+            base="$(git rev-parse HEAD~3 2>/dev/null || git rev-list --max-parents=0 HEAD | tail -1)"
+            git diff "$base"..HEAD
+            echo '```'
+          } > prompt.txt
+          echo "Prompt bytes: $(wc -c < prompt.txt)"
+
+      - name: Run Codex (read-only review)
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -o pipefail
+          # Non-interactive, read-only sandbox (a review must not change files).
+          # Adjust flags if your codex version differs (`codex exec --help`).
+          codex exec --skip-git-repo-check --sandbox read-only "$(cat prompt.txt)" \
+            | tee codex-review.md
+
+      - name: Publish review
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          {
+            echo "## Codex review — last 3 commits"
+            echo
+            if [ -s codex-review.md ]; then cat codex-review.md; else echo "_(codex produced no output — check the CLI flags / API key)_"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload review artifact
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-review
+          path: codex-review.md
+          if-no-files-found: ignore
