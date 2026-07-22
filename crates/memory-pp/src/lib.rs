@@ -8,6 +8,7 @@
 
 mod error;
 pub mod frozen;
+pub mod judge;
 mod marqant;
 mod mesh;
 mod processor;
@@ -15,6 +16,7 @@ mod raw_store;
 
 pub use error::PpError;
 pub use frozen::{activate, FrozenNode, FrozenStore};
+pub use judge::{BrainJudge, BrainJudgeEvent};
 pub use marqant::{KompressMarqant, Marqant, StubMarqant, SubprocessMarqant};
 pub use mesh::{
     IdentityMesh, MeshSearch, NativeMesh, SidecarMesh, SlowStubMesh, StubMesh, FEATURE_DIM,
