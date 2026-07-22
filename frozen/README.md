@@ -30,7 +30,7 @@ melts into the prompt.
 ## Current nodes
 
 `nixos` · `terraform` · `docker` · `postgres` · `observability` · `rust` · `go-parallelism`
-· `python-jit` · `github` · `ngrok` · `valyu`
+· `python-jit` · `github` · `ngrok` · `valyu` · `verification`
 
 Seeded from the author's stated preferences, grounded where useful in Valyu deep-research
 (e.g. NixOS remote-deploy patterns, Rust lint/test practice). Add more by dropping a new

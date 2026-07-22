@@ -15,7 +15,7 @@ property-based tests (`proptest`) for invariants a handcrafted case would miss.
 
 **Lint gate:** `cargo clippy --all-targets -- -D warnings` in CI — treat pedantic /
 complexity / style lints as errors; `cargo fmt` enforced. Clippy's `--explain <CODE>`
-tells you *why*.
+tells you *why*. Always independently verify a subagent or worker's self-reported test/clippy results before merging.
 
 **Async:** `tokio`; bound every external call with a timeout + a capped reader; use
 `kill_on_drop(true)` on child processes so a timeout can't orphan them.

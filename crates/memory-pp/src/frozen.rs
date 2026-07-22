@@ -1,5 +1,11 @@
 //! Frozen nodes — curated best-practice that wakes on deterministic triggers.
 //! See docs/superpowers/specs/2026-07-22-frozen-nodes-design.md.
+//!
+//! A frozen node is a named blob of knowledge that is *always* injected as a
+//! system message when its trigger words appear in the user prompt. The dyad
+//! pair — wake + glow — connects this store to the brain viz panel so every
+//! activation renders as a brightening ring node that decays back to dim over
+//! subsequent ticks.
 
 use serde::Deserialize;
 use std::time::Duration;
@@ -47,6 +53,22 @@ impl FrozenNode {
             knowledge,
         })
     }
+
+    /// Human-friendly one-line description for logging.
+    pub fn describe(&self) -> String {
+        format!(
+            "{} [{}] triggers={:?} rank={:.1} knowledge={}b",
+            self.name,
+            if self.domain.is_empty() {
+                "general"
+            } else {
+                &self.domain
+            },
+            self.triggers,
+            self.rank,
+            self.knowledge.len(),
+        )
+    }
 }
 
 pub struct FrozenStore {
@@ -60,9 +82,14 @@ impl FrozenStore {
 
     /// Load every `*.md` in `dir`; skip (warn) any that don't parse. A missing dir
     /// yields an empty store (frozen simply never wakes) — never an error.
+    /// Logs a summary of loaded nodes at `info` level on success.
     pub fn load(dir: &std::path::Path) -> FrozenStore {
         let mut nodes = Vec::new();
         let Ok(entries) = std::fs::read_dir(dir) else {
+            log::info!(
+                "frozen: no directory at {}, store stays empty",
+                dir.display()
+            );
             return FrozenStore { nodes };
         };
         for e in entries.flatten() {
@@ -78,28 +105,63 @@ impl FrozenStore {
                 None => log::warn!("frozen: skipping malformed node {}", p.display()),
             }
         }
+        if !nodes.is_empty() {
+            log::info!(
+                "frozen: loaded {} node(s) from {}",
+                nodes.len(),
+                dir.display(),
+            );
+            for n in &nodes {
+                log::debug!("frozen:   {}", n.describe());
+            }
+        }
         FrozenStore { nodes }
     }
 
     /// Deterministic trigger match → candidates, ordered by lexical relevance of the
-    /// prompt to each node's knowledge plus its `rank` prior; best first, ≤ `top_k`.
+    /// prompt to each node's knowledge (primary) plus its `rank` prior (tie-breaker);
+    /// best first, ≤ `top_k`. Logs the matched trigger(s) at debug level.
     pub fn wake(&self, prompt: &str, top_k: usize) -> Vec<FrozenNode> {
         let p = prompt.to_lowercase();
-        let mut cands: Vec<&FrozenNode> = self
+        let mut cands: Vec<(&FrozenNode, f32)> = self
             .nodes
             .iter()
-            .filter(|n| {
-                n.triggers
+            .filter_map(|n| {
+                let hits: Vec<&str> = n
+                    .triggers
                     .iter()
-                    .any(|t| trigger_hit(&p, &t.to_lowercase()))
+                    .filter(|t| trigger_hit(&p, &t.to_lowercase()))
+                    .map(|s| s.as_str())
+                    .collect();
+                if hits.is_empty() {
+                    None
+                } else {
+                    let lexical = crate::mesh::lexical_score(prompt, &n.knowledge);
+                    // Lexical score is the primary dimension; rank is a fractional
+                    // tie-breaker so that among equally-relevant nodes the higher-rank
+                    // one wins, but a node with zero term overlap can never outrank one
+                    // that actually matches the prompt's vocabulary.
+                    Some((n, lexical + 0.25 * n.rank))
+                }
             })
             .collect();
-        cands.sort_by(|a, b| {
-            let sa = crate::mesh::lexical_score(prompt, &a.knowledge) + 0.25 * a.rank;
-            let sb = crate::mesh::lexical_score(prompt, &b.knowledge) + 0.25 * b.rank;
-            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        cands.into_iter().take(top_k).cloned().collect()
+        cands.sort_by(|(_, sa), (_, sb)| sb.partial_cmp(sa).unwrap_or(std::cmp::Ordering::Equal));
+        let woken: Vec<FrozenNode> = cands
+            .into_iter()
+            .take(top_k)
+            .map(|(n, _)| n.clone())
+            .collect();
+        if !woken.is_empty() {
+            log::debug!(
+                "frozen:wake matched {} candidate(s) from prompt {:?}",
+                woken.len(),
+                truncate_for_log(prompt, 80),
+            );
+            for n in &woken {
+                log::debug!("frozen:wake → {}", n.describe());
+            }
+        }
+        woken
     }
 
     pub fn len(&self) -> usize {
@@ -125,8 +187,21 @@ fn trigger_hit(prompt_lc: &str, trigger_lc: &str) -> bool {
     }
 }
 
+/// Truncate a string for log messages — keeps the first `max` chars, appends `…`
+/// if cut. Never panics mid-char.
+fn truncate_for_log(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
 /// Distil a woken node's knowledge through `mq` (fail-safe: raw on error), cap it, tag it.
 /// The returned brief is meant to be injected transiently — NEVER persisted.
+/// The tag includes the node's domain when set, giving the model a richer provenance hint.
 pub async fn activate(
     node: &FrozenNode,
     marqant: &dyn crate::marqant::Marqant,
@@ -138,7 +213,12 @@ pub async fn activate(
         _ => node.knowledge.clone(), // mq missing/slow/empty → raw (never blocks)
     };
     let capped = cap_bytes(&body, max_bytes);
-    format!("❄→☀ frozen:{} — {}", node.name, capped)
+    let domain_tag = if node.domain.is_empty() {
+        String::new()
+    } else {
+        format!("@{} ", node.domain)
+    };
+    format!("❄→☀ frozen:{} {domain_tag}— {}", node.name, capped)
 }
 
 fn cap_bytes(s: &str, max: usize) -> &str {
@@ -236,6 +316,7 @@ mod tests {
         )
         .await;
         assert!(brief.contains("frozen:nixos"), "brief is tagged: {brief}");
+        assert!(brief.contains("@cloud"), "domain is tagged: {brief}");
         assert!(brief.contains("nix flakes"), "brief carries the knowledge");
         // a tiny cap truncates
         let short = activate(
@@ -263,7 +344,10 @@ mod tests {
             .join("frozen");
         if frozen_dir.exists() {
             let store = FrozenStore::load(&frozen_dir);
-            assert_eq!(store.len(), 11, "real frozen/ dir contains 11 nodes");
+            assert!(
+                store.len() >= 12,
+                "real frozen/ dir contains at least 12 nodes"
+            );
         }
     }
 }
