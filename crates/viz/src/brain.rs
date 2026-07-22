@@ -49,6 +49,11 @@ pub struct BrainState {
     pub worker_count: usize,
     pub ctx_pct: u16,
     pub frame: u64,
+    /// Last compression cycle's output/input ratio, e.g. 0.42 == kept 42% of tokens.
+    /// `compression_tokens == (0, 0)` means never compressed yet — `footer_line`
+    /// checks that before rendering the readout.
+    pub compression_ratio: f64,
+    pub compression_tokens: (usize, usize),
 }
 
 impl Default for BrainState {
@@ -69,6 +74,8 @@ impl BrainState {
             worker_count: 0,
             ctx_pct: 0,
             frame: 0,
+            compression_ratio: 0.0,
+            compression_tokens: (0, 0),
         }
     }
 
@@ -127,6 +134,11 @@ impl BrainState {
 
     pub fn set_nats(&mut self, up: bool) { self.nats_up = up; }
     pub fn set_ctx_pct(&mut self, pct: u16) { self.ctx_pct = pct; }
+
+    pub fn set_compression(&mut self, ratio: f64, input_tokens: usize, output_tokens: usize) {
+        self.compression_ratio = ratio;
+        self.compression_tokens = (input_tokens, output_tokens);
+    }
 }
 
 /// Project a node on a ring (radius `r`, vertical offset `y_off`) rotating about the
@@ -222,13 +234,19 @@ fn footer_line(state: &BrainState) -> Line<'static> {
     } else {
         Color::DarkGray
     };
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(format!("wk {}", state.worker_count), Style::default().fg(Color::Gray)),
         Span::raw(" · nats "),
         Span::styled(nats_glyph, Style::default().fg(nats_col)),
         Span::raw(" · "),
         Span::styled(format!("ctx {}%", state.ctx_pct), Style::default().fg(ctx_col)),
-    ])
+    ];
+    if state.compression_tokens.0 > 0 || state.compression_tokens.1 > 0 {
+        let pct = (state.compression_ratio * 100.0).round() as i64;
+        spans.push(Span::raw(" · "));
+        spans.push(Span::styled(format!("kx {pct}%"), Style::default().fg(Color::Magenta)));
+    }
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -288,6 +306,44 @@ mod tests {
         b.set_ctx_pct(42);
         assert!(b.nats_up);
         assert_eq!(b.ctx_pct, 42);
+    }
+
+    #[test]
+    fn compression_round_trip_and_footer_shows_ratio() {
+        let mut b = BrainState::new();
+        b.set_compression(0.42, 1000, 420);
+        assert!((b.compression_ratio - 0.42).abs() < 1e-9);
+        assert_eq!(b.compression_tokens, (1000, 420));
+
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::symbols::Marker;
+        let area = Rect::new(0, 0, 40, 12);
+        let mut buf = Buffer::empty(area);
+        render(&b, area, &mut buf, Marker::Braille);
+        let y = area.bottom() - 1;
+        let mut row = String::new();
+        for x in area.left()..area.right() {
+            row.push_str(buf[(x, y)].symbol());
+        }
+        assert!(row.contains("kx 42%"), "footer compression readout missing: {row:?}");
+    }
+
+    #[test]
+    fn zero_compression_activity_omits_readout() {
+        let b = BrainState::new();
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::symbols::Marker;
+        let area = Rect::new(0, 0, 40, 12);
+        let mut buf = Buffer::empty(area);
+        render(&b, area, &mut buf, Marker::Braille);
+        let y = area.bottom() - 1;
+        let mut row = String::new();
+        for x in area.left()..area.right() {
+            row.push_str(buf[(x, y)].symbol());
+        }
+        assert!(!row.contains("kx"), "no compression activity yet, readout should be absent: {row:?}");
     }
 
     #[test]
