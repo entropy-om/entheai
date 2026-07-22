@@ -1,3 +1,5 @@
+pub mod adk_tool_adapter;
+
 use entheai_providers::{ChatMessage, Provider, StreamEvent};
 use futures::StreamExt;
 
