@@ -48,6 +48,13 @@ max_parallel = 4                         # cap on concurrently-running sub-agent
 # [fanout]
 # verify = "cargo test"
 
+# ── TUI visualization ─────────────────────────────────────────────────────────
+# [viz]
+# swarm = true          # inline swarm graph during --fanout (Ctrl-V / /viz full view)
+# brain = true          # always-on side panel: a rotating faculties+fleet graph with
+#                       # `wk N · nats ●/○ · ctx %`. Toggle live with /brain.
+# brain_width = 26      # panel width in columns (auto-hides on narrow terminals)
+
 # ── Federation event bus (entheai-bus, F1) ───────────────────────────────────
 # Opt-in + fail-safe: with enabled = false (default) or an unreachable hub,
 # entheai runs entirely locally — federation never blocks a run. When enabled,
