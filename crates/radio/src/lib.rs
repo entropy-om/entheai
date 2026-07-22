@@ -148,7 +148,7 @@ pub fn expand_tilde(path_str: &str) -> PathBuf {
     PathBuf::from(path_str)
 }
 
-/// Resolve local seed audio files matching a pattern or directory (defaults to `~/Downloads/Mesa*`).
+/// Resolve local seed audio files matching a pattern or directory (defaults to `~/Downloads/Mesa*` & psychedelic/desert/stoner/space/metal tracks).
 pub fn resolve_seed_files(pattern: &str) -> Vec<PathBuf> {
     let target = if pattern.trim().is_empty() {
         "~/Downloads/Mesa*"
@@ -161,42 +161,78 @@ pub fn resolve_seed_files(pattern: &str) -> Vec<PathBuf> {
         return vec![expanded];
     }
 
+    let mut found = Vec::new();
+
+    // Check parent directory of target if pattern is a glob
     if let Some(parent) = expanded.parent() {
         let file_prefix = expanded.file_name().and_then(|s| s.to_str()).unwrap_or("");
         let clean_prefix = file_prefix.trim_end_matches('*');
 
         if parent.exists() && parent.is_dir() {
             if let Ok(entries) = std::fs::read_dir(parent) {
-                let mut found: Vec<PathBuf> = entries
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| {
-                        if !p.is_file() {
-                            return false;
-                        }
-                        let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                        let matches_prefix = clean_prefix.is_empty()
-                            || name
-                                .to_lowercase()
-                                .starts_with(&clean_prefix.to_lowercase());
-                        let ext = p
-                            .extension()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("")
-                            .to_lowercase();
-                        matches_prefix
-                            && matches!(ext.as_str(), "mp3" | "m4a" | "wav" | "flac" | "ogg")
-                    })
-                    .collect();
-                found.sort();
-                if !found.is_empty() {
-                    return found;
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if !p.is_file() {
+                        continue;
+                    }
+                    let name_lc = p
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    let ext = p
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    if !matches!(ext.as_str(), "mp3" | "m4a" | "wav" | "flac" | "ogg") {
+                        continue;
+                    }
+
+                    // Match explicitly specified prefix, or default genre keywords: mesa, desert, psychedelic, stoner, space, metal
+                    let is_match = if !clean_prefix.is_empty() {
+                        name_lc.starts_with(&clean_prefix.to_lowercase())
+                    } else {
+                        name_lc.contains("mesa")
+                            || name_lc.contains("desert")
+                            || name_lc.contains("psychedelic")
+                            || name_lc.contains("stoner")
+                            || name_lc.contains("space")
+                            || name_lc.contains("metal")
+                            || name_lc.contains("chillout")
+                    };
+
+                    if is_match {
+                        found.push(p);
+                    }
                 }
             }
         }
     }
 
-    Vec::new()
+    // Fallback search in ~/.cache/entheai/radio/ if empty
+    if found.is_empty() {
+        let cache_dir = Radio::default_cache_dir();
+        if cache_dir.exists() && cache_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(cache_dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    let ext = p
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    if p.is_file() && matches!(ext.as_str(), "mp3" | "m4a" | "wav" | "flac" | "ogg")
+                    {
+                        found.push(p);
+                    }
+                }
+            }
+        }
+    }
+
+    found.sort();
+    found
 }
 
 /// Everything the player thread mutates, bundled so handlers stay small.
@@ -251,17 +287,18 @@ impl Player {
 
         // Procedural loop fallback if queue is empty and procedural mode is enabled
         if self.queue.is_empty() && self.procedural_enabled && !self.procedural_seeds.is_empty() {
-            let seed_path =
-                &self.procedural_seeds[self.procedural_index % self.procedural_seeds.len()];
+            // Pseudo-random track selection across seeds
+            let idx = (self.procedural_index * 7 + 3) % self.procedural_seeds.len();
+            let seed_path = &self.procedural_seeds[idx];
             self.procedural_index += 1;
             let title = seed_path
                 .file_stem()
                 .and_then(|s| s.to_str())
-                .unwrap_or("Mesa Seed Track")
+                .unwrap_or("Psychedelic Desert Metal Seed")
                 .to_string();
             let track = Track {
                 title: format!(
-                    "♪ Procedural Mesa: {title} (Variation #{})",
+                    "♪ Procedural Psychedelic Metal: {title} (Variation #{})",
                     self.procedural_index
                 ),
                 path: seed_path.clone(),
@@ -320,7 +357,10 @@ impl Player {
                     self.procedural_seeds = seeds.clone();
                     self.procedural_enabled = true;
                     self.emit(Event::Queued {
-                        title: format!("Procedural Mesa Ambient ({} seeds active)", seeds.len()),
+                        title: format!(
+                            "Procedural Psychedelic Desert Metal Radio ({} seeds active)",
+                            seeds.len()
+                        ),
                     });
                     self.advance();
                 }
@@ -379,16 +419,15 @@ fn player_thread(
         current: None,
         events,
         download_timeout: download_timeout(download_timeout_secs),
-        procedural_enabled: false,
+        procedural_enabled: true, // Default to procedural mode out-of-the-box
         procedural_seeds: Vec::new(),
         procedural_index: 0,
     };
 
-    // Auto-seed Mesa downloads on startup if present
+    // Auto-seed Mesa / Psychedelic / Desert / Stoner / Space / Metal downloads on startup
     let default_seeds = resolve_seed_files("~/Downloads/Mesa*");
     if !default_seeds.is_empty() {
         p.procedural_seeds = default_seeds;
-        p.procedural_enabled = true;
     }
 
     loop {
