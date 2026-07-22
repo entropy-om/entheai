@@ -340,6 +340,9 @@ pub async fn run<P: Provider + 'static>(
     fanout: bool,
     system_prompt: Option<String>,
     companion_tx: Option<tokio::sync::mpsc::UnboundedSender<StateChange>>,
+    memory: Option<std::sync::Arc<entheai_memory::MemoryRuntime>>,
+    pp: Option<std::sync::Arc<entheai_memory_pp::PromptProcessor>>,
+    scope: entheai_memory::MemoryScope,
 ) -> anyhow::Result<()> {
     let mut terminal = init_terminal()?;
     let guard = TerminalGuard;
@@ -354,6 +357,9 @@ pub async fn run<P: Provider + 'static>(
         fanout,
         system_prompt,
         companion_tx,
+        memory,
+        pp,
+        scope,
     )
     .await;
     drop(guard); // restore the terminal before surfacing any error
@@ -392,6 +398,9 @@ async fn event_loop<P: Provider + 'static>(
     fanout: bool,
     system_prompt: Option<String>,
     companion_tx: Option<tokio::sync::mpsc::UnboundedSender<StateChange>>,
+    memory: Option<std::sync::Arc<entheai_memory::MemoryRuntime>>,
+    pp: Option<std::sync::Arc<entheai_memory_pp::PromptProcessor>>,
+    scope: entheai_memory::MemoryScope,
 ) -> anyhow::Result<()> {
     // Federation event bus (F1): connect once per TUI session, fail-safe. Cloned
     // into each fan-out submit's tee. `None` when `[nats]` is off/unreachable →
@@ -755,10 +764,25 @@ async fn event_loop<P: Provider + 'static>(
                                 let result_tx = result_tx.clone();
                                 let (event_tx, event_rx) = mpsc::unbounded_channel::<AgentEvent>();
                                 events_rx = Some(event_rx);
+                                let mem = memory.clone();
+                                let pp_clone = pp.clone();
+                                let sc = entheai_memory::MemoryScope {
+                                    task_id: format!("turn-{}", uuid::Uuid::new_v4()),
+                                    ..scope.clone()
+                                };
                                 run_handle = Some(tokio::spawn(async move {
                                     let mut prompter = TuiPrompter { tx: perm_tx };
                                     let res = agent
-                                        .run_task(history, &registry, &policy, &mut prompter, Some(event_tx))
+                                        .run_task_with_memory(
+                                            history,
+                                            &registry,
+                                            &policy,
+                                            &mut prompter,
+                                            Some(event_tx),
+                                            mem.as_deref(),
+                                            pp_clone.as_deref(),
+                                            sc,
+                                        )
                                         .await;
                                     let _ = result_tx.send(res.map_err(|e| e.to_string())).await;
                                 }));

@@ -318,6 +318,28 @@ async fn main() -> anyhow::Result<()> {
         }
         None => {
             let companion_tx = companion.as_ref().map(|c| c.state_tx.clone());
+            let runtime = shared_memory.clone().map(|m| {
+                std::sync::Arc::new(entheai_memory::MemoryRuntime::new(
+                    m,
+                    memory_runtime_config(&cfg.memory),
+                ))
+            });
+            let pp = build_prompt_processor(&cfg)?.map(std::sync::Arc::new);
+            if let Some(p) = &pp {
+                let retention = cfg
+                    .memory
+                    .prompt_processing
+                    .as_ref()
+                    .map(|c| c.raw_retention_days)
+                    .unwrap_or(90);
+                p.prune(retention).await;
+            }
+            let scope = entheai_memory::MemoryScope {
+                session_id: session_id.clone(),
+                task_id: "tui".to_string(),
+                cwd: root.clone(),
+                role: None,
+            };
             entheai_tui::run(
                 agent,
                 registry,
@@ -328,6 +350,9 @@ async fn main() -> anyhow::Result<()> {
                 cli.fanout,
                 system_prompt,
                 companion_tx,
+                runtime,
+                pp,
+                scope,
             )
             .await?;
         }

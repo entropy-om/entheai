@@ -2363,6 +2363,8 @@ dependencies = [
  "entheai-config",
  "entheai-core",
  "entheai-federation",
+ "entheai-memory",
+ "entheai-memory-pp",
  "entheai-orchestrator",
  "entheai-permission",
  "entheai-providers",
@@ -2375,6 +2377,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "unicode-width 0.2.0",
+ "uuid",
 ]
 
 [[package]]

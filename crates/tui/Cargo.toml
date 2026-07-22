@@ -7,6 +7,8 @@ rust-version.workspace = true
 [dependencies]
 entheai-core = { path = "../core" }
 entheai-providers = { path = "../providers" }
+entheai-memory = { path = "../memory" }
+entheai-memory-pp = { path = "../memory-pp" }
 entheai-tools = { path = "../tools" }
 entheai-permission = { path = "../permission" }
 # radio with default-features off: its `audio` feature is enabled here only via
@@ -28,6 +30,7 @@ anyhow = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
 unicode-width = "0.2"
+uuid = { version = "1", features = ["v4"] }
 
 [features]
 # `desktop` (default) turns on the in-TUI audio radio. `--no-default-features`
