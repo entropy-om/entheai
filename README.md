@@ -65,12 +65,12 @@ Knowledge and preferences sit in the brain as **frozen nodes** (curated markdown
 > Like ice in Coca-Cola, as it completely dissolves into the active context, it **doesn't spill over or bloat the context window** — the drink won't spill, it just becomes colder, crisper, and perfectly tempered for the task. When the task passes, it re-freezes.
 
 #### Curated Deterministic Domain Anchors:
-- **Cloud & System Provisioning**: [`NixOS`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/nixos.md) + Flakes for atomic, reproducible, rollback-safe builds.
-- **Source Control**: [`GitHub`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/github.md) for versioning and automated CI gate checks.
-- **Backend Systems**: [`Rust`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/rust.md) & [`Go`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/go-parallelism.md) for high-performance, parallel concurrency.
-- **Quick Devsite Deploys**: [`ngrok`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/ngrok.md) / devbox for rapid web testing.
-- **Long-Running Quick Scripts**: [`Python + JIT`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/python-jit.md) / `uv` execution.
-- **Deep Research**: [`Valyu`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/valyu.md) via MCP for grounded, cited academic & web literature.
+- **Cloud & System Provisioning**: [`NixOS`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/nixos.md) ([nixos.org](https://nixos.org)) + Flakes for atomic, reproducible, rollback-safe builds.
+- **Source Control**: [`GitHub`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/github.md) ([github.com](https://github.com)) for versioning and automated CI gate checks.
+- **Backend Systems**: [`Rust`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/rust.md) ([rust-lang.org](https://www.rust-lang.org)) & [`Go`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/go-parallelism.md) ([go.dev](https://go.dev)) for high-performance, parallel concurrency.
+- **Quick Devsite Deploys**: [`ngrok`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/ngrok.md) ([ngrok.com](https://ngrok.com)) / devbox for rapid web testing.
+- **Long-Running Quick Scripts**: [`Python + JIT`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/python-jit.md) ([python.org](https://www.python.org)) / [`uv`](https://github.com/astral-sh/uv) execution.
+- **Deep Research**: [`Valyu`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/valyu.md) ([valyu.ai](https://valyu.ai)) via MCP for grounded, cited academic & web literature.
 
 **Dynamic Re-ranking:** Frozen nodes are not static dogma. They are continuously collected, evaluated, and re-ranked. If a simpler, more deterministic, reproducible, quick, or beautiful pattern is discovered for a problem space, the frozen node evolves.
 
@@ -240,7 +240,7 @@ The fan-out architecture is the same shape: one orchestrator radiates shapes, mo
 
 ## Built on
 
-[rustybox.io](https://rustybox.io) · [Osaurus](https://github.com/osaurus-ai/osaurus) · [CodeWhale](https://github.com/Hmbown/CodeWhale) · [Crush](https://github.com/charmbracelet/crush) · [Ruflo](https://github.com/ruvnet/ruflo) · [jcode](https://jcode.sh) · [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) · [OpenCode Zen](https://opencode.ai) · [Honcho](https://github.com/plastic-labs/honcho) · [Tailscale](https://tailscale.com). Performance practices follow David Lattimore's [*Wild performance tricks*](https://davidlattimore.github.io/posts/2025/09/02/rustforge-wild-performance-tricks.html).
+[rustybox.io](https://rustybox.io) · [Osaurus](https://github.com/osaurus-ai/osaurus) · [CodeWhale](https://github.com/Hmbown/CodeWhale) · [Crush](https://github.com/charmbracelet/crush) · [Ruflo](https://github.com/ruvnet/ruflo) · [jcode](https://jcode.sh) · [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) · [OpenCode Zen](https://opencode.ai) · [Honcho](https://github.com/plastic-labs/honcho) · [Tailscale](https://tailscale.com) · [ratatui](https://ratatui.rs) · [Ghostty](https://ghostty.org) · [NATS](https://nats.io) · [Obsidian](https://obsidian.md) · [Valyu](https://valyu.ai) · [yt-dlp](https://github.com/yt-dlp/yt-dlp) · [rodio](https://github.com/RustAudio/rodio) · [NixOS](https://nixos.org) · [Docker](https://www.docker.com). Performance practices follow David Lattimore's [*Wild performance tricks*](https://davidlattimore.github.io/posts/2025/09/02/rustforge-wild-performance-tricks.html).
 
 ## Hugging Face
 
