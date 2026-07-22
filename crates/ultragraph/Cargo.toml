@@ -1,0 +1,11 @@
+[package]
+name = "entheai-ultragraph"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Native Rust port of ultra-graph's deployed 1-bit (ternary) inference core"
+
+[dependencies]
+
+[dev-dependencies]
+serde_json = { workspace = true }
