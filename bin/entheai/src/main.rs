@@ -340,6 +340,24 @@ async fn main() -> anyhow::Result<()> {
                 cwd: root.clone(),
                 role: None,
             };
+            // BrainJudge (BRAIN v1 Slice 2): proactive frozen-node surfacing from
+            // ambient tool activity. A second FrozenStore load (cheap — 11 small
+            // markdown files) since PromptProcessor doesn't expose its own.
+            let brain_judge = match build_brain_judge_provider(&model_id, &cfg) {
+                Ok((provider, judge_model)) => {
+                    let frozen = entheai_memory_pp::frozen::FrozenStore::load(std::path::Path::new("frozen"));
+                    Some(entheai_memory_pp::BrainJudge::new(
+                        std::sync::Arc::new(provider),
+                        judge_model,
+                        frozen,
+                        BRAIN_JUDGE_COOLDOWN,
+                    ))
+                }
+                Err(e) => {
+                    log::warn!("brain judge disabled: {e}");
+                    None
+                }
+            };
             entheai_tui::run(
                 agent,
                 registry,
@@ -353,6 +371,7 @@ async fn main() -> anyhow::Result<()> {
                 runtime,
                 pp,
                 scope,
+                brain_judge,
             )
             .await?;
         }
@@ -667,6 +686,29 @@ fn build_prompt_processor(
         entheai_memory_pp::frozen::FrozenStore::load(std::path::Path::new("frozen")),
     );
     Ok(Some(pp))
+}
+
+/// Cooldown between BrainJudge proactive-surfacing checks (BRAIN v1 Slice 2).
+const BRAIN_JUDGE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Build the provider BrainJudge uses to judge ambient-activity relevance.
+/// Reuses the same `"<provider>/<model>"` resolution `entheai_router::build_agent`
+/// uses for the main agent, since BrainJudge is a background, low-stakes
+/// judgment call, not a reason to introduce a second model-selection config.
+fn build_brain_judge_provider(
+    model_id: &str,
+    cfg: &Config,
+) -> anyhow::Result<(entheai_providers::OpenAiCompatProvider, String)> {
+    let (provider_name, model) = model_id
+        .split_once('/')
+        .ok_or_else(|| anyhow::anyhow!("model must be '<provider>/<model>': {model_id}"))?;
+    let pcfg = cfg
+        .providers
+        .get(provider_name)
+        .ok_or_else(|| anyhow::anyhow!("unknown provider '{provider_name}'"))?;
+    let api_key = pcfg.api_key_env.as_ref().and_then(|e| std::env::var(e).ok());
+    let provider = entheai_providers::OpenAiCompatProvider::new(pcfg.base_url.clone(), api_key);
+    Ok((provider, model.to_string()))
 }
 
 /// Inspect the memory store and exit. Namespaces: codebase, learnings,

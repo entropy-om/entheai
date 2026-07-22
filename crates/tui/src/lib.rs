@@ -343,6 +343,10 @@ pub async fn run<P: Provider + 'static>(
     memory: Option<std::sync::Arc<entheai_memory::MemoryRuntime>>,
     pp: Option<std::sync::Arc<entheai_memory_pp::PromptProcessor>>,
     scope: entheai_memory::MemoryScope,
+    brain_judge: Option<(
+        entheai_memory_pp::BrainJudge,
+        tokio::sync::mpsc::UnboundedReceiver<entheai_memory_pp::BrainJudgeEvent>,
+    )>,
 ) -> anyhow::Result<()> {
     let mut terminal = init_terminal()?;
     let guard = TerminalGuard;
@@ -360,6 +364,7 @@ pub async fn run<P: Provider + 'static>(
         memory,
         pp,
         scope,
+        brain_judge,
     )
     .await;
     drop(guard); // restore the terminal before surfacing any error
@@ -401,7 +406,15 @@ async fn event_loop<P: Provider + 'static>(
     memory: Option<std::sync::Arc<entheai_memory::MemoryRuntime>>,
     pp: Option<std::sync::Arc<entheai_memory_pp::PromptProcessor>>,
     scope: entheai_memory::MemoryScope,
+    brain_judge: Option<(
+        entheai_memory_pp::BrainJudge,
+        tokio::sync::mpsc::UnboundedReceiver<entheai_memory_pp::BrainJudgeEvent>,
+    )>,
 ) -> anyhow::Result<()> {
+    let (brain_judge, mut brain_judge_rx) = match brain_judge {
+        Some((j, rx)) => (Some(j), Some(rx)),
+        None => (None, None),
+    };
     // Federation event bus (F1): connect once per TUI session, fail-safe. Cloned
     // into each fan-out submit's tee. `None` when `[nats]` is off/unreachable →
     // the tee is a pure identity and the UI event flow is unchanged. Read
@@ -884,8 +897,11 @@ async fn event_loop<P: Provider + 'static>(
                         // Post-tool tokens start a new bubble.
                         app.streaming_idx = None;
                     }
-                    Some(AgentEvent::ToolFinished { name: _, result }) => {
+                    Some(AgentEvent::ToolFinished { name, result }) => {
                         app.brain.flare(entheai_viz::FacultyKind::Tools);
+                        if let Some(judge) = &brain_judge {
+                            judge.notify(&format!("used tool {name}: {}", first_line_trunc(&result, 200)));
+                        }
                         app.messages.push(Msg {
                             role: Role::Tool,
                             text: format!("  ↳ {}", first_line_trunc(&result, 120)),
@@ -1000,6 +1016,14 @@ async fn event_loop<P: Provider + 'static>(
                 if show_brain(app.brain_enabled, brain_w) {
                     app.brain.tick();
                     dirty = true;
+                }
+                // Drain BrainJudge's proactive-surfacing events (BRAIN v1 Slice 2) —
+                // non-blocking, fires independently of any run being in progress.
+                if let Some(rx) = brain_judge_rx.as_mut() {
+                    while let Ok(entheai_memory_pp::BrainJudgeEvent::Woke(name)) = rx.try_recv() {
+                        app.brain.wake_frozen(&name);
+                        dirty = true;
+                    }
                 }
                 // Keep the always-on Pomodoro countdown live at ~1 Hz even when
                 // idle and the brain panel is hidden: repaint only when the shown
