@@ -150,6 +150,7 @@ enum Status {
     Working,
     AwaitingPermission { tool: String, args: String },
     ConfigMenu { selected_idx: usize },
+    SetupMenu { step_idx: usize },
 }
 
 /// A tool-permission question raised by a running task, forwarded to the UI.
@@ -663,6 +664,9 @@ async fn event_loop<P: Provider + 'static>(
                         Action::Submit(text) if is_config_command(&text) => {
                             handle_config_command(&mut app);
                         }
+                        Action::Submit(text) if is_setup_command(&text) => {
+                            handle_setup_command(&mut app);
+                        }
                         Action::Submit(text) if is_fanout_command(&text) => {
                             handle_fanout_command(&mut app, &text);
                         }
@@ -864,8 +868,13 @@ async fn event_loop<P: Provider + 'static>(
                         });
                         app.current_action = "thinking".to_string();
                     }
-                    Some(AgentEvent::FrozenWoke { name }) => {
+                    Some(AgentEvent::FrozenWoke { name, brief_preview }) => {
                         app.brain.wake_frozen(&name);
+                        app.messages.push(Msg {
+                            role: Role::Tool,
+                            text: format!("❄ frozen node matches: {name} — {}", truncate(&brief_preview, 80)),
+                        });
+                        app.current_action = format!("injecting frozen:{name}");
                     }
                     None => events_rx = None, // sender dropped -> run finished
                 }
@@ -1187,6 +1196,61 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         return Action::None;
     }
 
+    // The setup menu captures all keys while it is up.
+    if let Status::SetupMenu { step_idx } = app.status {
+        match key.code {
+            KeyCode::Up => {
+                app.status = Status::SetupMenu {
+                    step_idx: if step_idx == 0 { 4 } else { step_idx - 1 },
+                };
+            }
+            KeyCode::Down => {
+                app.status = Status::SetupMenu {
+                    step_idx: (step_idx + 1) % 5,
+                };
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Enter => match step_idx {
+                0 => {
+                    if app.model_label == "zen/deepseek-v4-pro" {
+                        app.model_label = "zen/deepseek-v4-flash".to_string();
+                    } else if app.model_label == "zen/deepseek-v4-flash" {
+                        app.model_label = "osaurus/qwen3-coder".to_string();
+                    } else {
+                        app.model_label = "zen/deepseek-v4-pro".to_string();
+                    }
+                }
+                1 => {
+                    app.mode = match app.mode {
+                        entheai_permission::Mode::Ask => entheai_permission::Mode::Auto,
+                        entheai_permission::Mode::Auto => entheai_permission::Mode::Yolo,
+                        entheai_permission::Mode::Yolo => entheai_permission::Mode::Plan,
+                        entheai_permission::Mode::Plan => entheai_permission::Mode::Ask,
+                    };
+                    app.policy.set_mode(app.mode);
+                }
+                2 => {
+                    app.brain_enabled = !app.brain_enabled;
+                }
+                3 => {
+                    app.fanout = !app.fanout;
+                }
+                4 => {
+                    app.status = Status::Idle;
+                    app.messages.push(Msg {
+                        role: Role::Tool,
+                        text: "✓ entheai setup complete! Options saved for session.".to_string(),
+                    });
+                }
+                _ => {}
+            },
+            KeyCode::Esc => {
+                app.status = Status::Idle;
+            }
+            _ => {}
+        }
+        return Action::None;
+    }
+
     let idle = matches!(app.status, Status::Idle);
 
     // Double-tap bookkeeping: take the prior Esc / Ctrl-C timestamps so any
@@ -1301,6 +1365,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 || is_help_command(trimmed)
                 || is_fleet_command(trimmed)
                 || is_config_command(trimmed)
+                || is_setup_command(trimmed)
                 || is_model_command(trimmed);
             if !trimmed.is_empty() && (idle || is_local_command) {
                 return Action::Submit(std::mem::take(&mut app.input));
@@ -1580,6 +1645,27 @@ fn handle_config_command(app: &mut App) {
         role: Role::Tool,
         text:
             "◧ configuration menu opened. Use Arrow Keys to navigate, Left/Right/Enter to toggle."
+                .to_string(),
+    });
+    app.follow = true;
+}
+
+/// True for `/setup` — opens the interactive first-time setup / install wizard.
+fn is_setup_command(text: &str) -> bool {
+    text.trim() == "/setup"
+}
+
+/// Open the interactive setup wizard modal overlay.
+fn handle_setup_command(app: &mut App) {
+    app.messages.push(Msg {
+        role: Role::User,
+        text: "/setup".to_string(),
+    });
+    app.status = Status::SetupMenu { step_idx: 0 };
+    app.messages.push(Msg {
+        role: Role::Tool,
+        text:
+            "❖ entheai setup wizard started. Follow the interactive steps to configure your environment."
                 .to_string(),
     });
     app.follow = true;
@@ -2129,6 +2215,7 @@ fn render(
             Style::default().add_modifier(Modifier::DIM),
         ),
         Status::ConfigMenu { .. } => Line::from(""),
+        Status::SetupMenu { .. } => Line::from(""),
         Status::Idle => Line::from(""),
     };
     frame.render_widget(Paragraph::new(progress), progress_area);
@@ -2227,6 +2314,72 @@ fn render(
         );
         frame.render_widget(modal, modal_area);
     }
+
+    // Setup menu modal, centered over history.
+    if let Status::SetupMenu { step_idx } = app.status {
+        let perm_val = match app.mode {
+            entheai_permission::Mode::Ask => "Ask",
+            entheai_permission::Mode::Auto => "Auto",
+            entheai_permission::Mode::Yolo => "Yolo",
+            entheai_permission::Mode::Plan => "Plan",
+        };
+        let brain_val = if app.brain_enabled {
+            "Visible"
+        } else {
+            "Hidden"
+        };
+        let fanout_val = if app.fanout { "Enabled" } else { "Disabled" };
+
+        let options = [
+            format!("1. Model Backend:    <{}>", app.model_label),
+            format!("2. Security Policy:  <{}>", perm_val),
+            format!("3. Brain Panel:      <{}>", brain_val),
+            format!("4. Swarm Fan-Out:    <{}>", fanout_val),
+            "5. Save Configuration & Finish Setup".to_string(),
+        ];
+
+        let mut lines = Vec::new();
+        lines.push(Line::from(Span::styled(
+            "❖ Welcome to entheai — setup & environment wizard",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+        for (i, opt) in options.iter().enumerate() {
+            if i == step_idx {
+                lines.push(Line::from(Span::styled(
+                    format!(" > {} ", opt),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!("   {} ", opt),
+                    Style::default().fg(Color::Cyan),
+                )));
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            "Use Up/Down to navigate · Left/Right/Enter to toggle/select · Esc to exit",
+            Style::default().fg(Color::DarkGray),
+        ));
+
+        let modal_w = 64;
+        let modal_h = lines.len() as u16 + 2;
+        let modal_area = centered_rect(modal_w, modal_h, area);
+        frame.render_widget(Clear, modal_area);
+        let modal = Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" first-time setup ")
+                .border_style(Style::default().fg(Color::Cyan)),
+        );
+        frame.render_widget(modal, modal_area);
+    }
 }
 
 /// Build the top status bar line: `entheai · <model> · [fan-out ·] <state>
@@ -2236,6 +2389,7 @@ fn status_line(app: &App) -> Line<'static> {
         Status::Working => "working…",
         Status::AwaitingPermission { .. } => "awaiting permission",
         Status::ConfigMenu { .. } => "config menu",
+        Status::SetupMenu { .. } => "setup wizard",
     };
     let mut status_spans: Vec<Span<'static>> = vec![
         Span::styled("entheai", Style::default().add_modifier(Modifier::BOLD)),
@@ -2350,6 +2504,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/fanout", "toggle swarm fan-out — on · off"),
     ("/model", "show the active model"),
     ("/config", "open interactive configuration menu"),
+    ("/setup", "interactive first-time setup / install wizard"),
     (
         "/radio",
         "music — add <url> · pause · next · stop  (Ctrl-P / Ctrl-N)",
@@ -2495,6 +2650,15 @@ mod tests {
         assert!(show_brain(true, 100));
         assert!(!show_brain(false, 100)); // disabled
         assert!(!show_brain(true, 60)); // too narrow
+    }
+
+    #[test]
+    fn setup_command_detection_and_activation() {
+        assert!(is_setup_command("/setup"));
+        assert!(!is_setup_command("/setupx"));
+        let mut app = test_app();
+        handle_setup_command(&mut app);
+        assert_eq!(app.status, Status::SetupMenu { step_idx: 0 });
     }
 
     #[test]
