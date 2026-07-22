@@ -2217,6 +2217,7 @@ dependencies = [
  "entheai-memory",
  "entheai-providers",
  "entheai-ultragraph",
+ "futures",
  "kompress-core",
  "log",
  "rusqlite",
