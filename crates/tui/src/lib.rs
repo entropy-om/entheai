@@ -375,10 +375,16 @@ async fn event_loop<P: Provider + 'static>(
         None
     };
     let fed_exec: Option<std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>> =
-        fleet_fed.clone().map(|f| {
-            entheai_federation::FederationExecutor::new(f, root.clone())
-                as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>
-        });
+        if config.fanout.executor == "agy" {
+            // Recursive-dev path: each coder runs via the Antigravity CLI (depth-guarded).
+            Some(entheai_orchestrator::AgyExecutor::new(config.fanout.agy_model.clone())
+                as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>)
+        } else {
+            fleet_fed.clone().map(|f| {
+                entheai_federation::FederationExecutor::new(f, root.clone())
+                    as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>
+            })
+        };
 
     let (perm_tx, mut perm_rx) = mpsc::channel::<PermissionRequest>(8);
     let (result_tx, mut result_rx) = mpsc::channel::<Result<String, String>>(8);

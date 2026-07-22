@@ -227,7 +227,12 @@ async fn main() -> anyhow::Result<()> {
                 // worker is serving, coders run on the fleet; otherwise run_fanout
                 // runs them locally. Connect failure → None → local (fail-safe).
                 let fed_exec: Option<std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>> =
-                    if cfg.federation.enabled {
+                    if cfg.fanout.executor == "agy" {
+                        // Recursive-dev path: each coder runs via the Antigravity CLI
+                        // (depth-guarded). agy missing/at-cap → local fallback.
+                        Some(entheai_orchestrator::AgyExecutor::new(cfg.fanout.agy_model.clone())
+                            as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>)
+                    } else if cfg.federation.enabled {
                         entheai_federation::Federation::connect(
                             &entheai_federation::FedOptions::from_config(&cfg.nats, &cfg.federation),
                         )

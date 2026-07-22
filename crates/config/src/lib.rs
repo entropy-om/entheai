@@ -114,6 +114,13 @@ pub struct FanoutConfig {
     /// must not block the rest of the fan-out batch. Default: 600 (10 min).
     #[serde(default = "default_coder_timeout_secs")]
     pub coder_timeout_secs: u64,
+    /// Coder execution backend: "auto" (federation if enabled, else local) |
+    /// "agy" (run each coder via the Antigravity CLI — recursive dev) | "local".
+    #[serde(default = "default_fanout_executor")]
+    pub executor: String,
+    /// Model the "agy" executor runs fan-out coders on.
+    #[serde(default = "default_agy_model")]
+    pub agy_model: String,
 }
 
 impl Default for FanoutConfig {
@@ -121,8 +128,17 @@ impl Default for FanoutConfig {
         Self {
             verify: None,
             coder_timeout_secs: default_coder_timeout_secs(),
+            executor: default_fanout_executor(),
+            agy_model: default_agy_model(),
         }
     }
+}
+
+fn default_fanout_executor() -> String {
+    "auto".into()
+}
+fn default_agy_model() -> String {
+    "gemini-3.6-flash-high".into()
 }
 
 fn default_coder_timeout_secs() -> u64 {

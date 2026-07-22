@@ -23,8 +23,11 @@ use entheai_providers::ChatMessage;
 use futures::stream::{self, StreamExt};
 use serde::Deserialize;
 
+pub mod agy;
 pub mod pool;
 pub mod worktree;
+
+pub use agy::AgyExecutor;
 
 pub use pool::{WorkerId, WorkerPool, WorkerStatus, WorkerSummary};
 
