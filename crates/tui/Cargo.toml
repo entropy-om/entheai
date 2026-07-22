@@ -27,6 +27,7 @@ async-trait = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
+unicode-width = "0.2"
 
 [features]
 # `desktop` (default) turns on the in-TUI audio radio. `--no-default-features`

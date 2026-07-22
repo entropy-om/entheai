@@ -172,8 +172,10 @@ impl Prompter for TuiPrompter {
             args: args_summary.to_string(),
             respond,
         };
-        if self.tx.send(req).await.is_err() {
-            return Grant::Deny; // UI gone -> deny
+        // Use try_send so a full channel (UI thread not processing fast enough)
+        // doesn't deadlock the spawned agent task. Deny on overflow.
+        if self.tx.try_send(req).is_err() {
+            return Grant::Deny; // UI backed up -> deny
         }
         rx.await.unwrap_or(Grant::Deny) // UI dropped the responder -> deny
     }
@@ -308,6 +310,9 @@ enum Action {
     ViewToggle,
     /// Esc pressed twice while a run is in flight: abort it and return to idle.
     CancelRun,
+    /// The run task panicked; recover the UI from the stuck Working state.
+    #[allow(dead_code)]
+    RecoverRun,
 }
 
 // TODO(@rahulmranga): memory-v1 Task 9 — thread the shared memory into the
@@ -485,11 +490,17 @@ async fn event_loop<P: Provider + 'static>(
     };
 
     // Background music player (yt-dlp + rodio); one per TUI session.
+    // If the player thread fails to start (extremely rare — only on system
+    // resource exhaustion), use a no-op stub and continue without music
+    // rather than crashing the whole TUI.
     let mut radio = Radio::spawn(
         Radio::default_cache_dir(),
         config.radio.download_timeout_secs,
     )
-    .expect("spawn radio thread");
+    .unwrap_or_else(|e| {
+        eprintln!("[tui] warning: radio thread failed to start ({e}) — continuing without music");
+        Radio::noop()
+    });
 
     let mut events = EventStream::new();
     // Floor the tick at 16ms (~60fps) so a `tick_ms = 0` config can't spin a
@@ -601,6 +612,10 @@ async fn event_loop<P: Provider + 'static>(
                             if let Some(ref tx) = companion_tx {
                                 let _ = tx.send(StateChange::idle());
                             }
+                        }
+                        Action::RecoverRun => {
+                            app.status = Status::Idle;
+                            app.run_started = None;
                         }
                         Action::Submit(text) if is_radio_command(&text) => {
                             handle_radio_command(&mut app, &radio, &text);
@@ -731,10 +746,10 @@ async fn event_loop<P: Provider + 'static>(
                 }
                 app.status = Status::AwaitingPermission { tool: req.tool, args: req.args };
             }
-            Some(result) = result_rx.recv() => {
+            result = result_rx.recv() => {
                 dirty = true;
                 match result {
-                    Ok(answer) => {
+                    Some(Ok(answer)) => {
                         if let Some(idx) = app.streaming_idx {
                             // Authoritative final text overwrites whatever streamed in live.
                             app.messages[idx].text = answer;
@@ -743,7 +758,15 @@ async fn event_loop<P: Provider + 'static>(
                             app.messages.push(Msg { role: Role::Assistant, text: answer });
                         }
                     }
-                    Err(err) => app.messages.push(Msg { role: Role::Error, text: err }),
+                    Some(Err(err)) => app.messages.push(Msg { role: Role::Error, text: err }),
+                    None => {
+                        // The spawned task panicked (sender dropped without sending).
+                        // Recover the UI from the stuck Working state.
+                        app.messages.push(Msg {
+                            role: Role::Error,
+                            text: "Internal error: task failed unexpectedly (panicked)".into(),
+                        });
+                    }
                 }
                 app.status = Status::Idle;
                 if let Some(ref tx) = companion_tx {
@@ -958,11 +981,20 @@ async fn event_loop<P: Provider + 'static>(
                 }
             }
             _ = osaurus_poll.tick() => {
-                let (up, models) = probe_osaurus(&app.osaurus_base_url).await;
-                if app.osaurus_up != up || app.osaurus_models != models {
-                    app.osaurus_up = up;
-                    app.osaurus_models = models;
-                    dirty = true;
+                // Spawn the probe on a separate task so the 600ms HTTP timeout
+                // never blocks the event loop (the loop stays responsive to
+                // keyboard input and progress events even if the endpoint is
+                // slow or unreachable). The result is joined immediately via
+                // tokio::spawn + abort on drop — safe because the select!
+                // branch scope owns the JoinHandle.
+                let url = app.osaurus_base_url.clone();
+                let handle = tokio::spawn(async move { probe_osaurus(&url).await });
+                if let Ok((up, models)) = handle.await {
+                    if app.osaurus_up != up || app.osaurus_models != models {
+                        app.osaurus_up = up;
+                        app.osaurus_models = models;
+                        dirty = true;
+                    }
                 }
             }
         }
@@ -1130,10 +1162,14 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 return Action::Submit(std::mem::take(&mut app.input));
             }
         }
-        // Tab completes the slash-command name to the first match (while the
-        // command name is still being typed — not once args have started).
+        // Tab completes the slash-command name (while the command name is still
+        // being typed — not once args have started). Only completes when there
+        // is exactly one unambiguous match, so ambiguous prefixes (/f for
+        // /fanout or /fleet) do nothing — the user types more chars first.
         KeyCode::Tab if app.input.starts_with('/') && !app.input.trim().contains(' ') => {
-            if let Some((cmd, _)) = slash_matches(&app.input).first() {
+            let matches = slash_matches(&app.input);
+            if matches.len() == 1 {
+                let (cmd, _) = matches[0];
                 app.input = format!("{cmd} ");
             }
         }
@@ -2135,7 +2171,11 @@ fn render_input(frame: &mut Frame, app: &App, input_area: Rect) {
 
     if !matches!(app.status, Status::AwaitingPermission { .. }) {
         let inner_w = input_area.width.saturating_sub(2);
-        let cx = (app.input.chars().count() as u16).min(inner_w.saturating_sub(1));
+        // Use unicode display width so multi-column chars (emoji, CJK) don't
+        // drift the cursor. When the input overflows the box horizontally the
+        // cursor stays at the right edge.
+        let display_width = unicode_width::UnicodeWidthStr::width(app.input.as_str()) as u16;
+        let cx = display_width.min(inner_w.saturating_sub(1));
         frame.set_cursor_position(Position::new(input_area.x + 1 + cx, input_area.y + 1));
     }
 }

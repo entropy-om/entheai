@@ -99,6 +99,15 @@ impl Radio {
         Ok(Radio { cmd_tx, events })
     }
 
+    /// Build a no-op radio stub that accepts commands but does nothing. All
+    /// `send()` calls are silently dropped, and `next_event()` returns `None`
+    /// (pending forever). Useful as a fallback when `spawn` fails.
+    pub fn noop() -> Radio {
+        let (cmd_tx, _cmd_rx) = std_mpsc::channel::<Msg>();
+        let (_event_tx, events) = tokio_mpsc::unbounded_channel::<Event>();
+        Radio { cmd_tx, events }
+    }
+
     /// Default cache dir: `~/.cache/entheai/radio` (temp dir fallback).
     pub fn default_cache_dir() -> PathBuf {
         match std::env::var_os("HOME") {
