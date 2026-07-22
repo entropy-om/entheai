@@ -639,6 +639,9 @@ fn build_prompt_processor(
         std::time::Duration::from_millis(pc.search_deadline_ms),
         pc.recall_k,
         pc.max_ingest_bytes,
+        entheai_memory_pp::frozen::FrozenStore::load(
+            &std::path::Path::new("frozen"),
+        ),
     );
     Ok(Some(pp))
 }

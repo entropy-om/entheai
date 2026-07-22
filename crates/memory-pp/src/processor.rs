@@ -38,6 +38,7 @@ pub struct PromptProcessor {
     /// raw store, so a single megabyte-scale tool output can't balloon `raw.db`
     /// within one run (mirrors the shell/MCP capped-reader precedent).
     max_ingest_bytes: usize,
+    frozen: crate::frozen::FrozenStore,
 }
 
 /// Truncate `s` to at most `max` bytes on a char boundary (never panics mid-char).
@@ -60,6 +61,7 @@ impl PromptProcessor {
         deadline: Duration,
         recall_k: usize,
         max_ingest_bytes: usize,
+        frozen: crate::frozen::FrozenStore,
     ) -> Self {
         Self {
             raw,
@@ -68,12 +70,28 @@ impl PromptProcessor {
             deadline,
             recall_k,
             max_ingest_bytes,
+            frozen,
         }
     }
 
     /// The ingest hooks reach the raw store through this.
     pub fn raw(&self) -> &RawStore {
         &self.raw
+    }
+
+    /// Reactive frozen-node match against the current prompt (deterministic
+    /// trigger + lexical relevance — see `frozen::FrozenStore::wake`).
+    pub fn wake_frozen(&self, prompt: &str, top_k: usize) -> Vec<crate::frozen::FrozenNode> {
+        self.frozen.wake(prompt, top_k)
+    }
+
+    /// Distil a woken node's knowledge through this processor's own compressor.
+    pub async fn activate_frozen(
+        &self,
+        node: &crate::frozen::FrozenNode,
+        deadline: Duration,
+    ) -> String {
+        crate::frozen::activate(node, self.marqant.as_ref(), self.max_ingest_bytes, deadline).await
     }
 
     /// Best-effort retention prune (called once at startup). Never fails a run.
@@ -217,6 +235,7 @@ mod tests {
             Duration::from_millis(50),
             16,
             1 << 20,
+            crate::frozen::FrozenStore::from_nodes(vec![]),
         )
     }
 
@@ -291,6 +310,7 @@ mod tests {
             Duration::from_millis(200),
             16,
             1 << 20,
+            crate::frozen::FrozenStore::from_nodes(vec![]),
         );
         pp.raw()
             .ingest(RawKind::ToolOutput, "unrelated disk usage report", None)
@@ -329,6 +349,53 @@ mod tests {
             2,
             "one tool row + one transcript row"
         );
+    }
+
+    #[tokio::test]
+    async fn wake_frozen_matches_trigger_and_activates() {
+        use crate::frozen::{FrozenNode, FrozenStore};
+        let node = FrozenNode {
+            name: "nixos".into(),
+            domain: "cloud".into(),
+            triggers: vec!["hetzner".into()],
+            mcp: None,
+            rank: 1.0,
+            knowledge: "use nix flakes".into(),
+        };
+        let frozen = FrozenStore::from_nodes(vec![node]);
+        let raw = RawStore::open_memory().unwrap();
+        let pp = PromptProcessor::new(
+            raw,
+            Box::new(StubMesh),
+            Box::new(StubMarqant),
+            Duration::from_millis(50),
+            16,
+            1 << 20,
+            frozen,
+        );
+        let woken = pp.wake_frozen("deploy to hetzner please", 1);
+        assert_eq!(woken.len(), 1);
+        assert_eq!(woken[0].name, "nixos");
+        let brief = pp
+            .activate_frozen(&woken[0], Duration::from_millis(50))
+            .await;
+        assert!(brief.contains("frozen:nixos"));
+    }
+
+    #[test]
+    fn wake_frozen_no_match_returns_empty() {
+        use crate::frozen::FrozenStore;
+        let raw = RawStore::open_memory().unwrap();
+        let pp = PromptProcessor::new(
+            raw,
+            Box::new(StubMesh),
+            Box::new(StubMarqant),
+            Duration::from_millis(50),
+            16,
+            1 << 20,
+            FrozenStore::from_nodes(vec![]),
+        );
+        assert!(pp.wake_frozen("anything", 1).is_empty());
     }
 
     #[tokio::test]
