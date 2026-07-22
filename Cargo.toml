@@ -13,6 +13,11 @@ description = "Autonomous AI coding agent and orchestration engine"
 homepage = "https://github.com/entropy-om/entheai"
 
 [workspace.dependencies]
+# Umbrella crate re-exports adk-agent, adk-model, adk-tool, adk-runner,
+# adk-session, adk-core as adk_rust::agent, adk_rust::model, etc.  The
+# "standard" tier (minimal + openai + tools + sessions + runner + ...) covers
+# everything the spike and subsequent tasks need.
+adk-rust = { version = "1.0.0", features = ["standard"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
