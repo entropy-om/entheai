@@ -35,8 +35,10 @@ use crate::{truncate_preview, AgentEvent};
 /// `AgentEvent`s on `event_tx` and — when `memory`/`pp` are given — recording
 /// the final answer's trajectory and raw transcript once the run completes.
 /// Returns the final answer text.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_with_events(
     agent: &EntheaiAgent,
+    prior_turns: &[(String, String)],
     user_message: &str,
     model: &str,
     event_tx: UnboundedSender<AgentEvent>,
@@ -46,7 +48,7 @@ pub async fn run_with_events(
 ) -> anyhow::Result<String> {
     let _ = event_tx.send(AgentEvent::Thinking);
 
-    let mut stream = agent.run(user_message).await?;
+    let mut stream = agent.run_with_history(prior_turns, user_message).await?;
     let mut answer = String::new();
     let mut transcript: Vec<(String, String)> =
         vec![("user".to_string(), user_message.to_string())];
@@ -240,9 +242,10 @@ mod tests {
         let agent = build_agent(&server).await;
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let answer = run_with_events(&agent, "please echo hi", "test/model", tx, None, None, scope())
-            .await
-            .expect("run succeeds");
+        let answer =
+            run_with_events(&agent, &[], "please echo hi", "test/model", tx, None, None, scope())
+                .await
+                .expect("run succeeds");
         assert_eq!(answer, "final answer");
 
         let mut events = Vec::new();
@@ -279,6 +282,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let answer = run_with_events(
             &agent,
+            &[],
             "please echo hi",
             "test/model",
             tx,
@@ -293,5 +297,37 @@ mod tests {
         let trajectories = store.list(Namespace::Trajectories, 10, 0).await.unwrap();
         assert_eq!(trajectories.len(), 1, "expected one recorded trajectory");
         assert!(trajectories[0].content.contains("final answer"));
+    }
+
+    #[tokio::test]
+    async fn prior_turns_are_seeded_into_the_outbound_request() {
+        use wiremock::matchers::body_string_contains;
+
+        let server = MockServer::start().await;
+        let body = "data: {\"id\":\"t\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_string_contains("EARLIER_MARKER_TEXT"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(body)
+                    .insert_header("Content-Type", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let agent = build_agent(&server).await;
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let prior = vec![
+            ("user".to_string(), "EARLIER_MARKER_TEXT from a prior turn".to_string()),
+            ("assistant".to_string(), "acknowledged".to_string()),
+        ];
+        // Fails with a wiremock "no matching mock" error unless the seeded
+        // prior turn's marker text reached this outbound request.
+        let answer =
+            run_with_events(&agent, &prior, "what did I say earlier?", "test/model", tx, None, None, scope())
+                .await
+                .expect("run succeeds, proving prior_turns reached the outbound request");
+        assert_eq!(answer, "ok");
     }
 }

@@ -40,7 +40,7 @@ impl EntheaiAgent {
         prompter: Arc<tokio::sync::Mutex<dyn Prompter>>,
         max_iterations: u32,
     ) -> anyhow::Result<Self> {
-        Self::build(model_spec, providers, registry, policy, prompter, max_iterations, None)
+        Self::build(model_spec, None, providers, registry, policy, prompter, max_iterations, None)
     }
 
     /// Memory-aware constructor: wires pre-task retrieval/frozen-node
@@ -55,6 +55,7 @@ impl EntheaiAgent {
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_memory(
         model_spec: &str,
+        instruction: Option<&str>,
         providers: &HashMap<String, ProviderConfig>,
         registry: entheai_tools::ToolRegistry,
         policy: Arc<Policy>,
@@ -67,6 +68,7 @@ impl EntheaiAgent {
     ) -> anyhow::Result<Self> {
         Self::build(
             model_spec,
+            instruction,
             providers,
             registry,
             policy,
@@ -79,6 +81,7 @@ impl EntheaiAgent {
     #[allow(clippy::too_many_arguments)]
     fn build(
         model_spec: &str,
+        instruction: Option<&str>,
         providers: &HashMap<String, ProviderConfig>,
         registry: entheai_tools::ToolRegistry,
         policy: Arc<Policy>,
@@ -91,6 +94,9 @@ impl EntheaiAgent {
         let mut builder = LlmAgentBuilder::new("entheai")
             .model(model)
             .max_iterations(max_iterations);
+        if let Some(instruction) = instruction {
+            builder = builder.instruction(instruction);
+        }
         for tool in registry.into_tools() {
             let adapter = crate::adk_tool_adapter::AdkToolAdapter::new(
                 Arc::from(tool),
@@ -125,10 +131,27 @@ impl EntheaiAgent {
         Ok(Self { runner, sessions, app_name })
     }
 
-    /// Streaming entry point. Each call gets a fresh session — entheai's own
-    /// callers hold the full conversation history upstream of this call, the
-    /// same way `Agent<P>::run_task` took a fresh `Vec<ChatMessage>` each time.
+    /// Streaming entry point. Each call gets a fresh session with no prior
+    /// turns — for a caller that needs to carry conversation history forward
+    /// (e.g. an interactive chat), use [`Self::run_with_history`] instead.
     pub async fn run(&self, user_message: &str) -> anyhow::Result<adk_rust::EventStream> {
+        self.run_with_history(&[], user_message).await
+    }
+
+    /// Streaming entry point that seeds a fresh session with prior
+    /// `(role, text)` turns (`role` is `"user"` or `"assistant"`) before
+    /// running `user_message`, so the model sees the full conversation.
+    ///
+    /// Seeds via `SessionService::append_event` — confirmed (empirically,
+    /// against a mocked endpoint, since `Session::conversation_history`'s own
+    /// implementation wasn't traceable in the vendored source) that appended
+    /// events are read back into `LlmRequest.contents` on the next
+    /// `run_str` call for the same session, exactly like real prior turns.
+    pub async fn run_with_history(
+        &self,
+        prior_turns: &[(String, String)],
+        user_message: &str,
+    ) -> anyhow::Result<adk_rust::EventStream> {
         let session_id = uuid::Uuid::new_v4().to_string();
         self.sessions
             .create(CreateRequest {
@@ -138,6 +161,15 @@ impl EntheaiAgent {
                 state: HashMap::new(),
             })
             .await?;
+
+        for (role, text) in prior_turns {
+            let adk_role = if role == "assistant" { "model" } else { role.as_str() };
+            let mut ev = adk_rust::Event::new(&session_id);
+            ev.author = adk_role.to_string();
+            ev.llm_response.content = Some(Content::new(adk_role).with_text(text.clone()));
+            self.sessions.append_event(&session_id, ev).await?;
+        }
+
         let stream = self
             .runner
             .run_str("entheai", &session_id, Content::new("user").with_text(user_message))
@@ -259,6 +291,7 @@ mod tests {
 
         let agent = EntheaiAgent::new_with_memory(
             "test/model",
+            None,
             &providers,
             entheai_tools::ToolRegistry::new(),
             Arc::new(Policy::new(true, vec![])),
