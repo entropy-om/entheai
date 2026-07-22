@@ -4,6 +4,14 @@
 //! fleet, a rotation frame, and readouts (worker count, NATS up, context %). Pure +
 //! terminal-agnostic; fed by the TUI from event arms it already has.
 
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Style};
+use ratatui::symbols::Marker;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::canvas::{Canvas, Context, Line as CanvasLine};
+use ratatui::widgets::Widget;
+
 /// Rotation speed, radians per animation tick.
 const OMEGA: f64 = 0.06;
 /// Per-tick activity decay factor (a flare eases back to a dim glow).
@@ -88,7 +96,6 @@ impl BrainState {
 
 /// Project a node on a ring (radius `r`, vertical offset `y_off`) rotating about the
 /// vertical axis by `frame`. Returns (screen_x, screen_y, depth); x/y land ~[-1,1].
-#[allow(dead_code)] // consumed by the render task (next task in this slice)
 fn project(angle: f64, r: f64, y_off: f64, frame: u64) -> (f64, f64, f64) {
     let theta = angle + frame as f64 * OMEGA;
     let wx = r * theta.cos();
@@ -99,10 +106,85 @@ fn project(angle: f64, r: f64, y_off: f64, frame: u64) -> (f64, f64, f64) {
 }
 
 /// Nearer nodes (larger z) are brighter; result in [0.35, 1.0], monotonic in z.
-#[allow(dead_code)] // consumed by the render task (next task in this slice)
 fn depth_brightness(wz: f64, r: f64) -> f32 {
     let t = ((wz / r.max(1e-6)) + 1.0) / 2.0;
     (0.35 + 0.65 * t) as f32
+}
+
+/// Draw the brain panel into `area`: a rotating canvas (all rows but the last) +
+/// a `wk N · nats ●/○ · ctx P%` footer on the bottom row.
+pub fn render(state: &BrainState, area: Rect, buf: &mut Buffer, marker: Marker) {
+    if area.width < 4 || area.height < 2 {
+        return;
+    }
+    let canvas_area = Rect { height: area.height - 1, ..area };
+    let n_fac = state.faculties.len().max(1);
+    let n_fleet = state.fleet.len().max(1);
+
+    let canvas = Canvas::default()
+        .marker(marker)
+        .x_bounds([-1.0, 1.0])
+        .y_bounds([-1.0, 1.0])
+        .paint(|ctx: &mut Context| {
+            for (i, _f) in state.faculties.iter().enumerate() {
+                let a = i as f64 / n_fac as f64 * std::f64::consts::TAU;
+                let (x, y, wz) = project(a, 0.45, 0.10, state.frame);
+                let g = (depth_brightness(wz, 0.45) * 90.0) as u8;
+                ctx.draw(&CanvasLine { x1: 0.0, y1: 0.0, x2: x, y2: y, color: Color::Rgb(0, g, g) });
+            }
+            ctx.layer();
+            ctx.print(0.0, 0.0, Span::styled("✦", Style::default().fg(Color::Rgb(120, 200, 220))));
+            for (i, f) in state.faculties.iter().enumerate() {
+                let a = i as f64 / n_fac as f64 * std::f64::consts::TAU;
+                let (x, y, wz) = project(a, 0.45, 0.10, state.frame);
+                let db = depth_brightness(wz, 0.45);
+                let v = ((0.30 + 0.70 * f.activity) * db * 255.0) as u8;
+                let glyph = match f.kind {
+                    FacultyKind::Model => "M",
+                    FacultyKind::Tools => "T",
+                    FacultyKind::Context => "C",
+                };
+                ctx.print(x, y, Span::styled(glyph, Style::default().fg(Color::Rgb(0, v, v))));
+            }
+            for (i, node) in state.fleet.iter().enumerate() {
+                let a = i as f64 / n_fleet as f64 * std::f64::consts::TAU;
+                let (x, y, wz) = project(a, 0.85, -0.12, state.frame);
+                let db = depth_brightness(wz, 0.85);
+                let base: (u8, u8, u8) = if node.working { (0, 220, 90) } else { (90, 90, 90) };
+                let col = Color::Rgb(
+                    (base.0 as f32 * db) as u8,
+                    (base.1 as f32 * db) as u8,
+                    (base.2 as f32 * db) as u8,
+                );
+                ctx.print(x, y, Span::styled("•", Style::default().fg(col)));
+            }
+        });
+    Widget::render(canvas, canvas_area, buf);
+
+    let footer = footer_line(state);
+    let _ = buf.set_line(area.x, area.bottom() - 1, &footer, area.width);
+}
+
+fn footer_line(state: &BrainState) -> Line<'static> {
+    let (nats_glyph, nats_col) = if state.nats_up {
+        ("●", Color::Green)
+    } else {
+        ("○", Color::DarkGray)
+    };
+    let ctx_col = if state.ctx_pct >= 85 {
+        Color::Red
+    } else if state.ctx_pct >= 60 {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
+    Line::from(vec![
+        Span::styled(format!("wk {}", state.worker_count), Style::default().fg(Color::Gray)),
+        Span::raw(" · nats "),
+        Span::styled(nats_glyph, Style::default().fg(nats_col)),
+        Span::raw(" · "),
+        Span::styled(format!("ctx {}%", state.ctx_pct), Style::default().fg(ctx_col)),
+    ])
 }
 
 #[cfg(test)]
@@ -162,5 +244,29 @@ mod tests {
         assert!(depth_brightness(0.4, 0.5) > depth_brightness(-0.4, 0.5), "nearer = brighter");
         let db = depth_brightness(0.0, 0.5);
         assert!((0.0..=1.0).contains(&db));
+    }
+
+    #[test]
+    fn render_small_buffer_no_panic_and_footer() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::symbols::Marker;
+        let mut b = BrainState::new();
+        b.set_nats(true);
+        b.set_ctx_pct(42);
+        b.set_fleet(&[("n1".to_string(), true)]);
+        b.flare(FacultyKind::Tools);
+        let area = Rect::new(0, 0, 26, 12);
+        let mut buf = Buffer::empty(area);
+        render(&b, area, &mut buf, Marker::Braille);
+        // read the footer (bottom) row into a string — use the SAME cell-access API swarm.rs / the TUI uses
+        let y = area.bottom() - 1;
+        let mut row = String::new();
+        for x in area.left()..area.right() {
+            row.push_str(buf[(x, y)].symbol());
+        }
+        assert!(row.contains("wk 1"), "footer worker count missing: {row:?}");
+        assert!(row.contains("42%"), "footer ctx pct missing: {row:?}");
+        assert!(row.contains('●'), "nats-up marker missing: {row:?}");
     }
 }
