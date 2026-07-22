@@ -249,6 +249,39 @@ struct App {
     /// When the TUI launched — anchors the always-on 25/5 Pomodoro shown in the
     /// status bar. Wall-clock (not frame count) so it tracks real minutes.
     pomodoro_started: Instant,
+    /// Base URL for the local Osaurus OpenAI-compatible endpoint.
+    osaurus_base_url: String,
+    /// Whether the Osaurus local-model endpoint is reachable.
+    osaurus_up: bool,
+    /// Model IDs reported by Osaurus via GET /v1/models.
+    osaurus_models: Vec<String>,
+}
+
+/// Probes the local Osaurus (OpenAI-compatible) endpoint for connectivity and served models.
+async fn probe_osaurus(base_url: &str) -> (bool, Vec<String>) {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let fetch = async {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(600))
+            .build()
+            .ok()?;
+        let resp = client.get(&url).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let val = resp.json::<serde_json::Value>().await.ok()?;
+        let data = val.get("data")?.as_array()?;
+        let ids = data
+            .iter()
+            .filter_map(|item| item.get("id")?.as_str().map(|s| s.to_string()))
+            .collect();
+        Some(ids)
+    };
+
+    match tokio::time::timeout(Duration::from_millis(600), fetch).await {
+        Ok(Some(models)) => (true, models),
+        _ => (false, Vec::new()),
+    }
 }
 
 /// Which main view the TUI is showing.
@@ -402,6 +435,12 @@ async fn event_loop<P: Provider + 'static>(
     // can abort it; `None` while idle, cleared when a run completes normally.
     let mut run_handle: Option<tokio::task::JoinHandle<()>> = None;
 
+    let osaurus_base_url = config
+        .providers
+        .get("osaurus")
+        .map(|p| p.base_url.clone())
+        .unwrap_or_else(|| "http://127.0.0.1:1337/v1".to_string());
+
     let mut app = App {
         messages: Vec::new(),
         input: String::new(),
@@ -431,6 +470,9 @@ async fn event_loop<P: Provider + 'static>(
         last_ctrl_c: None,
         notice: None,
         pomodoro_started: Instant::now(),
+        osaurus_base_url,
+        osaurus_up: false,
+        osaurus_models: Vec::new(),
     };
 
     // Background music player (yt-dlp + rodio); one per TUI session.
@@ -450,6 +492,9 @@ async fn event_loop<P: Provider + 'static>(
     // frame. Skip missed ticks so a slow poll can't burst-catch-up.
     let mut fleet_poll = tokio::time::interval(Duration::from_millis(1500));
     fleet_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Throttled poll for local Osaurus endpoint (~5s).
+    let mut osaurus_poll = tokio::time::interval(Duration::from_secs(5));
+    osaurus_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Seed the NATS indicator from the initial connect results; the live poll below
     // refreshes it whenever the fleet actually responds.
     app.brain.set_nats(bus.is_some() || fleet_fed.is_some());
@@ -901,6 +946,14 @@ async fn event_loop<P: Provider + 'static>(
                             dirty = true;
                         }
                     }
+                }
+            }
+            _ = osaurus_poll.tick() => {
+                let (up, models) = probe_osaurus(&app.osaurus_base_url).await;
+                if app.osaurus_up != up || app.osaurus_models != models {
+                    app.osaurus_up = up;
+                    app.osaurus_models = models;
+                    dirty = true;
                 }
             }
         }
@@ -1892,6 +1945,18 @@ fn status_line(app: &App) -> Line<'static> {
         entheai_viz::pomodoro::label(&pv),
         Style::default().fg(pomo_color),
     ));
+    status_spans.push(Span::raw(" · "));
+    if app.osaurus_up {
+        status_spans.push(Span::styled(
+            format!("osaurus ● {}", app.osaurus_models.len()),
+            Style::default().fg(Color::Green),
+        ));
+    } else {
+        status_spans.push(Span::styled(
+            "osaurus ○",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
     Line::from(status_spans)
 }
 
@@ -2172,6 +2237,9 @@ mod tests {
             last_ctrl_c: None,
             notice: None,
             pomodoro_started: Instant::now(),
+            osaurus_base_url: "http://127.0.0.1:1337/v1".into(),
+            osaurus_up: false,
+            osaurus_models: Vec::new(),
         }
     }
 
@@ -2183,6 +2251,29 @@ mod tests {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("WORK"), "pomodoro work phase in status line: {text:?}");
         assert!(text.contains(':'), "mm:ss countdown present: {text:?}");
+    }
+
+    #[test]
+    fn status_line_shows_osaurus_status() {
+        let mut app = test_app();
+        app.osaurus_up = true;
+        app.osaurus_models = vec!["model-a".to_string(), "model-b".to_string()];
+        let line = status_line(&app);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("osaurus ● 2"), "osaurus up in status line: {text:?}");
+
+        app.osaurus_up = false;
+        app.osaurus_models.clear();
+        let line_down = status_line(&app);
+        let text_down: String = line_down.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text_down.contains("osaurus ○"), "osaurus down in status line: {text_down:?}");
+    }
+
+    #[tokio::test]
+    async fn probe_osaurus_handles_unreachable_endpoint() {
+        let (up, models) = probe_osaurus("http://127.0.0.1:1").await;
+        assert!(!up);
+        assert!(models.is_empty());
     }
 
     #[test]
@@ -2520,6 +2611,9 @@ mod tests {
             last_ctrl_c: None,
             notice: None,
             pomodoro_started: Instant::now(),
+            osaurus_base_url: "http://127.0.0.1:1337/v1".into(),
+            osaurus_up: false,
+            osaurus_models: Vec::new(),
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -2560,6 +2654,9 @@ mod tests {
             last_ctrl_c: None,
             notice: None,
             pomodoro_started: Instant::now(),
+            osaurus_base_url: "http://127.0.0.1:1337/v1".into(),
+            osaurus_up: false,
+            osaurus_models: Vec::new(),
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -2598,6 +2695,9 @@ mod tests {
             last_ctrl_c: None,
             notice: None,
             pomodoro_started: Instant::now(),
+            osaurus_base_url: "http://127.0.0.1:1337/v1".into(),
+            osaurus_up: false,
+            osaurus_models: Vec::new(),
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -2691,6 +2791,9 @@ mod tests {
             last_ctrl_c: None,
             notice: None,
             pomodoro_started: Instant::now(),
+            osaurus_base_url: "http://127.0.0.1:1337/v1".into(),
+            osaurus_up: false,
+            osaurus_models: Vec::new(),
         };
         handle_workers_command(&mut app, "/workers list");
         assert!(app
@@ -2732,6 +2835,9 @@ mod tests {
             last_ctrl_c: None,
             notice: None,
             pomodoro_started: Instant::now(),
+            osaurus_base_url: "http://127.0.0.1:1337/v1".into(),
+            osaurus_up: false,
+            osaurus_models: Vec::new(),
         };
         handle_radio_event(
             &mut app,
