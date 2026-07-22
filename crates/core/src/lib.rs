@@ -1,5 +1,6 @@
 pub mod adk_tool_adapter;
 pub mod entheai_agent;
+pub mod memory_callbacks;
 pub mod model_resolve;
 
 pub use entheai_agent::EntheaiAgent;

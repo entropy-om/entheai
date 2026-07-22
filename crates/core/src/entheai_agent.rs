@@ -6,7 +6,7 @@
 //! wrapper holds its own `Arc<dyn SessionService>` alongside the `Runner`
 //! rather than trying to recover it from the runner after construction.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use adk_rust::agent::LlmAgentBuilder;
@@ -31,6 +31,51 @@ impl EntheaiAgent {
         prompter: Arc<tokio::sync::Mutex<dyn Prompter>>,
         max_iterations: u32,
     ) -> anyhow::Result<Self> {
+        Self::build(model_spec, providers, registry, policy, prompter, max_iterations, None)
+    }
+
+    /// Memory-aware constructor: wires pre-task retrieval/frozen-node
+    /// injection (`before_model`) and per-tool evidence recording
+    /// (`after_tool_full`), mirroring `Agent::run_task_with_memory`'s
+    /// memory-enabled path. See `crate::memory_callbacks` for what is and
+    /// isn't covered.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_memory(
+        model_spec: &str,
+        providers: &HashMap<String, ProviderConfig>,
+        registry: entheai_tools::ToolRegistry,
+        policy: Arc<Policy>,
+        prompter: Arc<tokio::sync::Mutex<dyn Prompter>>,
+        max_iterations: u32,
+        memory: Arc<entheai_memory::MemoryRuntime>,
+        pp: Option<Arc<entheai_memory_pp::PromptProcessor>>,
+        scope: entheai_memory::MemoryScope,
+    ) -> anyhow::Result<Self> {
+        Self::build(
+            model_spec,
+            providers,
+            registry,
+            policy,
+            prompter,
+            max_iterations,
+            Some((memory, pp, scope)),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        model_spec: &str,
+        providers: &HashMap<String, ProviderConfig>,
+        registry: entheai_tools::ToolRegistry,
+        policy: Arc<Policy>,
+        prompter: Arc<tokio::sync::Mutex<dyn Prompter>>,
+        max_iterations: u32,
+        memory_ctx: Option<(
+            Arc<entheai_memory::MemoryRuntime>,
+            Option<Arc<entheai_memory_pp::PromptProcessor>>,
+            entheai_memory::MemoryScope,
+        )>,
+    ) -> anyhow::Result<Self> {
         let model = crate::model_resolve::resolve_model(model_spec, providers)?;
 
         let mut builder = LlmAgentBuilder::new("entheai")
@@ -43,6 +88,18 @@ impl EntheaiAgent {
                 Arc::clone(&prompter),
             );
             builder = builder.tool(Arc::new(adapter));
+        }
+        if let Some((memory, pp, scope)) = memory_ctx {
+            let injected_sessions = Arc::new(tokio::sync::Mutex::new(HashSet::new()));
+            builder = builder
+                .before_model_callback(crate::memory_callbacks::before_model_retrieval_callback(
+                    Arc::clone(&memory),
+                    pp.clone(),
+                    injected_sessions,
+                ))
+                .after_tool_callback_full(crate::memory_callbacks::after_tool_evidence_callback(
+                    scope, memory, pp,
+                ));
         }
         let agent: Arc<dyn adk_rust::Agent> = Arc::new(builder.build()?);
 
@@ -153,5 +210,67 @@ mod tests {
 
         let text = agent.run_to_text("hello").await.expect("run succeeds");
         assert_eq!(text, "final answer");
+    }
+
+    #[tokio::test]
+    async fn before_model_callback_injects_retrieval_brief_into_request() {
+        use entheai_memory::{Memory, MemoryRuntime, MemoryRuntimeConfig, MemoryScope, Namespace, SqliteStore};
+        use wiremock::matchers::body_string_contains;
+
+        let store = SqliteStore::open_memory(None).unwrap();
+        store
+            .store(Namespace::Codebase, "k1", "the auth module lives in crates/permission", None)
+            .await
+            .unwrap();
+        let memory = Arc::new(MemoryRuntime::new(
+            Arc::new(store),
+            MemoryRuntimeConfig { enabled: true, ..Default::default() },
+        ));
+
+        let server = MockServer::start().await;
+        let body = "data: {\"id\":\"t\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ack\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_string_contains("auth module"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(body)
+                    .insert_header("Content-Type", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "test".to_string(),
+            ProviderConfig { base_url: server.uri(), api_key_env: None },
+        );
+
+        let agent = EntheaiAgent::new_with_memory(
+            "test/model",
+            &providers,
+            entheai_tools::ToolRegistry::new(),
+            Arc::new(Policy::new(true, vec![])),
+            Arc::new(tokio::sync::Mutex::new(AllowAll)),
+            25,
+            memory,
+            None,
+            MemoryScope {
+                session_id: "s1".into(),
+                task_id: "t1".into(),
+                cwd: std::env::temp_dir(),
+                role: None,
+            },
+        )
+        .expect("agent builds");
+
+        // Fails with a 404-from-wiremock-style error if the injected brief
+        // never reached the outbound request body — the mock only matches
+        // requests whose body contains "auth module".
+        let text = agent
+            .run_to_text("where does the auth module live?")
+            .await
+            .expect("run succeeds, proving the mock matched the injected request body");
+        assert_eq!(text, "ack");
     }
 }
