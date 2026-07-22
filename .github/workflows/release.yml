@@ -1,4 +1,5 @@
-# Production / release CI — ONLY builds the optimized binary and cuts a GitHub Release.
+# Production / release CI — builds the optimized binary, signs + notarizes it
+# (Developer ID), and cuts a GitHub Release.
 # There is deliberately no test/lint CI here (dev checks run locally via scripts/check.sh).
 #
 # Triggers: pushing a version tag (v1.2.3), or manual "Run workflow".
@@ -40,6 +41,47 @@ jobs:
 
       - name: PGO production build
         run: ./scripts/build-release.sh
+
+      # ── Code signing + notarization (Developer ID). Requires the 7 repo secrets
+      # from human-task.md. Signs the binary in place so the tarball below carries
+      # the signed + notarized Mach-O.
+      - name: Import Developer ID cert into a temporary keychain
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PWD: ${{ secrets.KEYCHAIN_PWD }}
+        run: |
+          echo "$MACOS_CERTIFICATE" | base64 --decode > cert.p12
+          security create-keychain -p "$KEYCHAIN_PWD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PWD" build.keychain
+          security import cert.p12 -k build.keychain -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PWD" build.keychain
+          rm cert.p12
+
+      - name: Codesign (Developer ID, hardened runtime)
+        env:
+          IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          BIN="target/aarch64-apple-darwin/release/entheai"
+          codesign --force --options runtime --timestamp --sign "$IDENTITY" "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+
+      - name: Notarize
+        env:
+          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          BIN="target/aarch64-apple-darwin/release/entheai"
+          echo "$NOTARY_KEY" | base64 --decode > AuthKey.p8
+          ditto -c -k --keepParent "$BIN" entheai-notarize.zip
+          xcrun notarytool submit entheai-notarize.zip \
+            --key AuthKey.p8 --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait
+          rm -f AuthKey.p8 entheai-notarize.zip
+          # A bare Mach-O CLI is notarized but NOT staple-able (stapling needs an
+          # .app/.dmg/.pkg); Gatekeeper verifies via the online notary ticket on
+          # first run. A stapled .app/.dmg is the follow-up (the launcher builds one).
 
       - name: Package binary
         run: |
