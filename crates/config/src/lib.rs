@@ -571,6 +571,28 @@ mod tests {
     }
 
     #[test]
+    fn memory_mode_defaults_to_topk() {
+        let cfg = Config::from_toml_str("[memory]\nenabled = true\n").unwrap();
+        assert_eq!(cfg.memory.mode, "topk");
+        assert!(cfg.memory.prompt_processing.is_none());
+    }
+
+    #[test]
+    fn memory_prompt_processing_parses() {
+        let cfg = Config::from_toml_str(
+            "[memory]\nmode = \"prompt-processing\"\n\
+             [memory.prompt_processing]\nsearch_deadline_ms = 800\nrecall_k = 32\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.memory.mode, "prompt-processing");
+        let pp = cfg.memory.prompt_processing.unwrap();
+        assert_eq!(pp.search_deadline_ms, 800);
+        assert_eq!(pp.recall_k, 32);
+        assert_eq!(pp.marqant_cmd, "mq", "absent sub-fields take their defaults");
+        assert_eq!(pp.raw_retention_days, 90);
+    }
+
+    #[test]
     fn obsidian_config_defaults() {
         let cfg = Config::from_toml_str("").unwrap();
         assert!(
@@ -770,6 +792,12 @@ pub struct MemoryConfig {
     pub recall_overfetch: usize,
     #[serde(default = "default_embed_timeout_secs")]
     pub embed_timeout_secs: u64,
+    /// Retrieval mode: "topk" (today's behaviour, default) | "prompt-processing".
+    #[serde(default = "default_memory_mode")]
+    pub mode: String,
+    /// Prompt-processing sub-table; only read when `mode = "prompt-processing"`.
+    #[serde(default)]
+    pub prompt_processing: Option<PromptProcessingConfig>,
 }
 
 fn default_memory_enabled() -> bool {
@@ -814,6 +842,82 @@ fn default_recall_overfetch() -> usize {
 fn default_embed_timeout_secs() -> u64 {
     30
 }
+fn default_memory_mode() -> String {
+    "topk".into()
+}
+
+/// Prompt-processing configuration (spec §Configuration). All fields default,
+/// so `[memory.prompt_processing]` can be omitted entirely.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PromptProcessingConfig {
+    /// The mesh sidecar command (Slice 2; unused by the Slice-1 stub).
+    #[serde(default = "default_pp_sidecar_cmd")]
+    pub sidecar_cmd: String,
+    /// Ternary models in the mesh (Slice 2).
+    #[serde(default = "default_pp_mesh_size")]
+    pub mesh_size: usize,
+    /// Fail fast to fallback past this deadline (bounds the whole pipeline).
+    #[serde(default = "default_pp_search_deadline_ms")]
+    pub search_deadline_ms: u64,
+    /// The compression subprocess (Slice 2; unused by the Slice-1 stub).
+    #[serde(default = "default_pp_marqant_cmd")]
+    pub marqant_cmd: String,
+    /// Raw-store retention window; pruned on startup.
+    #[serde(default = "default_pp_raw_retention_days")]
+    pub raw_retention_days: u64,
+    /// Stage-1 lexical recall breadth.
+    #[serde(default = "default_pp_recall_k")]
+    pub recall_k: usize,
+    /// Raw-store DB path (separate file from memory.db).
+    #[serde(default = "default_pp_raw_path")]
+    pub raw_path: String,
+    /// Per-ingest byte cap (adversarial-review correction #4): bound unbounded
+    /// tool/transcript payloads so a huge output can't balloon raw.db in one run.
+    #[serde(default = "default_pp_max_ingest_bytes")]
+    pub max_ingest_bytes: usize,
+}
+
+impl Default for PromptProcessingConfig {
+    fn default() -> Self {
+        Self {
+            sidecar_cmd: default_pp_sidecar_cmd(),
+            mesh_size: default_pp_mesh_size(),
+            search_deadline_ms: default_pp_search_deadline_ms(),
+            marqant_cmd: default_pp_marqant_cmd(),
+            raw_retention_days: default_pp_raw_retention_days(),
+            recall_k: default_pp_recall_k(),
+            raw_path: default_pp_raw_path(),
+            max_ingest_bytes: default_pp_max_ingest_bytes(),
+        }
+    }
+}
+
+fn default_pp_sidecar_cmd() -> String {
+    // NOTE: the published `ultragraph-1bit` ships no stdio `rerank` module; the
+    // Slice-2 sidecar is a new in-repo script. Default points at it.
+    "python sidecars/ultragraph/serve.py".into()
+}
+fn default_pp_mesh_size() -> usize {
+    8
+}
+fn default_pp_search_deadline_ms() -> u64 {
+    1500
+}
+fn default_pp_marqant_cmd() -> String {
+    "mq".into()
+}
+fn default_pp_raw_retention_days() -> u64 {
+    90
+}
+fn default_pp_recall_k() -> usize {
+    64
+}
+fn default_pp_raw_path() -> String {
+    "~/.cache/entheai/raw.db".into()
+}
+fn default_pp_max_ingest_bytes() -> usize {
+    262_144 // 256 KiB
+}
 
 impl Default for MemoryConfig {
     fn default() -> Self {
@@ -835,6 +939,8 @@ impl Default for MemoryConfig {
             rrf_k: default_rrf_k(),
             recall_overfetch: default_recall_overfetch(),
             embed_timeout_secs: default_embed_timeout_secs(),
+            mode: default_memory_mode(),
+            prompt_processing: None,
         }
     }
 }
