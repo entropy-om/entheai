@@ -199,7 +199,7 @@ mod tests {
         assert_eq!(b.faculty(FacultyKind::Model).activity, 1.0);
         b.tick();
         let a1 = b.faculty(FacultyKind::Model).activity;
-        assert!(a1 < 1.0 && a1 >= 0.0, "decays and stays non-negative: {a1}");
+        assert!((0.0..1.0).contains(&a1), "decays and stays non-negative: {a1}");
         for _ in 0..200 { b.tick(); }
         let a = b.faculty(FacultyKind::Model).activity;
         assert!((0.0..0.02).contains(&a), "eases to ~0: {a}");
