@@ -183,9 +183,11 @@ impl MeshSearch for SidecarMesh {
 
 // ---- Slice 2c: the native in-process mesh (no subprocess) -------------------
 
-/// Feature-vector width: `[query byte-histogram(256) | text byte-histogram(256)]`.
-/// A `.ugm` reranker must consume exactly this many inputs.
-pub const FEATURE_DIM: usize = 512;
+/// Feature-vector width: `[query hist(256) | text hist(256) | q⊙t interaction(256)]`.
+/// The interaction block (element-wise product of the two histograms) is what lets a
+/// *linear* `.ugm` reranker score a query×text match — a plain concat can't. A `.ugm`
+/// reranker must consume exactly this many inputs.
+pub const FEATURE_DIM: usize = 768;
 
 /// Normalized byte histogram of `s` (each bin = count(byte)/len, 0 for empty).
 fn byte_histogram(s: &str) -> Vec<f32> {
@@ -204,10 +206,16 @@ fn byte_histogram(s: &str) -> Vec<f32> {
     h
 }
 
-/// `[query_hist | text_hist]` — the `FEATURE_DIM`-wide input to a `.ugm` reranker.
+/// `[query_hist | text_hist | query_hist⊙text_hist]` — the `FEATURE_DIM`-wide input
+/// to a `.ugm` reranker. The trailing interaction block carries the per-byte
+/// co-occurrence a linear model needs to rank query×text relevance.
 fn featurize(query: &str, text: &str) -> Vec<f32> {
-    let mut f = byte_histogram(query);
-    f.extend(byte_histogram(text));
+    let q = byte_histogram(query);
+    let t = byte_histogram(text);
+    let mut f = Vec::with_capacity(FEATURE_DIM);
+    f.extend_from_slice(&q);
+    f.extend_from_slice(&t);
+    f.extend(q.iter().zip(&t).map(|(a, b)| a * b));
     debug_assert_eq!(f.len(), FEATURE_DIM);
     f
 }
@@ -468,11 +476,16 @@ mod tests {
     }
 
     #[test]
-    fn featurize_concats_query_then_text() {
-        let f = featurize("a", "b");
+    fn featurize_has_query_text_and_interaction() {
+        // "ab" vs "ac": q={a:.5,b:.5}, t={a:.5,c:.5}. The interaction (q⊙t) block
+        // is what lets a *linear* reranker score a query×text match — only byte 'a'
+        // is shared, so only its product bin is non-zero.
+        let f = featurize("ab", "ac");
         assert_eq!(f.len(), FEATURE_DIM);
-        assert!((f[b'a' as usize] - 1.0).abs() < 1e-6, "query half");
-        assert!((f[256 + b'b' as usize] - 1.0).abs() < 1e-6, "text half");
+        assert!((f[b'a' as usize] - 0.5).abs() < 1e-6, "query half");
+        assert!((f[256 + b'c' as usize] - 0.5).abs() < 1e-6, "text half");
+        assert!((f[512 + b'a' as usize] - 0.25).abs() < 1e-6, "interaction: shared byte 'a'");
+        assert!(f[512 + b'b' as usize].abs() < 1e-6, "interaction: 'b' not in text → 0");
     }
 
     #[test]
