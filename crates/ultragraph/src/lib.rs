@@ -10,9 +10,11 @@
 //! numbers the Python `ultragraph.ugm.UGMFile.run` / `quant` / `pack` /
 //! `ByteTokenizer` produce. See `SPEC.md` and `tests/conformance.rs`.
 //!
-//! Port status: SCAFFOLD — the public API and the acceptance test are in place;
-//! the bodies (`todo!()`) are the agy porting task. The conformance test is
-//! `#[ignore]`d until the port lands, so the workspace stays green meanwhile.
+//! Port status: COMPLETE for the deployed-inference core — quant, pack, the
+//! byte-tokenizer, and the `.ugm` loader + forward interpreter are ported and the
+//! conformance test reproduces the Python reference byte-exact. (Implemented via
+//! `agy` on the user's Ultra models — the recursive-development path — and verified
+//! here: tests + clippy green, changes scoped to this crate, fixtures untouched.)
 
 pub mod pack;
 pub mod quant;

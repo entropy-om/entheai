@@ -34,7 +34,6 @@ fn i8s(v: &Value) -> Vec<i8> {
 const TOL: f32 = 1e-4;
 
 #[test]
-#[ignore = "agy port pending — remove when quant.rs is implemented"]
 fn quant_matches_reference() {
     let r = reference();
     let qw = &r["quant_weight"];
@@ -54,7 +53,6 @@ fn quant_matches_reference() {
 }
 
 #[test]
-#[ignore = "agy port pending — remove when pack.rs is implemented"]
 fn pack_matches_reference() {
     let p = &reference()["pack"];
     let tern = i8s(&p["ternary"]);
@@ -66,7 +64,6 @@ fn pack_matches_reference() {
 }
 
 #[test]
-#[ignore = "agy port pending — remove when tokenize.rs is implemented"]
 fn tokenize_matches_reference() {
     let t = &reference()["tokenize"];
     let ids = ByteTokenizer::encode(t["text"].as_str().unwrap());
@@ -76,7 +73,6 @@ fn tokenize_matches_reference() {
 }
 
 #[test]
-#[ignore = "agy port pending — remove when ugm.rs is implemented"]
 fn ugm_run_matches_reference() {
     let r = reference();
     let model = UgmFile::load(&fixtures().join("model.ugm")).expect("load model.ugm");
