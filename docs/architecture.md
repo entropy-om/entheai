@@ -1,106 +1,256 @@
-# Architecture
+# Comprehensive Architecture Documentation
 
-entheai is a macOS-native hybrid coding agent CLI built as a Rust workspace. One orchestrator, many sub-agents, all backed by persistent memory and a self-learning feedback loop.
+`entheai` is a macOS-native, hybrid coding agent CLI built as an optimized Rust workspace. It combines a strong cloud orchestrator, fast local inference, parallel fan-out sub-agent swarms in isolated git worktrees, prompt-processing memory, deterministic frozen nodes, and distributed NATS worker federation.
 
-## High-level flow
+---
+
+## 1. High-Level Architecture Overview
+
+<p align="center">
+  <img src="images/hero-recursive.png" alt="entheai architecture — deeply recursive agentic development" width="100%">
+</p>
+
+The system operates across three main layers: **User Interface & Controls**, **Orchestration & Cognitive Engine**, and the **Execution & Federation Fleet**.
+
+```mermaid
+graph TD
+    subgraph UI ["User Interface & Experience"]
+        TUI["Ratatui Terminal UI\n(crates/tui)"]
+        APP["Native Ghostty Shader Window\n(crates/launcher)"]
+        COMP["Session Companion QR Window\n(crates/companion)"]
+        RADIO["Procedural Ambient Radio\n(crates/radio)"]
+    end
+
+    subgraph Core ["Cognitive Engine & Orchestration"]
+        AG["Agent Loop\n(crates/core)"]
+        RT["Tiered Router\n(crates/router)"]
+        FO["Fan-Out Orchestrator\n(crates/orchestrator)"]
+        MPP["3-Stage Memory Engine & PP\n(crates/memory-pp)"]
+        FN["Frozen Nodes Engine\n(frozen/ & memory-pp)"]
+        OBS["Obsidian Wiki-Sync\n(crates/obsidian)"]
+    end
+
+    subgraph Providers ["Inference Provider Tier"]
+        ZEN["OpenCode Zen Cloud\n(DeepSeek V4 Pro/Flash)"]
+        OSA["Osaurus Local Engine\n(127.0.0.1:1337 / MLX)"]
+        AGY["Antigravity CLI\n(Google Ultra / agy)"]
+    end
+
+    subgraph Execution ["Execution & Federation Fleet"]
+        GW["Git Worktrees\n(Isolated Coder Tasks)"]
+        NATS["NATS Federation Bus & JetStream\n(crates/bus & federation)"]
+        WORKER["Sandboxed Linux Workers\n(Landlock + Seccomp + rustybox.io)"]
+    end
+
+    TUI --> AG
+    APP --> TUI
+    COMP -.-> TUI
+    AG --> RT
+    RT --> ZEN
+    RT --> OSA
+    AG --> FO
+    FO --> GW
+    FO --> AGY
+    FO -.-> NATS
+    NATS --> WORKER
+    AG --> MPP
+    MPP --> FN
+    AG --> OBS
+```
+
+---
+
+## 2. Workspace Crate Map
+
+The repository is structured as a modular Rust workspace (resolver v2) of single-responsibility crates:
 
 ```
-User prompt (TUI)
-  → orchestrator plans + assigns effort scores
-    → router picks best model per sub-agent
-      → fan-out: multiple coders run in isolated git worktrees
-        → join/reduce: merge patches, build, test
-          → store learnings + trajectory
-            → dogfeed exporter (opt-in)
+Cargo.toml                          # Workspace root (resolver=2)
+├── bin/entheai/                    # Primary CLI binary (clap, tokio, ratatui, mimalloc)
+├── bin/entheai-worker/             # Federation worker / dispatcher (--serve / --dispatch)
+├── bin/entheai-launch/             # Native .app executable launching Ghostty window
+├── crates/config/                  # TOML settings & Config deserialization
+├── crates/providers/               # OpenAI-compatible client + Provider trait
+├── crates/core/                    # Agentic loop, streaming, and tool-dispatch engine
+├── crates/router/                  # Role-to-model resolution + agent factory
+├── crates/orchestrator/            # Fan-out decomposition, git worktree isolation & merge
+├── crates/mapper/                  # Text & @{path} file input sectioning and chunking
+├── crates/tools/                   # Built-in sandboxed tools (read_file, write_file, search, run_shell)
+├── crates/permission/              # Security policy (YOLO / allowlist / interactive prompter)
+├── crates/mcp/                     # Model Context Protocol client & server supervisor
+├── crates/skills/                  # SKILL.md discovery + web installer (--skills add <url>)
+├── crates/memory/                  # 5-namespace SQLite + vector storage
+├── crates/memory-pp/               # 3-Stage Prompt-Processing & Frozen Nodes engine
+├── crates/tui/                     # Interactive ratatui terminal interface with streaming
+├── crates/viz/                     # Live ASCII swarm graph renderer during fan-out
+├── crates/launcher/               # Native window launcher & Ghostty rain-on-glass shader installer
+├── crates/obsidian/                # Per-session wiki-sync of codebase to Obsidian vault
+├── crates/bus/                     # Federation Event Bus (F1) streaming over NATS
+├── crates/federation/              # Distributed Swarm (F2) JetStream queue & git-bundle transport
+├── crates/radio/                   # Procedural ambient audio engine (seeded via ~/Downloads/Mesa*)
+└── crates/companion/               # Floating 180x180 session QR beacon window
 ```
 
-## Workspace crate map
+---
 
+## 3. The Tiered Hybrid Brain
+
+<p align="center">
+  <img src="images/brain.png" alt="tiered hybrid brain architecture" width="48%">
+  <img src="images/swarm.png" alt="model-matched sub-agent swarm network" width="48%">
+</p>
+
+`entheai` allocates compute resources intelligently across three tiers based on task complexity:
+
+| Compute Tier | Provider | Primary Models | Role & Responsibilities |
+|---|---|---|---|
+| **Cloud Orchestrator** | OpenCode Zen (`https://opencode.ai/zen/v1`) | `zen/deepseek-v4-pro`, `zen/qwen3-max` | High-level planning, DAG task decomposition, architectural decisions, and edge-case resolution. |
+| **Model-Matched Coders** | OpenCode Zen / Antigravity | `zen/deepseek-v4-flash`, `zen/qwen3-coder`, `agy` | Rapid sub-agent code implementation inside isolated git worktrees. |
+| **Local Low-Latency** | Osaurus (`http://127.0.0.1:1337/v1`) | `osaurus/qwen3-coder`, local embeddings | Offline tasks, rapid code inspection, privacy-sensitive runs, and local embedding generation. |
+
+---
+
+## 4. Fan-Out Swarm & Recursive Development
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant Orchestrator as Fan-Out Orchestrator
+    participant Router as Tiered Router
+    participant Worktree as Git Worktrees
+    participant Verifier as Build & Test Gate
+    participant MainBranch as Main Branch
+
+    User->>Orchestrator: entheai --fanout "task prompt"
+    Orchestrator->>Router: Decompose into DAG nodes {role, prompt, deps}
+    Router-->>Orchestrator: Assign best model per node
+    
+    par Parallel Sub-Agent Execution
+        Orchestrator->>Worktree: Spawn Sub-Agent 1 in worktree /fanout-1
+        Orchestrator->>Worktree: Spawn Sub-Agent 2 in worktree /fanout-2
+    end
+
+    Worktree->>Worktree: Implement code & run local tools
+    Worktree->>Verifier: Run build & test check (./scripts/check.sh)
+    
+    alt Tests Pass
+        Verifier->>MainBranch: Merge patch into main
+        MainBranch-->>User: Complete & report summary
+    else Tests Fail
+        Verifier->>Worktree: Retry with error traceback (max turns)
+    end
 ```
-Cargo.toml                          # workspace root (resolver=2)
-├── bin/entheai/                    # CLI binary (macOS, full TUI)
-├── bin/entheai-worker/             # headless worker/dispatcher (--serve / --dispatch, F2)
-├── bin/entheai-launch/             # the .app executable → opens the native window
-├── crates/config/                  # TOML deserialization
-├── crates/providers/               # OpenAI-compatible client + registry
-├── crates/core/                    # Agent loop + event bus
-├── crates/router/                  # Model selection per role/task
-├── crates/orchestrator/            # Fan-out planning + git-worktree coder execution
-├── crates/mapper/                  # Task text + @{path} refs → sectioned, chunked input
-├── crates/tools/                   # Built-in tools (fs, shell, search)
-├── crates/permission/              # YOLO / allowlist / ask gate
-├── crates/mcp/                     # MCP client + supervisor (spawn servers at startup)
-├── crates/skills/                  # SKILL.md discovery + `--skills add <url>` from the web
-├── crates/memory/                  # 5-namespace SQLite + vector store
-├── crates/tui/                     # ratatui terminal UI
-├── crates/viz/                     # live swarm graph rendered during fan-out
-├── crates/launcher/               # native --app window: bundled Ghostty shader + --doctor
-├── crates/obsidian/                # per-session wiki-sync of the repo into an Obsidian vault
-├── crates/bus/                     # federation event bus (F1) — fan-out lifecycle → NATS
-├── crates/federation/              # distributed swarm (F2) — JetStream work-queue + git bundles
-├── crates/radio/                   # In-TUI music (yt-dlp + rodio, feature-gated)
-└── crates/companion/               # QR-code session beacon
+
+### Recursive Development (`agy` integration)
+When `[fanout] executor = "agy"` is configured:
+1. Every fan-out sub-agent spawns an **Antigravity CLI** process inside its dedicated git worktree.
+2. Google Antigravity agents execute using Ultra-tier reasoning models.
+3. Execution depth is guarded by `ENTHEAI_FANOUT_DEPTH <= 3` to prevent infinite recursion traps.
+
+<p align="center">
+  <img src="images/fanout.jpg" alt="fanout orchestrator fanning out into sub-agents" width="100%">
+</p>
+
+---
+
+## 5. Prompt-Processing & Frozen Nodes Engine (`crates/memory-pp`)
+
+Rather than prematurely compressing conversation history into lossy vector embeddings, `entheai` utilizes a **3-stage prompt-processing pipeline** combined with **frozen nodes**:
+
+```mermaid
+flowchart LR
+    subgraph Stage1 ["Stage 1: Experiential Store"]
+        RAW["Raw Append-Only Store\n(Transcripts, Diffs, Logs)"]
+    end
+
+    subgraph Stage2 ["Stage 2: 1-Bit Mesh Search"]
+        MESH["Ternary 1-Bit LLM Mesh\n(ultragraph-1bit)"]
+    end
+
+    subgraph Stage3 ["Stage 3: Marqant Compression"]
+        MQ["Marqant mq Compressor\n(Structure-Preserving)"]
+    end
+
+    subgraph Frozen ["Frozen Nodes Engine"]
+        ICE["Dormant Frozen Nodes\n(NixOS, Rust, GitHub, etc.)"]
+        WAKE{"Task Trigger\nMatch?"}
+        CTX["Active Context Window"]
+    end
+
+    RAW --> MESH
+    MESH --> MQ
+    MQ --> CTX
+    ICE --> WAKE
+    WAKE -- "Yes" --> CTX
+    WAKE -- "No" --> ICE
 ```
 
-Crate names use dashes (`entheai-core`); Rust modules use underscores (`entheai_core`).
+### The Frozen Nodes Concept ("Ice in Coca-Cola")
+* Domain best-practices sit dormant as Markdown units in [`frozen/`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen).
+* When a task triggers a keyword (e.g. `nixos`, `hetzner`, `ssh`), the `nixos.md` frozen node wakes up and dissolves into active context.
+* Like ice in Coca-Cola, it melts into the context without overflowing or bloating total capacity.
 
-## Tiered hybrid brain
+#### Curated Anchors:
+* **Cloud Infrastructure**: [NixOS](nixos.org) + Flakes ([`frozen/nixos.md`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/nixos.md))
+* **Version Control**: [GitHub](github.com) CI Gate ([`frozen/github.md`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/github.md))
+* **Parallel Backends**: [Rust](rust-lang.org) & [Go](go.dev) ([`frozen/rust.md`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/rust.md))
+* **Quick Devsite Tunneling**: [ngrok](ngrok.com) ([`frozen/ngrok.md`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/ngrok.md))
+* **Scripting**: [Python + JIT](python.org) / [uv](github.com/astral-sh/uv) ([`frozen/python-jit.md`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/python-jit.md))
+* **Academic Literature**: [Valyu MCP](valyu.ai) ([`frozen/valyu.md`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/valyu.md))
 
-| Tier | Provider | Use |
-|---|---|---|
-| Cloud orchestrator | DeepSeek V4 Pro (via OpenCode Zen) | Planning, decomposition, complex reasoning |
-| Cheap cloud workers | DeepSeek V4 Flash, Qwen 3.7, GLM, Kimi | Implementation, testing, docs |
-| Local | Osaurus (MLX, `127.0.0.1:1337`) | Low-latency coding, embeddings, privacy |
+---
 
-## The event bus
+## 6. NATS Federation & Sandboxed Worker Network
 
-Every agent step (thinking, tool call, tool result, build output) is published to an internal event bus. Two consumers tap it:
+<p align="center">
+  <img src="images/federation.png" alt="distributed NATS agent federation network" width="80%">
+</p>
 
-1. **Learning** — captures trajectories, scores outcomes, tunes the router
-2. **Dogfeed** — exports trajectories to a Hugging Face dataset (`PeetPedro/ultrawhale-dogfood`, opt-in)
+`entheai` features a 4-level opt-in federation pipeline over [NATS](https://nats.io) and [Tailscale](https://tailscale.com):
 
-## Memory model
+1. **F1 (Event Bus Streaming)**: Publishes fan-out step updates to `entheai.fanout.<session>.*` over NATS.
+2. **F2.1 (Distributed Work-Queue)**: JetStream queues dispatch sub-agent tasks to remote worker nodes across the tailnet using git-bundle object transport.
+3. **F2.2 (Fan-Out Offloading)**: Automatically offloads heavy coder sub-tasks to remote fleet nodes (`entheai-worker --serve`).
+4. **F2.3 (Sandboxed Worker Runtime)**: Remote execution runs in isolated Linux userland powered by **[rustybox.io](https://rustybox.io)** (100% Rust BusyBox parity, zero C code), protected by **Landlock** filesystem jails, **seccomp** syscall filters, and root privilege dropping.
 
-Two tiers, five namespaces, one `Memory` trait:
+---
 
-| Namespace | Tier | Stores |
-|---|---|---|
-| `codebase` | long-term | Symbols, call graph, ADRs (federated to MCP) |
-| `learnings` | long-term | Durable facts, preferences, solutions |
-| `trajectories` | long-term | Reasoning paths + outcomes + scores |
-| `tools` | working | Tool results, large output spillover |
-| `subagents` | working | Per-sub-agent scratch + outputs |
+## 7. Procedural Ambient Radio (`crates/radio`)
 
-Storage: local SQLite (WAL, 256 MB mmap) + vector embeddings via Osaurus. Flat cosine search below ~5k vectors; auto-HNSW above.
+`entheai-radio` provides background procedural audio generation directly inside the TUI without blocking the main event loop:
 
-## Fan-out execution
+* **Audio Engine**: Powered by `rodio` on a dedicated OS thread + `yt-dlp` for web extraction.
+* **Procedural Seed Discovery**: Scans local audio files matching `~/Downloads/Mesa*`, `~/Downloads/*Desert*`, `~/Downloads/*Psychedelic*`, `~/Downloads/*Stoner*`, `~/Downloads/*Space*`, `~/Downloads/*Metal*`, or `~/.cache/entheai/radio/*`.
+* **Non-Stop Infinite Playback**: Pseudo-randomly rotates through seed tracks, generating procedural variations (`♪ Procedural Psychedelic Metal: Track Title (Variation #N)`).
+* **Slash Commands**: `/radio procedural`, `/radio seed [pattern]`, `/radio <url_or_path>`, `/radio pause`, `/radio next`, `/radio stop`.
 
-1. Orchestrator decomposes task into a DAG of `{role, prompt, model, deps}` nodes
-2. Router picks `(provider, model)` per node based on role, budget, and learned win-rates
-3. Each `coder` node gets its own git worktree (isolated writes)
-4. Join/reduce: merge patches, resolve conflicts, build + test
-5. On success: integrate. On failure: diff for approval (unless `--yolo`)
+---
 
-## Extension points
+## 8. Ecosystem Integrations & Open Surfaces
 
-Four composable ways to extend entheai:
+<p align="center">
+  <img src="images/garden.png" alt="cyber-garden fractal lattice" width="48%">
+  <img src="images/quantum.png" alt="quantum wave interference" width="48%">
+</p>
 
-| Mechanism | Format | Example |
-|---|---|---|
-| **Native tools** | Rust `Tool` trait | `read_file`, `run_shell`, `search` |
-| **Skills** | Claude-Code `SKILL.md` packs | superpowers, caveman, BMAD |
-| **Plugins** | Managed external CLIs | `hcloud`, `doctl`, `aws` (Homebrew provisioned) |
-| **MCP servers** | MCP protocol (stdio/HTTP) | codebase-memory-mcp (bundled) |
+`entheai` is part of a broader sovereign-intelligence garden:
 
-## Platform
+* **[rustybox.io](https://rustybox.io)** — 100% Rust-native BusyBox/Coreutils userland (zero C code).
+* **[vaked-base](https://github.com/peterlodri-sec/vaked-base)** — Sovereign base OS & tool definitions.
+* **[pocoo.vaked.dev](https://pocoo.vaked.dev)** — Foundational architecture essays & research notes.
+* **[riva.vaked.dev](https://riva.vaked.dev)** — Stream knowledge ingestion.
+* **[PeetPedro Hugging Face](https://huggingface.co/PeetPedro)** — Model checkpoints, `ultrawhale-dogfood` dataset, and compression evaluation spaces.
 
-- **Main binary:** macOS 15.5+, Apple Silicon only. Uses Metal, Seatbelt, Kitty graphics protocol. Needs Ghostty / Kitty / WezTerm.
-- **Worker:** Portable — any OS with Tailscale. Headless, no TUI/viz.
-- **Sidecars:** Osaurus (MLX inference, `:1337`), Sonar (crash monitor), codebase-memory-mcp (code graph, `:9749`).
+---
 
-## Performance
+## 9. Detailed Specifications & Design Documents
 
-- Release builds: `opt-level=3`, `lto="fat"`, `codegen-units=1`, `target-cpu=native`
-- `mimalloc` global allocator on macOS
-- `panic="unwind"` — sub-agent tokio-task panics must stay catchable
-- Hot paths: agent loop, vector search, fan-out scheduler, Kitty render loop
+For deep-dive specifications on individual architectural components, consult the documents in [`docs/superpowers/specs/`](specs/):
+
+* [Hybrid Coding Agent Core Spec](specs/2026-07-18-entheai-hybrid-coding-agent-design.md)
+* [Companion Session Beacon Spec](specs/2026-07-18-entheai-companion-design.md)
+* [Prompt-Processing & 1-Bit Mesh Spec](specs/2026-07-22-prompt-processing-design.md)
+* [Frozen Nodes Architecture Spec](specs/2026-07-22-frozen-nodes-design.md)
+* [Rustybox Sandboxed Worker Spec](specs/2026-07-22-rustybox-workers-design.md)
+* [ADK Rust Core Migration Spec](specs/2026-07-22-adk-rust-core-migration-design.md)
