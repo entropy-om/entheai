@@ -34,6 +34,9 @@ impl Tool for RunShell {
     fn name(&self) -> &str {
         "run_shell"
     }
+    fn tier(&self) -> entheai_permission::Tier {
+        entheai_permission::Tier::Exec
+    }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "function",

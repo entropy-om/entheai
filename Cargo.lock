@@ -1566,6 +1566,7 @@ name = "entheai-permission"
 version = "0.2.1"
 dependencies = [
  "async-trait",
+ "log",
  "tokio",
 ]
 
@@ -1637,6 +1638,7 @@ name = "entheai-tools"
 version = "0.2.1"
 dependencies = [
  "async-trait",
+ "entheai-permission",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",

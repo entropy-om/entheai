@@ -105,24 +105,35 @@ impl crate::CoderExecutor for AgyExecutor {
         task: &str,
     ) -> Option<String> {
         let prompt = coder_prompt(role, task, self.depth);
-        // Run agy in the coder's worktree. `--sandbox` restricts terminal side
-        // effects; `--dangerously-skip-permissions` lets it edit files
-        // non-interactively (bounded by the sandbox + the worktree). The depth env
-        // is incremented so any nested entheai/agy sees the deeper layer.
-        let out = tokio::process::Command::new("agy")
-            .arg("-p")
+        let mode = std::env::var("ENTHEAI_MODE")
+            .ok()
+            .map(|s| entheai_permission::Mode::parse(&s))
+            .unwrap_or(entheai_permission::Mode::Auto);
+        let skip_permissions = mode.ceiling() == entheai_permission::Tier::Spawn;
+
+        let mut cmd = tokio::process::Command::new("agy");
+        cmd.arg("-p")
             .arg(&prompt)
             .arg("--model")
             .arg(&self.model)
-            .arg("--sandbox")
-            .arg("--dangerously-skip-permissions")
-            .arg("--print-timeout")
+            .arg("--sandbox");
+        if skip_permissions {
+            cmd.arg("--dangerously-skip-permissions");
+        }
+        cmd.arg("--print-timeout")
             .arg("10m")
             .current_dir(worktree_path)
             .env(DEPTH_ENV, (self.depth + 1).to_string())
-            .output()
-            .await
-            .ok()?;
+            .env(
+                "ENTHEAI_MODE",
+                match mode {
+                    entheai_permission::Mode::Plan => "plan",
+                    entheai_permission::Mode::Auto => "auto",
+                    entheai_permission::Mode::Yolo => "yolo",
+                    entheai_permission::Mode::Ask => "ask",
+                },
+            );
+        let out = cmd.output().await.ok()?;
         if !out.status.success() {
             log::warn!("agy coder (layer {}, {role}) failed → local fallback", self.depth);
             return None;

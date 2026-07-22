@@ -115,14 +115,26 @@ impl entheai_permission::Prompter for AutoAllow {
     }
 }
 
-/// Build the fan-out sub-agent/coder permission policy from config. Fan-out
-/// runs are unattended, so approval is driven by `[permission].fanout_auto_approve`
-/// (default true) plus the shared `[permission].allowlist`.
+/// A Policy for an unattended subagent: auto-approve tools at or below the parent's
+/// tier ceiling, deny above (never Ask — subagents can't prompt).
+pub fn ceiling_policy(parent: entheai_permission::Mode) -> entheai_permission::Policy {
+    entheai_permission::Policy::with_ceiling(parent.ceiling())
+}
+
+/// Build the fan-out sub-agent/coder permission policy from config and environment.
 fn fanout_policy(config: &Config) -> entheai_permission::Policy {
-    entheai_permission::Policy::new(
-        config.permission.fanout_auto_approve,
-        config.permission.allowlist.clone(),
-    )
+    let mode = if !config.fanout.mode.is_empty() {
+        entheai_permission::Mode::parse(&config.fanout.mode)
+    } else if let Ok(s) = std::env::var("ENTHEAI_MODE") {
+        entheai_permission::Mode::parse(&s)
+    } else if config.permission.yolo {
+        entheai_permission::Mode::Yolo
+    } else if !config.permission.fanout_auto_approve {
+        entheai_permission::Mode::Plan
+    } else {
+        entheai_permission::Mode::Auto
+    };
+    ceiling_policy(mode)
 }
 
 /// Read-only tool set for sub-agents (no writes/shell → safe to run in parallel
@@ -892,10 +904,16 @@ mod tests {
 
     #[test]
     fn fanout_policy_follows_config() {
-        let yolo = Config::from_toml_str("").unwrap(); // fanout_auto_approve defaults true
-        assert!(fanout_policy(&yolo).is_yolo());
+        let default_cfg = Config::from_toml_str("").unwrap();
+        let p = fanout_policy(&default_cfg);
+        // Default mode is Auto -> Exec ceiling (allows Exec, denies Network)
+        assert_eq!(p.decide_tiered("run_shell", entheai_permission::Tier::Exec), entheai_permission::Decision::Allow);
+        assert_eq!(p.decide_tiered("fetch", entheai_permission::Tier::Network), entheai_permission::Decision::Deny);
+
         let strict = Config::from_toml_str("[permission]\nfanout_auto_approve = false\n").unwrap();
-        assert!(!fanout_policy(&strict).is_yolo());
+        let sp = fanout_policy(&strict);
+        // fanout_auto_approve = false -> Plan mode (denies Exec)
+        assert_eq!(sp.decide_tiered("run_shell", entheai_permission::Tier::Exec), entheai_permission::Decision::Deny);
     }
 
     #[test]
@@ -1197,5 +1215,16 @@ mod tests {
         );
         assert!(!report.contains("integrated ✓"), "report:\n{report}");
         assert!(report.contains("No changes were integrated."));
+    }
+
+    #[test]
+    fn ceiling_policy_denies_above_the_parent_ceiling() {
+        use entheai_permission::{Decision, Tier};
+        let p = ceiling_policy(entheai_permission::Mode::Plan); // Read ceiling
+        assert_eq!(p.decide_tiered("read_file", Tier::Read), Decision::Allow);
+        assert_eq!(p.decide_tiered("run_shell", Tier::Exec), Decision::Deny);
+        let a = ceiling_policy(entheai_permission::Mode::Auto); // Exec ceiling
+        assert_eq!(a.decide_tiered("run_shell", Tier::Exec), Decision::Allow);
+        assert_eq!(a.decide_tiered("fetch", Tier::Network), Decision::Deny);
     }
 }

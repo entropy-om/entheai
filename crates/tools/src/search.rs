@@ -34,6 +34,9 @@ impl Tool for Search {
     fn name(&self) -> &str {
         "search"
     }
+    fn tier(&self) -> entheai_permission::Tier {
+        entheai_permission::Tier::Read
+    }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "function",

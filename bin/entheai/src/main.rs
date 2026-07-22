@@ -191,7 +191,25 @@ async fn main() -> anyhow::Result<()> {
     } else {
         agent
     };
-    let policy = entheai_permission::Policy::new(yolo, cfg.permission.allowlist.clone());
+    let mut policy = entheai_permission::Policy::new(yolo, cfg.permission.allowlist.clone());
+    let mode = if yolo {
+        entheai_permission::Mode::Yolo
+    } else {
+        entheai_permission::Mode::parse(&cfg.permission.mode)
+    };
+    policy.set_mode(mode);
+    for (t, p_str) in &cfg.permission.pins {
+        let pin = match p_str.trim().to_ascii_lowercase().as_str() {
+            "always_allow" | "allow" => entheai_permission::Pin::AlwaysAllow,
+            "always_ask" | "ask" => entheai_permission::Pin::AlwaysAsk,
+            "never" | "deny" => entheai_permission::Pin::Never,
+            _ => {
+                log::warn!("unknown pin {p_str:?} for tool {t}; ignoring");
+                continue;
+            }
+        };
+        policy.pin(t, pin);
+    }
 
     // Shared memory store (open before any agent run so the DB + parent dir exist
     // even when the model call fails) + a session id for scoping.

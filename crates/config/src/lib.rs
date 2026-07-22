@@ -121,6 +121,9 @@ pub struct FanoutConfig {
     /// Model the "agy" executor runs fan-out coders on.
     #[serde(default = "default_agy_model")]
     pub agy_model: String,
+    /// Per-run mode override for fan-out sub-agents ("" = inherit parent ceiling).
+    #[serde(default)]
+    pub mode: String,
 }
 
 impl Default for FanoutConfig {
@@ -130,6 +133,7 @@ impl Default for FanoutConfig {
             coder_timeout_secs: default_coder_timeout_secs(),
             executor: default_fanout_executor(),
             agy_model: default_agy_model(),
+            mode: String::new(),
         }
     }
 }
@@ -338,9 +342,16 @@ pub struct PermissionConfig {
     pub allowlist: Vec<String>,
     #[serde(default = "default_fanout_auto_approve")]
     pub fanout_auto_approve: bool,
+    #[serde(default = "default_permission_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub pins: HashMap<String, String>,
 }
 fn default_fanout_auto_approve() -> bool {
     true
+}
+fn default_permission_mode() -> String {
+    "ask".into()
 }
 impl Default for PermissionConfig {
     fn default() -> Self {
@@ -348,6 +359,8 @@ impl Default for PermissionConfig {
             yolo: false,
             allowlist: Vec::new(),
             fanout_auto_approve: default_fanout_auto_approve(),
+            mode: default_permission_mode(),
+            pins: HashMap::new(),
         }
     }
 }
@@ -770,6 +783,15 @@ mod tests {
             toml::from_str("[federation]\nmax_concurrent_coders = 16\n").unwrap();
         assert_eq!(cfg.federation.base_cache_count(), 16 * 2 + 4);
         assert!(cfg.federation.base_cache_count() > cfg.federation.max_concurrent_coders);
+    }
+
+    #[test]
+    fn permission_mode_and_pins_parse() {
+        let cfg = Config::from_toml_str(
+            "[permission]\nmode = \"auto\"\npins = { run_shell = \"always_ask\" }\n",
+        ).unwrap();
+        assert_eq!(cfg.permission.mode, "auto");
+        assert_eq!(cfg.permission.pins.get("run_shell").map(String::as_str), Some("always_ask"));
     }
 }
 

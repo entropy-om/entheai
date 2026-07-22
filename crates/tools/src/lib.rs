@@ -31,6 +31,9 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn schema(&self) -> serde_json::Value;
     async fn call(&self, args: serde_json::Value) -> Result<String, ToolError>;
+    fn tier(&self) -> entheai_permission::Tier {
+        entheai_permission::Tier::Exec
+    }
 }
 
 #[derive(Default)]
@@ -200,5 +203,17 @@ mod tests {
             .unwrap();
         assert!(out.contains("a.txt"));
         assert!(out.contains("NEEDLE here"));
+    }
+
+    #[test]
+    fn builtin_tools_declare_expected_tiers() {
+        use entheai_permission::Tier;
+        let root = std::path::Path::new("/tmp");
+        assert_eq!(ReadFile::new(root).tier(), Tier::Read);
+        assert_eq!(crate::fs::WriteFile::new(root).tier(), Tier::Write);
+        assert_eq!(crate::fs::EditFile::new(root).tier(), Tier::Write);
+        assert_eq!(crate::search::Search::new(root).tier(), Tier::Read);
+        assert_eq!(crate::shell::RunShell::new(root).tier(), Tier::Exec);
+        assert_eq!(crate::todo::TodoTool.tier(), Tier::Read);
     }
 }

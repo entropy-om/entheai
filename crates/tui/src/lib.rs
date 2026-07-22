@@ -255,6 +255,10 @@ struct App {
     osaurus_up: bool,
     /// Model IDs reported by Osaurus via GET /v1/models.
     osaurus_models: Vec<String>,
+    /// Shared permission mode.
+    mode: entheai_permission::Mode,
+    /// Shared Policy reference.
+    policy: Arc<Policy>,
 }
 
 /// Probes the local Osaurus (OpenAI-compatible) endpoint for connectivity and served models.
@@ -441,6 +445,9 @@ async fn event_loop<P: Provider + 'static>(
         .map(|p| p.base_url.clone())
         .unwrap_or_else(|| "http://127.0.0.1:1337/v1".to_string());
 
+    let mode = entheai_permission::Mode::parse(&config.permission.mode);
+    policy.set_mode(mode);
+
     let mut app = App {
         messages: Vec::new(),
         input: String::new(),
@@ -473,6 +480,8 @@ async fn event_loop<P: Provider + 'static>(
         osaurus_base_url,
         osaurus_up: false,
         osaurus_models: Vec::new(),
+        mode,
+        policy: Arc::clone(&policy),
     };
 
     // Background music player (yt-dlp + rodio); one per TUI session.
@@ -1001,9 +1010,27 @@ fn swarm_rows_for(enabled: bool, model: &entheai_viz::SwarmModel, cap: u16) -> u
     }
 }
 
+fn mode_label(mode: entheai_permission::Mode) -> &'static str {
+    match mode {
+        entheai_permission::Mode::Plan => "plan",
+        entheai_permission::Mode::Auto => "auto",
+        entheai_permission::Mode::Yolo => "yolo",
+        entheai_permission::Mode::Ask => "ask",
+    }
+}
+
 /// Map a key press to an [`Action`], mutating input/scroll/modal state as needed.
 fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     if key.kind != KeyEventKind::Press {
+        return Action::None;
+    }
+
+    if key.code == KeyCode::BackTab
+        || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
+    {
+        app.mode = app.mode.next();
+        app.policy.set_mode(app.mode);
+        app.notice = Some(format!("mode: {}", mode_label(app.mode)));
         return Action::None;
     }
 
@@ -1927,6 +1954,17 @@ fn status_line(app: &App) -> Line<'static> {
     }
     status_spans.push(Span::raw(" · "));
     status_spans.push(Span::styled(state, Style::default().fg(Color::Yellow)));
+    let (mode_str, mode_color) = match app.mode {
+        entheai_permission::Mode::Plan => ("plan", Color::Cyan),
+        entheai_permission::Mode::Auto => ("auto", Color::Green),
+        entheai_permission::Mode::Yolo => ("yolo", Color::Red),
+        entheai_permission::Mode::Ask => ("ask", Color::Yellow),
+    };
+    status_spans.push(Span::raw(" · "));
+    status_spans.push(Span::styled(
+        format!("mode: {mode_str}"),
+        Style::default().fg(mode_color),
+    ));
     if let Some(title) = &app.now_playing {
         status_spans.push(Span::raw(" · "));
         status_spans.push(Span::styled(
@@ -2240,6 +2278,8 @@ mod tests {
             osaurus_base_url: "http://127.0.0.1:1337/v1".into(),
             osaurus_up: false,
             osaurus_models: Vec::new(),
+            mode: entheai_permission::Mode::Ask,
+            policy: Arc::new(Policy::new(false, Vec::new())),
         }
     }
 
@@ -2614,6 +2654,8 @@ mod tests {
             osaurus_base_url: "http://127.0.0.1:1337/v1".into(),
             osaurus_up: false,
             osaurus_models: Vec::new(),
+            mode: entheai_permission::Mode::Ask,
+            policy: Arc::new(Policy::new(false, Vec::new())),
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -2657,6 +2699,8 @@ mod tests {
             osaurus_base_url: "http://127.0.0.1:1337/v1".into(),
             osaurus_up: false,
             osaurus_models: Vec::new(),
+            mode: entheai_permission::Mode::Ask,
+            policy: Arc::new(Policy::new(false, Vec::new())),
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -2698,6 +2742,8 @@ mod tests {
             osaurus_base_url: "http://127.0.0.1:1337/v1".into(),
             osaurus_up: false,
             osaurus_models: Vec::new(),
+            mode: entheai_permission::Mode::Ask,
+            policy: Arc::new(Policy::new(false, Vec::new())),
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -2794,6 +2840,8 @@ mod tests {
             osaurus_base_url: "http://127.0.0.1:1337/v1".into(),
             osaurus_up: false,
             osaurus_models: Vec::new(),
+            mode: entheai_permission::Mode::Ask,
+            policy: Arc::new(Policy::new(false, Vec::new())),
         };
         handle_workers_command(&mut app, "/workers list");
         assert!(app
@@ -2838,6 +2886,8 @@ mod tests {
             osaurus_base_url: "http://127.0.0.1:1337/v1".into(),
             osaurus_up: false,
             osaurus_models: Vec::new(),
+            mode: entheai_permission::Mode::Ask,
+            policy: Arc::new(Policy::new(false, Vec::new())),
         };
         handle_radio_event(
             &mut app,

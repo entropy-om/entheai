@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+entheai-permission = { path = "../permission" }
 serde_json.workspace = true
 thiserror = { workspace = true }
 async-trait.workspace = true

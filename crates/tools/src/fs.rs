@@ -73,6 +73,9 @@ impl Tool for ReadFile {
     fn name(&self) -> &str {
         "read_file"
     }
+    fn tier(&self) -> entheai_permission::Tier {
+        entheai_permission::Tier::Read
+    }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "function",
@@ -113,6 +116,9 @@ impl WriteFile {
 impl Tool for WriteFile {
     fn name(&self) -> &str {
         "write_file"
+    }
+    fn tier(&self) -> entheai_permission::Tier {
+        entheai_permission::Tier::Write
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -157,6 +163,9 @@ impl EditFile {
 impl Tool for EditFile {
     fn name(&self) -> &str {
         "edit_file"
+    }
+    fn tier(&self) -> entheai_permission::Tier {
+        entheai_permission::Tier::Write
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({

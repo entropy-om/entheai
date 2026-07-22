@@ -49,6 +49,9 @@ impl Tool for TodoTool {
     fn name(&self) -> &str {
         "todo"
     }
+    fn tier(&self) -> entheai_permission::Tier {
+        entheai_permission::Tier::Read
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type":"function",

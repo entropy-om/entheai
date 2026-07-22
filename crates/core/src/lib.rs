@@ -295,7 +295,11 @@ impl<P: Provider> Agent<P> {
             });
         }
 
-        let allowed = match policy.decide(name) {
+        let tier = registry
+            .get(name)
+            .map(|t| t.tier())
+            .unwrap_or(entheai_permission::Tier::Exec);
+        let allowed = match policy.decide_tiered(name, tier) {
             Decision::Allow => true,
             Decision::Deny => false,
             Decision::Ask => match prompter.confirm(name, &call.function.arguments).await {
@@ -911,6 +915,94 @@ mod tests {
             calls.load(std::sync::atomic::Ordering::SeqCst),
             1,
             "second echo must not re-prompt"
+        );
+    }
+
+    struct ReadTool;
+    #[async_trait]
+    impl Tool for ReadTool {
+        fn name(&self) -> &str {
+            "read_tool"
+        }
+        fn tier(&self) -> entheai_permission::Tier {
+            entheai_permission::Tier::Read
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type":"function","function":{"name":"read_tool","parameters":{"type":"object","properties":{}}}})
+        }
+        async fn call(&self, _args: serde_json::Value) -> Result<String, entheai_tools::ToolError> {
+            Ok("read_data".into())
+        }
+    }
+
+    struct WriteTool;
+    #[async_trait]
+    impl Tool for WriteTool {
+        fn name(&self) -> &str {
+            "write_tool"
+        }
+        fn tier(&self) -> entheai_permission::Tier {
+            entheai_permission::Tier::Write
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type":"function","function":{"name":"write_tool","parameters":{"type":"object","properties":{}}}})
+        }
+        async fn call(&self, _args: serde_json::Value) -> Result<String, entheai_tools::ToolError> {
+            Ok("wrote".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_mode_denies_writes_but_allows_reads() {
+        let provider = RecordingProvider {
+            seen: Mutex::new(Vec::new()),
+            responses: Mutex::new(vec![
+                AssistantResponse {
+                    content: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: "call_1".into(),
+                        kind: "function".into(),
+                        function: FunctionCall {
+                            name: "read_tool".into(),
+                            arguments: "{}".into(),
+                        },
+                    }],
+                },
+                AssistantResponse {
+                    content: "final answer".into(),
+                    tool_calls: vec![],
+                },
+            ]),
+        };
+        let agent = Agent::new(provider, "m".into());
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ReadTool));
+        registry.register(Box::new(WriteTool));
+        let policy = Policy::with_mode(entheai_permission::Mode::Plan);
+        let mut prompter = AllowAll;
+
+        let answer = agent
+            .run_task(
+                vec![ChatMessage::user("do it")],
+                &registry,
+                &policy,
+                &mut prompter,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer, "final answer");
+
+        let seen = agent.provider.seen.lock().unwrap();
+        let second_call_messages = &seen[1];
+        let tool_msg = second_call_messages
+            .iter()
+            .find(|m| m.role == "tool")
+            .expect("expected a tool-result message");
+        assert!(
+            tool_msg.content.contains("read_data"),
+            "plan mode must allow read_tool, got: {}",
+            tool_msg.content
         );
     }
 }

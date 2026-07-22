@@ -47,6 +47,12 @@ max_parallel = 4                         # cap on concurrently-running sub-agent
 # Optional: verify each coder's worktree before integrating its changes.
 # [fanout]
 # verify = "cargo test"
+# mode = ""                         # "" = inherit parent ceiling; else override: plan | auto | yolo | ask
+
+# ── Permission posture + per-tool pins ─────────────────────────────────────────
+[permission]
+mode = "ask"                      # startup default: plan | auto | yolo | ask
+# pins = { run_shell = "always_ask", read_file = "always_allow" }
 
 # ── TUI visualization ─────────────────────────────────────────────────────────
 # [viz]

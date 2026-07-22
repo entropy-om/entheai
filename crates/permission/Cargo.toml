@@ -6,4 +6,5 @@ rust-version.workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
+log = "0.4"
 tokio = { workspace = true, features = ["rt"] }
