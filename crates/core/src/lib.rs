@@ -26,7 +26,12 @@ pub enum AgentEvent {
     ToolFinished { name: String, result: String },
     /// A text delta streamed live from the model.
     Token(String),
+    /// A frozen node was woken and activated.
+    FrozenWoke { name: String },
 }
+
+/// Deadline for activating a frozen node (500 ms).
+const FROZEN_ACTIVATE_DEADLINE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Where streamed tokens go (stdout in the CLI, the TUI later).
 pub trait TokenSink {
@@ -200,6 +205,23 @@ impl<P: Provider> Agent<P> {
                         if mem.config().strict {
                             return Err(CoreError::Memory(e.to_string()));
                         }
+                    }
+                }
+            }
+        }
+
+        // PP frozen-node wake/activate: runs unconditionally on `pp` regardless
+        // of whether `memory` is `Some`.
+        if let Some(p) = pp {
+            if let Some(user_idx) = messages.iter().rposition(|m| m.role == "user") {
+                let user_msg = messages[user_idx].content.clone();
+                for node in p.wake_frozen(&user_msg, 1) {
+                    let brief = p.activate_frozen(&node, FROZEN_ACTIVATE_DEADLINE).await;
+                    messages.insert(user_idx, ChatMessage::system(brief));
+                    if let Some(tx) = &events {
+                        let _ = tx.send(AgentEvent::FrozenWoke {
+                            name: node.name.clone(),
+                        });
                     }
                 }
             }
