@@ -7,8 +7,10 @@
 //! See docs/superpowers/specs/2026-07-22-prompt-processing-design.md.
 
 mod error;
+mod raw_store;
 
 pub use error::PpError;
+pub use raw_store::{RawContent, RawKind, RawSpan, RawStore};
 
 /// Which retrieval implementation `run_task_with_memory` dispatches to.
 /// `TopK` is today's behaviour; the default guarantees "off unless set".
