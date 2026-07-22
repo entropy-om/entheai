@@ -261,6 +261,8 @@ struct App {
     mode: entheai_permission::Mode,
     /// Shared Policy reference.
     policy: Arc<Policy>,
+    /// Selected index in the slash commands menu, if any.
+    slash_index: Option<usize>,
 }
 
 /// Probes the local Osaurus (OpenAI-compatible) endpoint for connectivity and served models.
@@ -490,6 +492,7 @@ async fn event_loop<P: Provider + 'static>(
         osaurus_models: Vec::new(),
         mode,
         policy: Arc::clone(&policy),
+        slash_index: None,
     };
 
     // Background music player (yt-dlp + rodio); one per TUI session.
@@ -1150,7 +1153,55 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         // Bare `q` quits only when idle AND the input is empty, so a chat message
         // can still contain the letter q.
         KeyCode::Char('q') if idle && app.input.is_empty() => return Action::Quit,
+        KeyCode::Up if app.input.starts_with('/') => {
+            let matches = slash_matches(&app.input);
+            if !matches.is_empty() {
+                app.slash_index = Some(match app.slash_index {
+                    Some(idx) => {
+                        if idx == 0 {
+                            matches.len() - 1
+                        } else {
+                            idx - 1
+                        }
+                    }
+                    None => matches.len() - 1,
+                });
+            }
+        }
+        KeyCode::Down if app.input.starts_with('/') => {
+            let matches = slash_matches(&app.input);
+            if !matches.is_empty() {
+                app.slash_index = Some(match app.slash_index {
+                    Some(idx) => (idx + 1) % matches.len(),
+                    None => 0,
+                });
+            }
+        }
+        KeyCode::Right if app.input.starts_with('/') && app.slash_index.is_some() => {
+            let matches = slash_matches(&app.input);
+            if let Some(idx) = app.slash_index {
+                if idx < matches.len() {
+                    let (cmd, _) = matches[idx];
+                    app.input = format!("{cmd} ");
+                    app.slash_index = None;
+                }
+            }
+        }
+        KeyCode::Left if app.input.starts_with('/') && app.slash_index.is_some() => {
+            app.slash_index = None;
+        }
         KeyCode::Enter => {
+            if app.input.starts_with('/') {
+                let matches = slash_matches(&app.input);
+                if let Some(idx) = app.slash_index {
+                    if idx < matches.len() {
+                        let (cmd, _) = matches[idx];
+                        app.input = format!("{cmd} ");
+                        app.slash_index = None;
+                        return Action::None;
+                    }
+                }
+            }
             let trimmed = app.input.trim();
             // Commands safe to run mid-flight (read-only or run-management). The
             // state-mutating ones (/clear, /fanout, /quit) stay idle-only.
@@ -1166,20 +1217,28 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             }
         }
         // Tab completes the slash-command name (while the command name is still
-        // being typed — not once args have started). Only completes when there
-        // is exactly one unambiguous match, so ambiguous prefixes (/f for
-        // /fanout or /fleet) do nothing — the user types more chars first.
-        KeyCode::Tab if app.input.starts_with('/') && !app.input.trim().contains(' ') => {
+        // being typed — not once args have started).
+        KeyCode::Tab if app.input.starts_with('/') => {
             let matches = slash_matches(&app.input);
-            if matches.len() == 1 {
+            if let Some(idx) = app.slash_index {
+                if idx < matches.len() {
+                    let (cmd, _) = matches[idx];
+                    app.input = format!("{cmd} ");
+                    app.slash_index = None;
+                }
+            } else if matches.len() == 1 {
                 let (cmd, _) = matches[0];
                 app.input = format!("{cmd} ");
             }
         }
         KeyCode::Backspace => {
             app.input.pop();
+            app.slash_index = None;
         }
-        KeyCode::Char(ch) => app.input.push(ch),
+        KeyCode::Char(ch) => {
+            app.input.push(ch);
+            app.slash_index = None;
+        }
         KeyCode::PageUp => {
             app.follow = false;
             app.scroll = app.scroll.saturating_sub(5);
@@ -1189,7 +1248,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             app.scroll = app.scroll.saturating_sub(1);
         }
         KeyCode::PageDown => app.scroll = app.scroll.saturating_add(5),
-        KeyCode::Down => app.scroll = app.scroll.saturating_add(1),
+        KeyCode::Down => {
+            app.follow = false;
+            app.scroll = app.scroll.saturating_add(1);
+        }
         _ => {}
     }
 
@@ -2136,18 +2198,27 @@ fn render_slash_menu(frame: &mut Frame, app: &App, input_area: Rect) {
     }
     let lines: Vec<Line<'static>> = matches
         .iter()
-        .map(|(cmd, desc)| {
+        .enumerate()
+        .map(|(idx, (cmd, desc))| {
+            let is_selected = app.slash_index == Some(idx);
+            let cmd_style = if is_selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD)
+            };
+            let desc_style = if is_selected {
+                Style::default().fg(Color::Black).bg(Color::Magenta)
+            } else {
+                Style::default().add_modifier(Modifier::DIM)
+            };
             Line::from(vec![
-                Span::styled(
-                    format!(" {cmd} "),
-                    Style::default()
-                        .fg(Color::Magenta)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    (*desc).to_string(),
-                    Style::default().add_modifier(Modifier::DIM),
-                ),
+                Span::styled(format!(" {cmd} "), cmd_style),
+                Span::styled(format!(" - {} ", desc), desc_style),
             ])
         })
         .collect();
@@ -2270,6 +2341,59 @@ mod tests {
     }
 
     #[test]
+    fn test_slash_menu_navigation() {
+        let mut app = test_app();
+        app.input = "/".to_string();
+        assert_eq!(app.slash_index, None);
+
+        // Down key selects first match (index 0)
+        let key_down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+        handle_key(&mut app, key_down);
+        assert_eq!(app.slash_index, Some(0));
+
+        // Up key loops back to last match
+        let key_up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        handle_key(&mut app, key_up);
+        assert_eq!(app.slash_index, Some(SLASH_COMMANDS.len() - 1));
+
+        // Down key wraps around back to 0
+        handle_key(&mut app, key_down);
+        assert_eq!(app.slash_index, Some(0));
+
+        // Right key selects / autocompletes the highlighted command
+        let key_right = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+        handle_key(&mut app, key_right);
+        assert_eq!(app.input, format!("{} ", SLASH_COMMANDS[0].0));
+        assert_eq!(app.slash_index, None);
+
+        // Backspace or char resets selection
+        app.input = "/w".to_string();
+        handle_key(&mut app, key_down); // select /workers
+        assert_eq!(app.slash_index, Some(0));
+
+        let key_char = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE);
+        handle_key(&mut app, key_char);
+        assert_eq!(app.slash_index, None);
+        assert_eq!(app.input, "/wo");
+
+        // Left key deselects
+        handle_key(&mut app, key_down); // select /workers
+        assert_eq!(app.slash_index, Some(0));
+        let key_left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
+        handle_key(&mut app, key_left);
+        assert_eq!(app.slash_index, None);
+
+        // Enter key autocompletes if selected
+        handle_key(&mut app, key_down); // select /workers
+        assert_eq!(app.slash_index, Some(0));
+        let key_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let action = handle_key(&mut app, key_enter);
+        assert_eq!(app.input, "/workers ");
+        assert_eq!(app.slash_index, None);
+        assert!(matches!(action, Action::None)); // not submitted yet
+    }
+
+    #[test]
     fn render_fleet_shows_real_presence_fields() {
         use entheai_federation::{WorkerPresence, WorkerState};
         assert_eq!(render_fleet(&[]), "fleet · no workers responding");
@@ -2333,6 +2457,7 @@ mod tests {
             osaurus_models: Vec::new(),
             mode: entheai_permission::Mode::Ask,
             policy: Arc::new(Policy::new(false, Vec::new())),
+            slash_index: None,
         }
     }
 
@@ -2718,6 +2843,7 @@ mod tests {
             osaurus_models: Vec::new(),
             mode: entheai_permission::Mode::Ask,
             policy: Arc::new(Policy::new(false, Vec::new())),
+            slash_index: None,
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -2763,6 +2889,7 @@ mod tests {
             osaurus_models: Vec::new(),
             mode: entheai_permission::Mode::Ask,
             policy: Arc::new(Policy::new(false, Vec::new())),
+            slash_index: None,
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -2806,6 +2933,7 @@ mod tests {
             osaurus_models: Vec::new(),
             mode: entheai_permission::Mode::Ask,
             policy: Arc::new(Policy::new(false, Vec::new())),
+            slash_index: None,
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -2904,6 +3032,7 @@ mod tests {
             osaurus_models: Vec::new(),
             mode: entheai_permission::Mode::Ask,
             policy: Arc::new(Policy::new(false, Vec::new())),
+            slash_index: None,
         };
         handle_workers_command(&mut app, "/workers list");
         assert!(app
@@ -2950,6 +3079,7 @@ mod tests {
             osaurus_models: Vec::new(),
             mode: entheai_permission::Mode::Ask,
             policy: Arc::new(Policy::new(false, Vec::new())),
+            slash_index: None,
         };
         handle_radio_event(
             &mut app,
