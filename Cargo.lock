@@ -1363,6 +1363,7 @@ dependencies = [
  "entheai-launcher",
  "entheai-mcp",
  "entheai-memory",
+ "entheai-memory-pp",
  "entheai-obsidian",
  "entheai-orchestrator",
  "entheai-permission",

@@ -256,6 +256,16 @@ async fn main() -> anyhow::Result<()> {
                 let runtime = shared_memory.clone().map(|m| {
                     entheai_memory::MemoryRuntime::new(m, memory_runtime_config(&cfg.memory))
                 });
+                let pp = build_prompt_processor(&cfg)?;
+                if let Some(p) = &pp {
+                    let retention = cfg
+                        .memory
+                        .prompt_processing
+                        .as_ref()
+                        .map(|c| c.raw_retention_days)
+                        .unwrap_or(90);
+                    p.prune(retention).await;
+                }
                 let scope = entheai_memory::MemoryScope {
                     session_id: session_id.clone(),
                     task_id: "oneshot".to_string(),
@@ -270,7 +280,7 @@ async fn main() -> anyhow::Result<()> {
                         &mut prompter,
                         None,
                         runtime.as_ref(),
-                        None, // pp — wired in Task 8
+                        pp.as_ref(),
                         scope,
                     )
                     .await?;
@@ -491,6 +501,37 @@ fn build_memory(cfg: &Config) -> anyhow::Result<Option<entheai_memory::SharedMem
         overfetch: cfg.memory.recall_overfetch,
     });
     Ok(Some(std::sync::Arc::new(store)))
+}
+
+/// Build the prompt-processing pipeline when `[memory] mode = "prompt-processing"`
+/// and memory is enabled. Slice 1 uses the in-process stubs (StubMesh /
+/// StubMarqant) — retrieval always falls back to top-K, but the raw tier ingests
+/// live. Returns `None` for the default `topk` mode. Mirrors `build_memory`.
+fn build_prompt_processor(
+    cfg: &Config,
+) -> anyhow::Result<Option<entheai_memory_pp::PromptProcessor>> {
+    use entheai_memory_pp::{PromptProcessor, RawStore, RetrievalMode, StubMarqant, StubMesh};
+
+    if !cfg.memory.enabled
+        || RetrievalMode::parse(&cfg.memory.mode) != RetrievalMode::PromptProcessing
+    {
+        return Ok(None);
+    }
+    let pc = cfg.memory.prompt_processing.clone().unwrap_or_default();
+    let path = expand_home(&pc.raw_path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let raw = RawStore::open(&path)?;
+    let pp = PromptProcessor::new(
+        raw,
+        Box::new(StubMesh),    // Slice 2: stdio-JSON-RPC sidecar client
+        Box::new(StubMarqant), // Slice 2: `mq compress --semantic` subprocess
+        std::time::Duration::from_millis(pc.search_deadline_ms),
+        pc.recall_k,
+        pc.max_ingest_bytes,
+    );
+    Ok(Some(pp))
 }
 
 /// Inspect the memory store and exit. Namespaces: codebase, learnings,

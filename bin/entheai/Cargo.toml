@@ -19,6 +19,7 @@ entheai-companion = { path = "../../crates/companion", default-features = false 
 entheai-mcp = { path = "../../crates/mcp" }
 entheai-skills = { path = "../../crates/skills" }
 entheai-memory = { path = "../../crates/memory" }
+entheai-memory-pp = { path = "../../crates/memory-pp" }
 entheai-launcher = { path = "../../crates/launcher" }
 entheai-obsidian = { path = "../../crates/obsidian" }
 entheai-federation = { path = "../../crates/federation" }
