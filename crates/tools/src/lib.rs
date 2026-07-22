@@ -5,6 +5,7 @@ pub mod todo;
 
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
@@ -38,7 +39,7 @@ pub trait Tool: Send + Sync {
 
 #[derive(Default)]
 pub struct ToolRegistry {
-    tools: HashMap<String, Box<dyn Tool>>,
+    tools: HashMap<String, Arc<dyn Tool>>,
 }
 
 impl ToolRegistry {
@@ -46,7 +47,7 @@ impl ToolRegistry {
         Self::default()
     }
     pub fn register(&mut self, tool: Box<dyn Tool>) {
-        self.tools.insert(tool.name().to_string(), tool);
+        self.tools.insert(tool.name().to_string(), Arc::from(tool));
     }
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
         self.tools.get(name).map(|b| b.as_ref())
@@ -56,10 +57,12 @@ impl ToolRegistry {
         self.tools.values().map(|t| t.schema()).collect()
     }
 
-    /// Consume the registry, yielding its tools for wrapping (e.g. into
-    /// `adk_core::Tool` adapters, which need owned `Arc`s, not registry-borrowed refs).
-    pub fn into_tools(self) -> Vec<Box<dyn Tool>> {
-        self.tools.into_values().collect()
+    /// Owned `Arc` handles to every registered tool, for wrapping (e.g. into
+    /// `adk_core::Tool` adapters) without consuming the registry — so the
+    /// same registry (and any stateful tools it holds, e.g. MCP-server-backed
+    /// ones) can back multiple agent builds, one per turn.
+    pub fn to_tools(&self) -> Vec<Arc<dyn Tool>> {
+        self.tools.values().cloned().collect()
     }
 }
 
@@ -70,11 +73,12 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn into_tools_yields_all_registered() {
+    fn to_tools_yields_all_registered_without_consuming() {
         let mut reg = ToolRegistry::new();
         reg.register(Box::new(ReadFile::new(std::env::temp_dir())));
-        let tools = reg.into_tools();
-        assert_eq!(tools.len(), 1);
+        assert_eq!(reg.to_tools().len(), 1);
+        // Registry still usable — to_tools borrows, doesn't consume.
+        assert_eq!(reg.to_tools().len(), 1);
     }
 
     #[tokio::test]

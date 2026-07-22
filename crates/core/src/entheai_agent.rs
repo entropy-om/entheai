@@ -35,7 +35,7 @@ impl EntheaiAgent {
     pub fn new(
         model_spec: &str,
         providers: &HashMap<String, ProviderConfig>,
-        registry: entheai_tools::ToolRegistry,
+        registry: &entheai_tools::ToolRegistry,
         policy: Arc<Policy>,
         prompter: Arc<tokio::sync::Mutex<dyn Prompter>>,
         max_iterations: u32,
@@ -62,7 +62,7 @@ impl EntheaiAgent {
         instruction: Option<&str>,
         inference: &entheai_config::InferenceConfig,
         providers: &HashMap<String, ProviderConfig>,
-        registry: entheai_tools::ToolRegistry,
+        registry: &entheai_tools::ToolRegistry,
         policy: Arc<Policy>,
         prompter: Arc<tokio::sync::Mutex<dyn Prompter>>,
         max_iterations: u32,
@@ -101,7 +101,7 @@ impl EntheaiAgent {
         instruction: Option<&str>,
         inference: &entheai_config::InferenceConfig,
         providers: &HashMap<String, ProviderConfig>,
-        registry: entheai_tools::ToolRegistry,
+        registry: &entheai_tools::ToolRegistry,
         policy: Arc<Policy>,
         prompter: Arc<tokio::sync::Mutex<dyn Prompter>>,
         max_iterations: u32,
@@ -129,7 +129,7 @@ impl EntheaiAgent {
         instruction: Option<&str>,
         inference: &entheai_config::InferenceConfig,
         providers: &HashMap<String, ProviderConfig>,
-        registry: entheai_tools::ToolRegistry,
+        registry: &entheai_tools::ToolRegistry,
         policy: Arc<Policy>,
         prompter: Arc<tokio::sync::Mutex<dyn Prompter>>,
         max_iterations: u32,
@@ -149,9 +149,9 @@ impl EntheaiAgent {
         if let Some(max_tokens) = inference.max_tokens {
             builder = builder.max_output_tokens(max_tokens as i32);
         }
-        for tool in registry.into_tools() {
+        for tool in registry.to_tools() {
             let adapter = crate::adk_tool_adapter::AdkToolAdapter::new(
-                Arc::from(tool),
+                tool,
                 Arc::clone(&policy),
                 Arc::clone(&prompter),
             );
@@ -296,7 +296,7 @@ mod tests {
         let agent = EntheaiAgent::new(
             "test/model",
             &providers,
-            entheai_tools::ToolRegistry::new(),
+            &entheai_tools::ToolRegistry::new(),
             Arc::new(Policy::new(true, vec![])),
             Arc::new(tokio::sync::Mutex::new(AllowAll)),
             25,
@@ -346,7 +346,7 @@ mod tests {
             None,
             &entheai_config::InferenceConfig::default(),
             &providers,
-            entheai_tools::ToolRegistry::new(),
+            &entheai_tools::ToolRegistry::new(),
             Arc::new(Policy::new(true, vec![])),
             Arc::new(tokio::sync::Mutex::new(AllowAll)),
             25,

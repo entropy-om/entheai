@@ -227,7 +227,7 @@ mod tests {
         EntheaiAgent::new(
             "test/model",
             &providers,
-            registry,
+            &registry,
             Arc::new(Policy::new(true, vec![])),
             Arc::new(tokio::sync::Mutex::new(AllowAll)),
             25,

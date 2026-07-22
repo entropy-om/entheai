@@ -58,7 +58,7 @@ pub fn build_agent(
     model_id: &str,
     config: &Config,
     instruction: Option<&str>,
-    registry: entheai_tools::ToolRegistry,
+    registry: &entheai_tools::ToolRegistry,
     policy: Arc<Policy>,
     prompter: Arc<tokio::sync::Mutex<dyn Prompter>>,
 ) -> anyhow::Result<EntheaiAgent> {
@@ -183,7 +183,7 @@ mod tests {
             "osaurus/qwen3-coder",
             &cfg,
             None,
-            entheai_tools::ToolRegistry::new(),
+            &entheai_tools::ToolRegistry::new(),
             Arc::new(Policy::new(true, vec![])),
             test_prompter(),
         )
@@ -197,7 +197,7 @@ mod tests {
             "no-slash-here",
             &cfg,
             None,
-            entheai_tools::ToolRegistry::new(),
+            &entheai_tools::ToolRegistry::new(),
             Arc::new(Policy::new(true, vec![])),
             test_prompter(),
         )
@@ -211,7 +211,7 @@ mod tests {
             "nonexistent/some-model",
             &cfg,
             None,
-            entheai_tools::ToolRegistry::new(),
+            &entheai_tools::ToolRegistry::new(),
             Arc::new(Policy::new(true, vec![])),
             test_prompter(),
         )

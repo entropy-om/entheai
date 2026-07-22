@@ -273,7 +273,7 @@ async fn orchestrate_once(
         model_id,
         config,
         Some(instruction),
-        entheai_tools::ToolRegistry::new(),
+        &entheai_tools::ToolRegistry::new(),
         Arc::new(fanout_policy(config)),
         auto_allow_prompter(),
     )?;
@@ -290,7 +290,7 @@ async fn run_subagent(config: &Config, root: &Path, st: SubTask) -> SubResult {
             &model_id,
             config,
             Some(&system),
-            read_only_registry(root),
+            &read_only_registry(root),
             Arc::new(fanout_policy(config)),
             auto_allow_prompter(),
         )?;
@@ -401,7 +401,7 @@ pub async fn run_coder_once(
             &model_id,
             config,
             Some(&system),
-            write_registry(worktree_path),
+            &write_registry(worktree_path),
             Arc::new(fanout_policy(config)),
             auto_allow_prompter(),
         )?;
