@@ -232,6 +232,12 @@ struct App {
     view: ViewMode,
     /// Whether the swarm viz is enabled (from `[viz] swarm`).
     viz_swarm: bool,
+    /// Always-on brain side panel model (faculties + fleet + readouts).
+    brain: entheai_viz::BrainState,
+    /// Whether the brain panel is shown (from `[viz] brain`, toggled by `/brain`).
+    brain_enabled: bool,
+    /// Brain panel width in columns (from `[viz] brain_width`).
+    brain_width: u16,
     /// Timestamps of the last bare Esc / Ctrl-C, for double-tap detection:
     /// Esc-Esc stops the current run, Ctrl-C twice quits. Any intervening key
     /// clears them, so only a genuine double-tap fires.
@@ -409,6 +415,9 @@ async fn event_loop<P: Provider + 'static>(
         swarm: entheai_viz::SwarmModel::new(),
         view: ViewMode::Chat,
         viz_swarm: config.viz.swarm,
+        brain: entheai_viz::BrainState::new(),
+        brain_enabled: config.viz.brain,
+        brain_width: config.viz.brain_width,
         last_esc: None,
         last_ctrl_c: None,
         notice: None,
@@ -518,6 +527,9 @@ async fn event_loop<P: Provider + 'static>(
                         }
                         Action::Submit(text) if is_viz_command(&text) => {
                             handle_viz_command(&mut app, &text);
+                        }
+                        Action::Submit(text) if is_brain_command(&text) => {
+                            handle_brain_command(&mut app);
                         }
                         Action::Submit(text) if is_help_command(&text) => {
                             handle_help_command(&mut app);
@@ -825,6 +837,16 @@ async fn event_loop<P: Provider + 'static>(
 
 const STATUS_ROWS: u16 = 2; // row 1: entheai · model · state (+ ctx/tokens); row 2: env banner
 const PROGRESS_ROWS: u16 = 1;
+
+/// Minimum terminal width before the brain side panel is shown; below this it
+/// auto-hides and the layout is byte-identical to the no-panel build.
+const MIN_WIDTH_FOR_BRAIN: u16 = 72;
+
+/// Pure visibility gate — the panel shows only when enabled and the terminal is
+/// wide enough to spare `brain_width` columns without crowding the chat.
+fn show_brain(enabled: bool, term_width: u16) -> bool {
+    enabled && term_width >= MIN_WIDTH_FOR_BRAIN
+}
 const INPUT_ROWS: u16 = 3;
 /// Window within which a repeated Esc / Ctrl-C counts as a deliberate
 /// double-tap (Esc-Esc stops a run; Ctrl-C twice quits).
@@ -946,6 +968,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             let is_local_command = is_radio_command(trimmed)
                 || is_workers_command(trimmed)
                 || is_viz_command(trimmed)
+                || is_brain_command(trimmed)
                 || is_help_command(trimmed)
                 || is_fleet_command(trimmed)
                 || is_model_command(trimmed);
@@ -1142,6 +1165,21 @@ fn handle_viz_command(app: &mut App, text: &str) {
         text: format!("◈ switched to {where_now} (Ctrl-V to toggle)"),
     });
     app.follow = true;
+}
+
+/// True when the submitted input is the local `/brain` toggle.
+fn is_brain_command(text: &str) -> bool {
+    text.trim() == "/brain"
+}
+
+/// Toggle the always-on brain side panel in response to `/brain`.
+fn handle_brain_command(app: &mut App) {
+    app.brain_enabled = !app.brain_enabled;
+    app.notice = Some(if app.brain_enabled {
+        "brain panel on".into()
+    } else {
+        "brain panel off".into()
+    });
 }
 
 /// True for `/help` (or its `/?` alias) — prints the command + key reference.
@@ -1568,7 +1606,29 @@ fn render(
     swarm_rows: u16,
     env_line: &str,
 ) {
-    let area = frame.area();
+    let full = frame.area();
+    let show = show_brain(app.brain_enabled, full.width);
+    let (area, brain_area) = if show {
+        let [left, right] =
+            Layout::horizontal([Constraint::Min(1), Constraint::Length(app.brain_width)]).areas(full);
+        (left, Some(right))
+    } else {
+        (full, None)
+    };
+
+    // Draw the always-on brain side panel first so it appears in both the chat
+    // and full-screen swarm views (the Swarm branch below returns early).
+    if let Some(ba) = brain_area {
+        let block = Block::default().borders(Borders::ALL).title(" brain ");
+        let inner = block.inner(ba);
+        frame.render_widget(block, ba);
+        entheai_viz::brain::render(
+            &app.brain,
+            inner,
+            frame.buffer_mut(),
+            ratatui::symbols::Marker::Braille,
+        );
+    }
 
     // Full-screen swarm view (Ctrl-V / /viz): status bar on top, the swarm
     // canvas filling the content area, and the input box at the bottom. Returns
@@ -1814,6 +1874,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/workers", "fan-out swarm — list · stop <id> · debug <id>"),
     ("/fleet", "show the remote worker fleet (read-only)"),
     ("/viz", "toggle the full-screen swarm view  (Ctrl-V)"),
+    ("/brain", "toggle the always-on brain side panel"),
     ("/quit", "exit entheai  (Ctrl-C ×2)"),
 ];
 
@@ -1934,6 +1995,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn brain_panel_visibility_gate() {
+        assert!(show_brain(true, 100));
+        assert!(!show_brain(false, 100)); // disabled
+        assert!(!show_brain(true, 60)); // too narrow
+    }
+
+    #[test]
     fn wrap_str_hard_wraps_and_never_empty() {
         assert_eq!(wrap_str("", 4), vec![String::new()]);
         assert_eq!(
@@ -2012,6 +2080,9 @@ mod tests {
             swarm: entheai_viz::SwarmModel::new(),
             view: ViewMode::Chat,
             viz_swarm: false,
+            brain: entheai_viz::BrainState::new(),
+            brain_enabled: true,
+            brain_width: 26,
             last_esc: None,
             last_ctrl_c: None,
             notice: None,
@@ -2346,6 +2417,9 @@ mod tests {
             swarm: entheai_viz::SwarmModel::new(),
             view: ViewMode::Chat,
             viz_swarm: false,
+            brain: entheai_viz::BrainState::new(),
+            brain_enabled: true,
+            brain_width: 26,
             last_esc: None,
             last_ctrl_c: None,
             notice: None,
@@ -2382,6 +2456,9 @@ mod tests {
             swarm: entheai_viz::SwarmModel::new(),
             view: ViewMode::Chat,
             viz_swarm: false,
+            brain: entheai_viz::BrainState::new(),
+            brain_enabled: true,
+            brain_width: 26,
             last_esc: None,
             last_ctrl_c: None,
             notice: None,
@@ -2416,6 +2493,9 @@ mod tests {
             swarm: entheai_viz::SwarmModel::new(),
             view: ViewMode::Chat,
             viz_swarm: false,
+            brain: entheai_viz::BrainState::new(),
+            brain_enabled: true,
+            brain_width: 26,
             last_esc: None,
             last_ctrl_c: None,
             notice: None,
@@ -2505,6 +2585,9 @@ mod tests {
             swarm: entheai_viz::SwarmModel::new(),
             view: ViewMode::Chat,
             viz_swarm: false,
+            brain: entheai_viz::BrainState::new(),
+            brain_enabled: true,
+            brain_width: 26,
             last_esc: None,
             last_ctrl_c: None,
             notice: None,
@@ -2542,6 +2625,9 @@ mod tests {
             swarm: entheai_viz::SwarmModel::new(),
             view: ViewMode::Chat,
             viz_swarm: false,
+            brain: entheai_viz::BrainState::new(),
+            brain_enabled: true,
+            brain_width: 26,
             last_esc: None,
             last_ctrl_c: None,
             notice: None,
