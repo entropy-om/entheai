@@ -620,6 +620,7 @@ mod tests {
         assert_eq!(pp.search_deadline_ms, 800);
         assert_eq!(pp.recall_k, 32);
         assert_eq!(pp.marqant_cmd, "mq", "absent sub-fields take their defaults");
+        assert_eq!(pp.marqant_backend, "subprocess", "marqant defaults to subprocess backend");
         assert_eq!(pp.raw_retention_days, 90);
         assert_eq!(pp.mesh_backend, "native", "mesh defaults to the in-process native backend");
         assert_eq!(pp.native_model, "", "no .ugm reranker by default → lexical scorer");
@@ -925,6 +926,10 @@ pub struct PromptProcessingConfig {
     /// empty → the deterministic lexical scorer.
     #[serde(default)]
     pub native_model: String,
+    /// Stage-3 marqant backend: "subprocess" (default — spawn `marqant_cmd`),
+    /// or "stub" (identity passthrough, always falls back to top-K).
+    #[serde(default = "default_pp_marqant_backend")]
+    pub marqant_backend: String,
 }
 
 impl Default for PromptProcessingConfig {
@@ -940,8 +945,13 @@ impl Default for PromptProcessingConfig {
             max_ingest_bytes: default_pp_max_ingest_bytes(),
             mesh_backend: default_pp_mesh_backend(),
             native_model: String::new(),
+            marqant_backend: default_pp_marqant_backend(),
         }
     }
+}
+
+fn default_pp_marqant_backend() -> String {
+    "subprocess".into()
 }
 
 fn default_pp_mesh_backend() -> String {

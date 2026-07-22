@@ -587,10 +587,21 @@ fn build_prompt_processor(
             Box::new(NativeMesh::new(raw.clone(), model, PP_PREVIEW_BYTES, PP_MESH_TOP_K))
         }
     };
-    let marqant: Box<dyn Marqant> = if pc.marqant_cmd.trim().is_empty() {
-        Box::new(StubMarqant)
-    } else {
-        Box::new(SubprocessMarqant::new(&pc.marqant_cmd))
+    let marqant: Box<dyn Marqant> = match pc.marqant_backend.trim() {
+        "stub" => Box::new(StubMarqant),
+        "subprocess" if pc.marqant_cmd.trim().is_empty() => {
+            log::warn!("pp marqant_backend is \"subprocess\" but marqant_cmd is empty; using stub");
+            Box::new(StubMarqant)
+        }
+        "subprocess" => Box::new(SubprocessMarqant::new(&pc.marqant_cmd)),
+        other => {
+            log::warn!("unknown pp marqant_backend {other:?}; using subprocess");
+            if pc.marqant_cmd.trim().is_empty() {
+                Box::new(StubMarqant)
+            } else {
+                Box::new(SubprocessMarqant::new(&pc.marqant_cmd))
+            }
+        }
     };
 
     let pp = PromptProcessor::new(
