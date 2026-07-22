@@ -47,6 +47,8 @@ pub struct Config {
     pub nats: NatsConfig,
     #[serde(default)]
     pub federation: FederationConfig,
+    #[serde(default)]
+    pub frozen: FrozenConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1151,3 +1153,53 @@ impl Default for FederationConfig {
 fn default_fed_role() -> String { "auto".to_string() }
 fn default_fed_deadline_secs() -> u64 { 600 }
 fn default_max_concurrent() -> usize { 4 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FrozenConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_frozen_dir")]
+    pub dir: String,
+    #[serde(default = "default_frozen_top_k")]
+    pub top_k: usize,
+    #[serde(default = "default_frozen_max_bytes")]
+    pub max_inject_bytes: usize,
+}
+
+impl Default for FrozenConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dir: default_frozen_dir(),
+            top_k: default_frozen_top_k(),
+            max_inject_bytes: default_frozen_max_bytes(),
+        }
+    }
+}
+
+fn default_frozen_dir() -> String {
+    "frozen".to_string()
+}
+fn default_frozen_top_k() -> usize {
+    1
+}
+fn default_frozen_max_bytes() -> usize {
+    4096
+}
+
+#[cfg(test)]
+mod frozen_tests {
+    use super::*;
+
+    #[test]
+    fn frozen_config_defaults_off() {
+        let cfg = Config::from_toml_str("").unwrap();
+        assert!(!cfg.frozen.enabled);
+        assert_eq!(cfg.frozen.dir, "frozen");
+        assert_eq!(cfg.frozen.top_k, 1);
+        assert_eq!(cfg.frozen.max_inject_bytes, 4096);
+        let on = Config::from_toml_str("[frozen]\nenabled = true\ntop_k = 2\n").unwrap();
+        assert!(on.frozen.enabled);
+        assert_eq!(on.frozen.top_k, 2);
+    }
+}

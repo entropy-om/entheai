@@ -35,9 +35,16 @@ pub struct FleetNode {
 }
 
 #[derive(Debug, Clone)]
+pub struct FrozenGlow {
+    pub name: String,
+    pub awake: f32,
+}
+
+#[derive(Debug, Clone)]
 pub struct BrainState {
     pub faculties: Vec<Faculty>,
     pub fleet: Vec<FleetNode>,
+    pub frozen: Vec<FrozenGlow>,
     pub nats_up: bool,
     pub worker_count: usize,
     pub ctx_pct: u16,
@@ -57,11 +64,36 @@ impl BrainState {
                 Faculty { kind: FacultyKind::Context, activity: 0.0 },
             ],
             fleet: Vec::new(),
+            frozen: Vec::new(),
             nats_up: false,
             worker_count: 0,
             ctx_pct: 0,
             frame: 0,
         }
+    }
+
+    pub fn set_frozen(&mut self, names: &[String]) {
+        self.frozen = names
+            .iter()
+            .map(|n| FrozenGlow {
+                name: n.clone(),
+                awake: 0.0,
+            })
+            .collect();
+    }
+
+    pub fn wake_frozen(&mut self, name: &str) {
+        if let Some(f) = self.frozen.iter_mut().find(|f| f.name == name) {
+            f.awake = 1.0;
+        }
+    }
+
+    pub fn frozen_awake(&self, name: &str) -> f32 {
+        self.frozen
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| f.awake)
+            .unwrap_or(0.0)
     }
 
     pub fn faculty(&self, kind: FacultyKind) -> &Faculty {
@@ -79,6 +111,9 @@ impl BrainState {
         self.frame = self.frame.wrapping_add(1);
         for f in &mut self.faculties {
             f.activity = (f.activity * DECAY).max(0.0);
+        }
+        for f in &mut self.frozen {
+            f.awake = (f.awake * DECAY).max(0.0);
         }
     }
 
@@ -158,6 +193,15 @@ pub fn render(state: &BrainState, area: Rect, buf: &mut Buffer, marker: Marker) 
                 );
                 ctx.print(x, y, Span::styled("•", Style::default().fg(col)));
             }
+            let n_frozen = state.frozen.len().max(1);
+            for (i, node) in state.frozen.iter().enumerate() {
+                let a = i as f64 / n_frozen as f64 * std::f64::consts::TAU;
+                let (x, y, wz) = project(a, 1.05, 0.05, state.frame);
+                let db = depth_brightness(wz, 1.05);
+                let v = ((0.20 + 0.80 * node.awake) * db * 255.0) as u8;
+                let ch = node.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "*".to_string());
+                ctx.print(x, y, Span::styled(ch, Style::default().fg(Color::Rgb(0, (v as u16 * 200 / 255) as u8, v))));
+            }
         });
     Widget::render(canvas, canvas_area, buf);
 
@@ -190,6 +234,17 @@ fn footer_line(state: &BrainState) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frozen_node_wakes_and_melts() {
+        let mut b = BrainState::new();
+        b.set_frozen(&["nixos".to_string(), "ngrok".to_string()]);
+        assert_eq!(b.frozen_awake("nixos"), 0.0, "starts frozen");
+        b.wake_frozen("nixos");
+        assert_eq!(b.frozen_awake("nixos"), 1.0, "wakes fully");
+        for _ in 0..200 { b.tick(); }
+        assert!(b.frozen_awake("nixos") < 0.02, "melts back toward frozen");
+    }
 
     #[test]
     fn flare_sets_full_activity_then_decays_bounded() {

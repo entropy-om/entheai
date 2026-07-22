@@ -7,12 +7,14 @@
 //! See docs/superpowers/specs/2026-07-22-prompt-processing-design.md.
 
 mod error;
+pub mod frozen;
 mod marqant;
 mod mesh;
 mod processor;
 mod raw_store;
 
 pub use error::PpError;
+pub use frozen::{activate, FrozenNode, FrozenStore};
 pub use marqant::{Marqant, StubMarqant, SubprocessMarqant};
 pub use mesh::{IdentityMesh, MeshSearch, NativeMesh, SidecarMesh, SlowStubMesh, StubMesh, FEATURE_DIM};
 pub use processor::PromptProcessor;

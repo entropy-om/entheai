@@ -232,7 +232,7 @@ fn query_terms(query: &str) -> std::collections::HashSet<String> {
 /// Deterministic lexical relevance: count of DISTINCT query terms (lowercased
 /// alphanumeric runs) that appear in `text` (lowercased). The native fallback when
 /// no `.ugm` model is configured — mirrors the sidecar's reference scorer, in Rust.
-fn lexical_score(query: &str, text: &str) -> f32 {
+pub(crate) fn lexical_score(query: &str, text: &str) -> f32 {
     let text_lc = text.to_lowercase();
     query_terms(query).iter().filter(|t| text_lc.contains(t.as_str())).count() as f32
 }

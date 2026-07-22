@@ -78,6 +78,16 @@ mode = "ask"                      # startup default: plan | auto | yolo | ask
 #   # sidecar backend (opt-in): sidecar_cmd = "python3 sidecars/ultragraph/serve.py"
 #   marqant_cmd        = "mq"       # Stage-3 compressor ("" = identity passthrough)
 
+# ── Frozen nodes (curated best-practice that wakes on triggers) ───────────────
+# Opt-in. Curated `frozen/*.md` nodes sit dormant; when a task's deterministic
+# triggers match, the top node's marqant-distilled knowledge melts into the prompt
+# (bounded, transient) and glows in the brain. Independent of [memory] mode.
+# [frozen]
+# enabled          = true            # default false
+# dir              = "frozen"        # curated node store (relative to the run root)
+# top_k            = 1               # how many nodes wake at once
+# max_inject_bytes = 4096            # per-node injection cap
+
 # ── Federation event bus (entheai-bus, F1) ───────────────────────────────────
 # Opt-in + fail-safe: with enabled = false (default) or an unreachable hub,
 # entheai runs entirely locally — federation never blocks a run. When enabled,
