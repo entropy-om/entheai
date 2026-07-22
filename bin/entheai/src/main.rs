@@ -343,11 +343,11 @@ async fn main() -> anyhow::Result<()> {
             // BrainJudge (BRAIN v1 Slice 2): proactive frozen-node surfacing from
             // ambient tool activity. A second FrozenStore load (cheap — 11 small
             // markdown files) since PromptProcessor doesn't expose its own.
-            let brain_judge = match build_brain_judge_provider(&model_id, &cfg) {
-                Ok((provider, judge_model)) => {
+            let brain_judge = match build_brain_judge_llm(&model_id, &cfg) {
+                Ok((llm, judge_model)) => {
                     let frozen = entheai_memory_pp::frozen::FrozenStore::load(std::path::Path::new("frozen"));
                     Some(entheai_memory_pp::BrainJudge::new(
-                        std::sync::Arc::new(provider),
+                        llm,
                         judge_model,
                         frozen,
                         BRAIN_JUDGE_COOLDOWN,
@@ -691,24 +691,20 @@ fn build_prompt_processor(
 /// Cooldown between BrainJudge proactive-surfacing checks (BRAIN v1 Slice 2).
 const BRAIN_JUDGE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Build the provider BrainJudge uses to judge ambient-activity relevance.
-/// Reuses the same `"<provider>/<model>"` resolution `entheai_router::build_agent`
-/// uses for the main agent, since BrainJudge is a background, low-stakes
-/// judgment call, not a reason to introduce a second model-selection config.
-fn build_brain_judge_provider(
+/// Build the adk-rust `Llm` client BrainJudge uses to judge ambient-activity
+/// relevance, and the bare (provider-prefix-stripped) model name for the
+/// `LlmRequest` it sends. Reuses `entheai_core::model_resolve::resolve_model`
+/// (built for `EntheaiAgent`) since BrainJudge is a background, low-stakes
+/// judgment call, not a reason to introduce a second model-selection path.
+fn build_brain_judge_llm(
     model_id: &str,
     cfg: &Config,
-) -> anyhow::Result<(entheai_providers::OpenAiCompatProvider, String)> {
-    let (provider_name, model) = model_id
+) -> anyhow::Result<(std::sync::Arc<dyn adk_rust::Llm>, String)> {
+    let llm = entheai_core::model_resolve::resolve_model(model_id, &cfg.providers)?;
+    let (_, model) = model_id
         .split_once('/')
         .ok_or_else(|| anyhow::anyhow!("model must be '<provider>/<model>': {model_id}"))?;
-    let pcfg = cfg
-        .providers
-        .get(provider_name)
-        .ok_or_else(|| anyhow::anyhow!("unknown provider '{provider_name}'"))?;
-    let api_key = pcfg.api_key_env.as_ref().and_then(|e| std::env::var(e).ok());
-    let provider = entheai_providers::OpenAiCompatProvider::new(pcfg.base_url.clone(), api_key);
-    Ok((provider, model.to_string()))
+    Ok((llm, model.to_string()))
 }
 
 /// Inspect the memory store and exit. Namespaces: codebase, learnings,

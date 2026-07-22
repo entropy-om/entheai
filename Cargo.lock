@@ -2049,12 +2049,14 @@ dependencies = [
 name = "entheai"
 version = "0.2.1"
 dependencies = [
+ "adk-rust",
  "anyhow",
  "clap",
  "dotenvy",
  "entheai-bus",
  "entheai-companion",
  "entheai-config",
+ "entheai-core",
  "entheai-federation",
  "entheai-launcher",
  "entheai-mcp",
@@ -2213,10 +2215,10 @@ dependencies = [
 name = "entheai-memory-pp"
 version = "0.2.1"
 dependencies = [
+ "adk-rust",
  "async-trait",
  "blake3",
  "entheai-memory",
- "entheai-providers",
  "entheai-ultragraph",
  "futures",
  "kompress-core",

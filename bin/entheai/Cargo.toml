@@ -9,7 +9,9 @@ homepage.workspace = true
 
 [dependencies]
 entheai-config = { path = "../../crates/config" }
+entheai-core = { path = "../../crates/core" }
 entheai-providers = { path = "../../crates/providers" }
+adk-rust = { workspace = true }
 entheai-router = { path = "../../crates/router" }
 entheai-orchestrator = { path = "../../crates/orchestrator" }
 entheai-tools = { path = "../../crates/tools" }

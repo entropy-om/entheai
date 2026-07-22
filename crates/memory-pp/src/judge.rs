@@ -5,9 +5,15 @@
 //! enforces a cooldown window to prevent thrashing, and queries a local LLM with a
 //! precision-tuned prompt to determine if any frozen node should proactively wake.
 //! Surfacing nothing ("none") is prioritized over false positives.
+//!
+//! Ported onto `adk_rust::Llm` (from `entheai_providers::Provider`) as part of
+//! the adk-rust migration's Task 7 scope: this is the "memory/brain worker"
+//! half of full adk-rust adoption, closing the gap that `entheai_providers`
+//! couldn't otherwise be deleted while BrainJudge depended on it.
 
 use crate::frozen::FrozenStore;
-use entheai_providers::{ChatMessage, Provider};
+use adk_rust::{Content, Llm, LlmRequest};
+use futures::StreamExt;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,7 +26,7 @@ pub enum BrainJudgeEvent {
 }
 
 pub struct BrainJudge {
-    provider: Arc<dyn Provider>,
+    llm: Arc<dyn Llm>,
     model: String,
     frozen: FrozenStore,
     cooldown: Duration,
@@ -31,14 +37,14 @@ pub struct BrainJudge {
 impl BrainJudge {
     /// Construct a new `BrainJudge` background worker and its event receiver channel.
     pub fn new(
-        provider: Arc<dyn Provider>,
+        llm: Arc<dyn Llm>,
         model: impl Into<String>,
         frozen: FrozenStore,
         cooldown: Duration,
     ) -> (Self, mpsc::UnboundedReceiver<BrainJudgeEvent>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let judge = Self {
-            provider,
+            llm,
             model: model.into(),
             frozen,
             cooldown,
@@ -84,25 +90,39 @@ impl BrainJudge {
             names.join(", "),
         );
 
-        let messages = vec![ChatMessage::user(prompt)];
-        let provider = Arc::clone(&self.provider);
+        let llm = Arc::clone(&self.llm);
         let model = self.model.clone();
         let node_names: Vec<String> = self.frozen.nodes().iter().map(|n| n.name.clone()).collect();
         let tx = self.tx.clone();
 
         tokio::spawn(async move {
-            let Ok(resp) = tokio::time::timeout(
-                Duration::from_secs(5),
-                provider.complete(&model, &messages, &[]),
-            )
-            .await
+            let judge_call = async move {
+                let request = LlmRequest {
+                    model: model.clone(),
+                    contents: vec![Content::new("user").with_text(prompt)],
+                    config: None,
+                    tools: Default::default(),
+                    previous_response_id: None,
+                };
+                let mut stream = llm.generate_content(request, false).await.ok()?;
+                let mut content: Option<Content> = None;
+                while let Some(chunk) = stream.next().await {
+                    if let Ok(resp) = chunk {
+                        if resp.content.is_some() {
+                            content = resp.content;
+                            break;
+                        }
+                    }
+                }
+                content
+            };
+
+            let Ok(Some(content)) = tokio::time::timeout(Duration::from_secs(5), judge_call).await
             else {
-                return; // timeout → surface nothing
+                return; // timeout, provider error, or empty response → surface nothing
             };
-            let Ok(resp) = resp else {
-                return; // provider error → surface nothing
-            };
-            let answer = resp.content.trim().to_lowercase();
+            let text: String = content.parts.iter().filter_map(|p| p.text()).collect();
+            let answer = text.trim().to_lowercase();
             if answer == "none" {
                 return;
             }
@@ -119,34 +139,29 @@ impl BrainJudge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use adk_rust::LlmResponse;
     use async_trait::async_trait;
-    use entheai_providers::{AssistantResponse, Provider, ProviderError, StreamEvent};
-    use futures::stream::BoxStream;
 
-    struct FakeProvider {
+    struct FakeLlm {
         response: String,
     }
 
     #[async_trait]
-    impl Provider for FakeProvider {
-        async fn stream_chat(
-            &self,
-            _model: &str,
-            _messages: &[ChatMessage],
-        ) -> Result<BoxStream<'static, Result<StreamEvent, ProviderError>>, ProviderError> {
-            unimplemented!("BrainJudge only uses complete()")
+    impl Llm for FakeLlm {
+        fn name(&self) -> &str {
+            "fake"
         }
 
-        async fn complete(
+        async fn generate_content(
             &self,
-            _model: &str,
-            _messages: &[ChatMessage],
-            _tools: &[serde_json::Value],
-        ) -> Result<AssistantResponse, ProviderError> {
-            Ok(AssistantResponse {
-                content: self.response.clone(),
-                tool_calls: vec![],
-            })
+            _req: LlmRequest,
+            _stream: bool,
+        ) -> adk_rust::Result<adk_rust::LlmResponseStream> {
+            let resp = LlmResponse {
+                content: Some(Content::new("model").with_text(self.response.clone())),
+                ..Default::default()
+            };
+            Ok(Box::pin(futures::stream::once(async { Ok(resp) })))
         }
     }
 
@@ -165,15 +180,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_brain_judge_wakes_on_direct_relevance() {
-        let provider = Arc::new(FakeProvider {
-            response: "nixos".to_string(),
-        });
-        let (judge, mut rx) = BrainJudge::new(
-            provider,
-            "test/model",
-            test_store(),
-            Duration::from_millis(1),
-        );
+        let llm = Arc::new(FakeLlm { response: "nixos".to_string() });
+        let (judge, mut rx) =
+            BrainJudge::new(llm, "test/model", test_store(), Duration::from_millis(1));
 
         judge.notify("Deploying web application to Hetzner VPS via NixOS");
 
@@ -186,15 +195,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_brain_judge_suppresses_on_none() {
-        let provider = Arc::new(FakeProvider {
-            response: "none".to_string(),
-        });
-        let (judge, mut rx) = BrainJudge::new(
-            provider,
-            "test/model",
-            test_store(),
-            Duration::from_millis(1),
-        );
+        let llm = Arc::new(FakeLlm { response: "none".to_string() });
+        let (judge, mut rx) =
+            BrainJudge::new(llm, "test/model", test_store(), Duration::from_millis(1));
 
         judge.notify("Refactoring CSS button padding");
 
@@ -207,15 +210,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_brain_judge_cooldown_suppresses() {
-        let provider = Arc::new(FakeProvider {
-            response: "nixos".to_string(),
-        });
-        let (judge, mut rx) = BrainJudge::new(
-            provider,
-            "test/model",
-            test_store(),
-            Duration::from_secs(60),
-        );
+        let llm = Arc::new(FakeLlm { response: "nixos".to_string() });
+        let (judge, mut rx) =
+            BrainJudge::new(llm, "test/model", test_store(), Duration::from_secs(60));
 
         judge.notify("First trigger");
         let _ = rx.recv().await;
