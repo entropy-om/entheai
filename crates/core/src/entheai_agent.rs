@@ -16,6 +16,15 @@ use adk_rust::Content;
 use entheai_config::ProviderConfig;
 use entheai_permission::{Policy, Prompter};
 
+/// `(memory, prompt-processor, scope, brain-event sink)` — the inputs
+/// `new_with_memory` threads into `build`'s memory-aware callback wiring.
+type MemoryCtx = (
+    Arc<entheai_memory::MemoryRuntime>,
+    Option<Arc<entheai_memory_pp::PromptProcessor>>,
+    entheai_memory::MemoryScope,
+    Option<tokio::sync::mpsc::UnboundedSender<crate::AgentEvent>>,
+);
+
 pub struct EntheaiAgent {
     runner: Runner,
     sessions: Arc<dyn SessionService>,
@@ -37,8 +46,12 @@ impl EntheaiAgent {
     /// Memory-aware constructor: wires pre-task retrieval/frozen-node
     /// injection (`before_model`) and per-tool evidence recording
     /// (`after_tool_full`), mirroring `Agent::run_task_with_memory`'s
-    /// memory-enabled path. See `crate::memory_callbacks` for what is and
-    /// isn't covered.
+    /// memory-enabled path. `event_tx`, if given, receives an
+    /// `AgentEvent::FrozenWoke` whenever the before_model callback injects a
+    /// frozen-node brief — the event stream itself never surfaces this since
+    /// the injection is transparent to the caller by design (same as the
+    /// retrieval brief). See `crate::memory_callbacks` and
+    /// `crate::event_bridge` for what is and isn't covered.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_memory(
         model_spec: &str,
@@ -50,6 +63,7 @@ impl EntheaiAgent {
         memory: Arc<entheai_memory::MemoryRuntime>,
         pp: Option<Arc<entheai_memory_pp::PromptProcessor>>,
         scope: entheai_memory::MemoryScope,
+        event_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::AgentEvent>>,
     ) -> anyhow::Result<Self> {
         Self::build(
             model_spec,
@@ -58,7 +72,7 @@ impl EntheaiAgent {
             policy,
             prompter,
             max_iterations,
-            Some((memory, pp, scope)),
+            Some((memory, pp, scope, event_tx)),
         )
     }
 
@@ -70,11 +84,7 @@ impl EntheaiAgent {
         policy: Arc<Policy>,
         prompter: Arc<tokio::sync::Mutex<dyn Prompter>>,
         max_iterations: u32,
-        memory_ctx: Option<(
-            Arc<entheai_memory::MemoryRuntime>,
-            Option<Arc<entheai_memory_pp::PromptProcessor>>,
-            entheai_memory::MemoryScope,
-        )>,
+        memory_ctx: Option<MemoryCtx>,
     ) -> anyhow::Result<Self> {
         let model = crate::model_resolve::resolve_model(model_spec, providers)?;
 
@@ -89,13 +99,14 @@ impl EntheaiAgent {
             );
             builder = builder.tool(Arc::new(adapter));
         }
-        if let Some((memory, pp, scope)) = memory_ctx {
+        if let Some((memory, pp, scope, event_tx)) = memory_ctx {
             let injected_sessions = Arc::new(tokio::sync::Mutex::new(HashSet::new()));
             builder = builder
                 .before_model_callback(crate::memory_callbacks::before_model_retrieval_callback(
                     Arc::clone(&memory),
                     pp.clone(),
                     injected_sessions,
+                    event_tx,
                 ))
                 .after_tool_callback_full(crate::memory_callbacks::after_tool_evidence_callback(
                     scope, memory, pp,
@@ -261,6 +272,7 @@ mod tests {
                 cwd: std::env::temp_dir(),
                 role: None,
             },
+            None,
         )
         .expect("agent builds");
 

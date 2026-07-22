@@ -1,5 +1,6 @@
 pub mod adk_tool_adapter;
 pub mod entheai_agent;
+pub mod event_bridge;
 pub mod memory_callbacks;
 pub mod model_resolve;
 
@@ -379,7 +380,7 @@ struct DispatchResult {
 }
 
 /// Truncate a string to `max` chars, appending `…` if cut.
-fn truncate_preview(s: &str, max: usize) -> String {
+pub(crate) fn truncate_preview(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {

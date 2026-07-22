@@ -2131,6 +2131,7 @@ dependencies = [
  "entheai-providers",
  "entheai-tools",
  "futures",
+ "log",
  "schemars",
  "serde",
  "serde_json",

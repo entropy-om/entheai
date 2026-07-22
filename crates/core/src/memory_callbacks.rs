@@ -3,17 +3,17 @@
 //! and per-tool evidence recording.
 //!
 //! Scope note (see docs/superpowers/plans/2026-07-22-adk-rust-core-migration.md,
-//! Task 5): this covers exactly the plan's original Task 5 — before_model
-//! retrieval + frozen-node injection, and after_tool_full evidence recording.
-//! `run_task_with_memory` (crates/core/src/lib.rs) grew a THIRD behavior after
-//! this plan was written — post-task `record_final_answer`/`ingest_transcript`
-//! — which `adk_rust`'s `AfterAgentCallback` cannot replicate today: it only
-//! receives `Arc<dyn CallbackContext>`, and `CallbackContext` has no accessor
-//! for the session's event history (that lives on `InvocationContext`, one
-//! level up, which callbacks are never handed — confirmed against the
-//! vendored adk-core 1.0.0 source, no downcast escape hatch exists either).
-//! Closing that gap needs its own session-keyed accumulator design; it is
-//! deliberately left out of this file rather than guessed at.
+//! Task 5): before_model retrieval + frozen-node injection, and
+//! after_tool_full evidence recording. The remaining post-task behavior
+//! (`record_final_answer`/`ingest_transcript`) can't be replicated from a
+//! callback at all — `adk_rust`'s `AfterAgentCallback` only receives
+//! `Arc<dyn CallbackContext>`, which has no accessor for session/event
+//! history (that lives on `InvocationContext`, one level up, never handed to
+//! callbacks — confirmed against the vendored adk-core 1.0.0 source, no
+//! downcast escape hatch exists either). That gap is closed instead in
+//! `crate::event_bridge`, which drives `EntheaiAgent::run`'s `EventStream`
+//! directly and so has natural, per-run local state to accumulate into
+//! (Task 6).
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -24,7 +24,10 @@ use adk_rust::{
 };
 use entheai_memory::{MemoryRuntime, MemoryScope, ToolEvidence};
 use entheai_memory_pp::PromptProcessor;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Mutex;
+
+use crate::AgentEvent;
 
 /// Deadline for activating a frozen node (mirrors `crates/core/src/lib.rs`'s
 /// `FROZEN_ACTIVATE_DEADLINE`).
@@ -42,11 +45,13 @@ pub fn before_model_retrieval_callback(
     memory: Arc<MemoryRuntime>,
     pp: Option<Arc<PromptProcessor>>,
     injected_sessions: Arc<Mutex<HashSet<String>>>,
+    event_tx: Option<UnboundedSender<AgentEvent>>,
 ) -> BeforeModelCallback {
     Box::new(move |ctx: Arc<dyn CallbackContext>, mut request: LlmRequest| {
         let memory = Arc::clone(&memory);
         let pp = pp.clone();
         let injected_sessions = Arc::clone(&injected_sessions);
+        let event_tx = event_tx.clone();
         Box::pin(async move {
             {
                 let mut seen = injected_sessions.lock().await;
@@ -90,6 +95,13 @@ pub fn before_model_retrieval_callback(
                     let user_msg = user_text(&request.contents[user_idx]);
                     for node in p.wake_frozen(&user_msg, 1) {
                         let brief = p.activate_frozen(&node, FROZEN_ACTIVATE_DEADLINE).await;
+                        if let Some(tx) = &event_tx {
+                            let preview: String = brief.chars().take(120).collect();
+                            let _ = tx.send(AgentEvent::FrozenWoke {
+                                name: node.name.clone(),
+                                brief_preview: preview,
+                            });
+                        }
                         request
                             .contents
                             .insert(user_idx, Content::new("system").with_text(brief));
