@@ -2,10 +2,9 @@
 //! `model.ugm`, exactly the numbers the Python reference produced into
 //! `reference.json`. This is the agy porting task's definition of done.
 //!
-//! `#[ignore]`d until the port lands (the module bodies are `todo!()`), so the
-//! workspace test suite stays green in the scaffold state. Remove the `#[ignore]`
-//! lines as each area is implemented; `cargo test -p entheai-ultragraph -- --ignored`
-//! runs them all.
+//! The port has landed: every test here runs live in the workspace suite (the
+//! scaffold-era `#[ignore]` markers are gone) and passes byte-exact against
+//! the committed Python-reference fixture.
 
 use std::path::PathBuf;
 

@@ -10,6 +10,11 @@
 #   * pinned time         SOURCE_DATE_EPOCH = the HEAD commit's committer time
 #   * zeroed ar dates     ZERO_AR_DATE=1 (macOS static-archive timestamps)
 #   * locked deps         cargo --locked (Cargo.lock is the truth)
+#   * stripped debug map  -C strip=debuginfo — the release profile keeps
+#     symbols for Sentry (strip="none"), but macOS N_OSO stab entries record
+#     rustc's RANDOM per-invocation temp dir (…/deps/rustcXXXXXX/libring…),
+#     which no remap can catch. The reproducible artifact trades the debug
+#     map away; the PGO build remains the symbol-rich one.
 #
 # `--verify` builds TWICE into independent target dirs and compares SHA-256 —
 # reproducibility is demonstrated empirically, never asserted
@@ -24,7 +29,7 @@ BINS=(entheai entheai-worker entheai-launch)
 
 export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct 2>/dev/null || echo 0)"
 export ZERO_AR_DATE=1
-REPRO_RUSTFLAGS="--remap-path-prefix ${PWD}=/entheai --remap-path-prefix ${HOME}=/home -C target-cpu=${BASELINE_CPU}"
+REPRO_RUSTFLAGS="--remap-path-prefix ${PWD}=/entheai --remap-path-prefix ${HOME}=/home -C target-cpu=${BASELINE_CPU} -C strip=debuginfo"
 
 build_into() { # $1 = target dir
   CARGO_TARGET_DIR="$1" RUSTFLAGS="$REPRO_RUSTFLAGS" \
@@ -57,13 +62,22 @@ manifest() { # $1 = target dir, $2 = out file
 }
 
 if [ "${1:-}" = "--verify" ]; then
-  echo "==> reproducibility verification: two independent builds…"
+  # Two SEQUENTIAL clean builds into the SAME target dir. Parallel dirs would
+  # bake two different (even remapped) path strings into debug info — the
+  # asymmetry would be ours, not the compiler's.
+  echo "==> reproducibility verification: two sequential clean builds…"
+  stash="$(mktemp -d)"
+  rm -rf target-repro-a
   build_into target-repro-a
-  build_into target-repro-b
+  for b in "${BINS[@]}"; do
+    cp "target-repro-a/${TARGET}/release/$b" "$stash/$b.first"
+  done
+  rm -rf target-repro-a
+  build_into target-repro-a
   status=0
   for b in "${BINS[@]}"; do
-    a_sha="$(sha "target-repro-a/${TARGET}/release/$b")"
-    b_sha="$(sha "target-repro-b/${TARGET}/release/$b")"
+    a_sha="$(sha "$stash/$b.first")"
+    b_sha="$(sha "target-repro-a/${TARGET}/release/$b")"
     if [ "$a_sha" = "$b_sha" ]; then
       echo "  ✅ $b  ${a_sha:0:16}…  (identical)"
     else
@@ -74,6 +88,7 @@ if [ "${1:-}" = "--verify" ]; then
   mkdir -p dist
   manifest target-repro-a dist/repro-manifest.json
   echo "==> manifest: dist/repro-manifest.json"
+  rm -rf "$stash"
   [ $status -eq 0 ] && echo "✅ byte-reproducible (this toolchain: $(rustc --version))"
   exit $status
 fi

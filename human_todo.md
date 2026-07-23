@@ -28,8 +28,9 @@ To achieve true **Quantum Completeness**, `entheai` must perfectly bridge the fl
   - ✅ Every subagent fan-out worktree merge passes an empirical verification gate: `[fanout].verify`, else auto-detected `./scripts/check.sh`; `verify_required = true` by default.
   - ✅ Deterministic SHA-256 `MergeSeal` (`sha256(diff)`, `sha256(verify log)`, combined seal) carried on each integrated outcome and printed in the fan-out report. Self-reported success without empirical logs is rejected (`VerifyStatus::Unverifiable` → left on branch), enforcing [`frozen/verification.md`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/verification.md).
 
-- [ ] **2.2 Binary Reproducibility & Target CPU Anchoring**
-  - Ensure Apple Silicon native compilation (`aarch64-apple-darwin`, `mimalloc`, `LTO=fat`) yields byte-reproducible releases across environments.
+- [x] **2.2 Binary Reproducibility & Target CPU Anchoring** — *shipped in 0.9.0*
+  - ✅ `scripts/build-repro.sh`: the deterministic sibling of the PGO release — anchored `aarch64-apple-darwin` target, fixed `apple-m1` CPU baseline (not `native`), path remapping, `SOURCE_DATE_EPOCH` from HEAD, `ZERO_AR_DATE`, `--locked`, `-C strip=debuginfo` (macOS N_OSO stabs record rustc's random temp dir — no remap can catch it; the PGO build stays the symbol-rich one).
+  - ✅ **Empirically verified**, per `frozen/verification.md`: `--verify` runs two sequential clean builds and compares SHA-256 — all three binaries byte-identical on rustc 1.96.0; manifest sealed in `dist/repro-manifest.json` (`entheai.repro.v1`). Byte equality is promised for identical toolchains — the manifest records the exact rustc.
 
 ---
 

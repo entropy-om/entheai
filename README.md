@@ -19,6 +19,8 @@
 >
 > 🜂 **Entropy Cannot Lie** 🜂
 >
+> **AHOGY A DOLGOK VANNAK** — *as things are.* Nothing more, nothing less, just how it should be.
+>
 > This is in a way a quantum-app. Bear with me :)
 >
 > `entheai` creates an automated quantum simulation playground where custom prompt states continuously morph a fluid field of infinite entropy back and forth into rigid, binary singularity checkpoints.
