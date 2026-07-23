@@ -17,7 +17,7 @@ Run the binary: `cargo run -- --help` or `./target/release/entheai "your prompt"
 
 ## Build environment
 
-- **Target**: `aarch64-apple-darwin` only (Apple Silicon). Pinned Rust toolchain `1.96.0` (MSRV `1.80`).
+- **Target**: `aarch64-apple-darwin` only (Apple Silicon). Pinned Rust toolchain `1.96.0` (MSRV `1.94`, required by adk-rust's dependency tree).
 - **Allocator**: `mimalloc` on macOS (wired as `#[global_allocator]` in `bin/entheai/src/main.rs`).
 - **Release profile**: `opt-level=3`, `lto="fat"`, `codegen-units=1`, `panic="unwind"` (never abort — sub-agent tokio-task panics must be catchable).
 - **`.cargo/config.toml`**: sets `target-cpu=native` and `-Wl,-dead_strip` for macOS; binaries are not portable to older CPUs.
@@ -28,30 +28,46 @@ Run the binary: `cargo run -- --help` or `./target/release/entheai "your prompt"
 ```
 Cargo.toml                          # workspace root (resolver=2)
 ├── bin/entheai/                    # CLI binary (clap, tokio, sentry, mimalloc)
+├── bin/entheai-worker/             # federation worker (--serve / --dispatch)
+├── bin/entheai-launch/             # native .app launcher (Ghostty window)
 ├── crates/config/                  # entheai-config: TOML → Config deserialization
-├── crates/providers/               # entheai-providers: Provider trait + OpenAiCompatProvider
-├── crates/core/                    # entheai-core: Agent loop (streaming + tool-dispatch)
+├── crates/core/                    # entheai-core: EntheaiAgent (adk-rust-backed agent loop)
 ├── crates/tools/                   # entheai-tools: Tool trait + ToolRegistry + built-in tools
 ├── crates/permission/              # entheai-permission: Policy (yolo/allowlist/ask) + Prompter
-├── crates/tui/                     # entheai-tui: Interactive ratatui chat UI
-├── crates/companion/               # entheai-companion: Session beacon window (QR + animation)
-├── crates/memory/                  # entheai-memory: Two-tier vector store (SQLite + embeddings)
+├── crates/router/                  # entheai-router: role→model resolution + EntheaiAgent factory
+├── crates/orchestrator/            # entheai-orchestrator: fan-out decomposition + worktree isolation
+├── crates/mapper/                  # entheai-mapper: @{path} input sectioning
+├── crates/tui/                     # entheai-tui: interactive ratatui chat UI
+├── crates/companion/               # entheai-companion: session beacon window (QR + animation)
+├── crates/memory/                  # entheai-memory: 5-namespace SQLite + vector store
+├── crates/memory-pp/               # entheai-memory-pp: prompt-processing, frozen nodes, BrainJudge
+├── crates/viz/                     # entheai-viz: TUI visualization models (brain ring, swarm)
 ├── crates/radio/                   # entheai-radio: in-TUI music (yt-dlp download → rodio playback)
-├── crates/orchestrator/            # entheai-orchestrator: Fan-out agent orchestration
-└── crates/mcp/                     # entheai-mcp: MCP client + server
+├── crates/mcp/                     # entheai-mcp: MCP client + server supervisor
+├── crates/skills/                  # entheai-skills: SKILL.md discovery + installer
+├── crates/launcher/                # entheai-launcher: native-app window spawn
+├── crates/obsidian/                # entheai-obsidian: wiki-sync
+├── crates/bus/                     # entheai-bus: NATS event bus (federation)
+├── crates/federation/              # entheai-federation: remote fleet dispatch
+├── crates/sandbox/                 # entheai-sandbox: isolated execution
+├── crates/ultragraph/              # entheai-ultragraph: graph data structure (Rust port)
+└── crates/kompress-core/           # kompress-core: context-pruning pipeline (vendored from kompress-ultra)
 ```
 
-Crate names use dashes (`entheai-core`) but Rust module names use underscores (`entheai_core`). Every crate is version `0.1.0`.
+Crate names use dashes (`entheai-core`) but Rust module names use underscores (`entheai_core`). Workspace version: see `Cargo.toml`'s `[workspace.package]`.
 
 ## Architecture & data flow
 
-1. **`bin/entheai/src/main.rs`** parses CLI args (prompt, --config, --model, --yolo), loads `entheai.toml` via `entheai_config::Config::from_toml_str`, resolves `<provider>/<model>` to an `OpenAiCompatProvider`, registers built-in tools in a `ToolRegistry`, sets up the permission `Policy`, and calls `agent.run_task()`.
-2. **`entheai-core::Agent`** owns a provider + model string. Two modes:
-   - `run_turn()` — streaming chat: calls `provider.stream_chat()`, pushes tokens to a `TokenSink` trait (stdout in the CLI), collects full text.
-   - `run_task()` — agentic loop: repeatedly calls `provider.complete()` with tool schemas, dispatches tool calls, feeds results back into the message history, hard-capped at **25 turns**.
-3. **`entheai_providers::OpenAiCompatProvider`** implements the `Provider` trait. Streaming uses `eventsource-stream` to parse SSE; non-streaming `complete()` deserializes JSON including optional `tool_calls`. Both hit `POST /chat/completions`.
-4. **`entheai_tools::ToolRegistry`** stores `Box<dyn Tool>` by name. `schemas()` returns all OpenAI function-tool JSON schemas for the provider. **Built-in tools**: `read_file`, `write_file`, `search`, `run_shell`. All are rooted at the canonicalized `current_dir()`.
-5. **`entheai_permission`**: `Policy.decide(tool_name)` returns `Allow` (yolo or allowlisted), `Deny`, or `Ask`. `Ask` falls through to `Prompter::confirm()` which reads `y/N` from stdin.
+`crates/core` is built on [adk-rust](https://github.com/zavora-ai/adk-rust) (pinned `1.0.0`) — there is no hand-rolled `Provider`/streaming client anymore; model calls go through adk-rust's own `Llm` implementations (`adk_rust::model::openai::OpenAIClient` for OpenAI-compatible endpoints).
+
+1. **`bin/entheai/src/main.rs`** parses CLI args (prompt, `--config`, `--model`, `--yolo`, `--fanout`), loads `entheai.toml` via `entheai_config::Config::from_toml_str`, registers built-in tools in a `ToolRegistry`, sets up the permission `Policy`, and builds an `EntheaiAgent` (via `EntheaiAgent::build_auto`, which picks the memory-aware or instruction-only constructor).
+2. **`entheai_core::EntheaiAgent`** (`crates/core/src/entheai_agent.rs`) wraps an `adk_rust::agent::LlmAgentBuilder` + `Runner` + `SessionService`. Two entry points:
+   - `run_to_text()` / `run()` — one fresh message, one fresh session.
+   - `run_with_history()` — seeds prior `(role, text)` turns into the session via `SessionService::append_event` before running the new message (what the interactive TUI uses, since it carries full conversation history forward).
+   `crates/core/src/event_bridge.rs`'s `run_with_events()` drives the resulting `adk_rust::EventStream` and translates it into the TUI-facing `AgentEvent` enum (`Thinking`/`Token`/`ToolStarted`/`ToolFinished`/`FrozenWoke`), and — when memory is enabled — records the final answer's trajectory and raw transcript once the run completes.
+3. **`entheai_core::model_resolve::resolve_model`** parses `"<provider>/<model>"` into an `Arc<dyn adk_rust::Llm>` using `[providers.<name>]` config (`base_url` + optional `api_key_env`).
+4. **`entheai_tools::ToolRegistry`** stores `Arc<dyn Tool>` by name (non-consuming `to_tools()` lets one registry back multiple `EntheaiAgent` builds — needed since the interactive TUI builds a fresh agent every turn). `crates/core/src/adk_tool_adapter.rs`'s `AdkToolAdapter` wraps each `entheai_tools::Tool` (+ `Policy` + `Prompter`) as an `adk_rust::Tool`. **Built-in tools**: `read_file`, `write_file`, `search`, `run_shell`. All are rooted at the canonicalized `current_dir()`.
+5. **`entheai_permission`**: `Policy.decide(tool_name)` returns `Allow` (yolo or allowlisted), `Deny`, or `Ask`. `Ask` falls through to `Prompter::confirm()` which reads `y/N` from stdin (CLI) or forwards to the TUI's permission modal.
 6. **`entheai-companion`** (separate binary, `crates/companion/src/main.rs`): spawned as a child process by the main binary whenever `[companion].enabled = true` (and `--no-companion` is not passed). A 180×180 px borderless always-on-top floating window (winit + softbuffer). Shows an animated breathing glow with a QR code encoding `{sid, host, port, cwd}`. Drives a four-state animation:
    - **idle** — slow teal pulse (3s cycle) when TUI is waiting for input
    - **working** — fast teal pulse (1.5s) + orbiting spinner while the agent runs
@@ -73,9 +89,8 @@ CLI: `--no-companion` disables for the session.
 
 ### Traits as extension points
 All core extension points use `#[async_trait]`:
-- `Provider` — add new model backends
-- `Tool` — add new built-in tools
-- `TokenSink` — route streaming output (CLI → stdout, TUI → terminal widget)
+- `adk_rust::Llm` — add new model backends (adk-rust ships OpenAI/Anthropic/Gemini/etc.; `entheai_core::model_resolve` only wires up OpenAI-compatible)
+- `Tool` (`entheai_tools`) — add new built-in tools, wrapped as `adk_rust::Tool` via `AdkToolAdapter`
 - `Prompter` — swap permission UI (CLI → stdin, TUI → dialog)
 
 ### Tool implementation recipe
@@ -89,13 +104,13 @@ Register in `main.rs` with `registry.register(Box::new(MyTool::new(root.clone())
 ### Testing patterns
 - **Inline tests**: `#[cfg(test)] mod tests` at the bottom of each source file (not in separate `/tests` directories)
 - **Async tests**: `#[tokio::test]` — tokio runtime is spun per test
-- **HTTP mocking**: `wiremock::MockServer` for provider integration tests
+- **HTTP mocking**: `wiremock::MockServer` mocking the OpenAI-compatible `/chat/completions` SSE endpoint (see `crates/core/src/entheai_agent.rs` and `crates/core/tests/parity.rs` for the request/response fixture shapes)
 - **Filesystem**: `tempfile::tempdir()` for tool tests of file I/O
-- **Provider mocking**: implement the `Provider` trait directly in test modules (see `core::tests` for `MockProvider` and `ScriptedProvider`)
+- **Fake `Llm`/`Tool` impls**: implement `adk_rust::Llm` or `adk_rust::Tool` directly in test modules when a scenario needs more control than an SSE mock gives (see `crates/memory-pp/src/judge.rs`'s `FakeLlm`)
 
 ### Naming & style
 - `impl Into<String>` for public constructors (ergonomic, no string clone at call site)
-- `anyhow::Result<T>` throughout (no custom error types in v0.1)
+- `anyhow::Result<T>` throughout (no custom error types)
 - `serde_json::Value` for tool args and schemas (dynamic, matches OpenAI wire format)
 - One-line doc comments `///` on public items
 
@@ -104,9 +119,10 @@ Register in `main.rs` with `registry.register(Box::new(MyTool::new(root.clone())
 - **`cargo fmt` uses `--all`, not `--workspace`**. `cargo fmt --workspace` will error. Build/clippy/test all use `--workspace`.
 - **File-tool path sandboxing**: `resolve_in_root()` in `crates/tools/src/fs.rs` blocks both `..` traversal AND symlink escapes. It canonicalizes the deepest existing ancestor and compares against the canonicalized root. macOS temp dirs are under `/var` (a symlink to `/private/var`), so the root *must* be canonicalized before comparison — callers must pass a canonicalized root (the CLI does this).
 - **run_shell uses `kill_on_drop(true)`**: if the tokio task is aborted (e.g. on timeout), the child process is reaped, not orphaned.
-- **Hard caps exist everywhere**: 25 max tool-dispatch turns (agent loop), 120s shell timeout, 200 max search results, 100KB max shell output. These prevent runaway API costs and memory blowup.
-- **Sentry DSN is hardcoded** in `bin/entheai/src/main.rs:33-35`. Override via `SENTRY_DSN` env var. No PII is sent (`send_default_pii: false`).
-- **Model ID format is `<provider>/<model>`** (e.g. `osaurus/qwen3-coder`, `zen/deepseek-v4-pro`). The string is split on the first `/`.
+- **Hard caps exist everywhere**: `[router].max_turns` (default 200, `u32::MAX` under `--yolo`) tool-dispatch turns per `EntheaiAgent`, 120s shell timeout, 200 max search results, 100KB max shell output. These prevent runaway API costs and memory blowup.
+- **`[inference].request_timeout_secs`/`.retries` are inert.** adk-rust 1.0.0's `OpenAIClient` hardcodes `reqwest::Client::new()` with no timeout/retry builder surface — a confirmed gap, not a bug in entheai's wiring. `temperature`/`max_tokens` still work (`LlmAgentBuilder::temperature`/`max_output_tokens`).
+- **Sentry DSN is hardcoded** in `bin/entheai/src/main.rs`. Override via `SENTRY_DSN` env var. No PII is sent (`send_default_pii: false`).
+- **Model ID format is `<provider>/<model>`** (e.g. `osaurus/qwen3-coder`, `zen/deepseek-v4-pro`). The string is split on the first `/` in `entheai_core::model_resolve::resolve_model`.
 - **Config file is `entheai.toml`** by default. The `[providers.<name>]` key is used to look up the provider config. `api_key_env` names an environment variable to read (not the key itself).
 - **Only macOS/Apple Silicon**. Hardware-specific tuning (`target-cpu=native`, `mimalloc`, `-Wl,-dead_strip`) means the binary won't run on Intel Macs or other platforms.
 
@@ -115,7 +131,3 @@ Register in `main.rs` with `registry.register(Box::new(MyTool::new(root.clone())
 - **Osaurus**: local inference server on `http://127.0.0.1:1337/v1` (OpenAI-compatible)
 - **OpenCode Zen**: cloud gateway at `https://opencode.ai/zen/v1` (DeepSeek V4 Pro/Flash, Qwen, etc.)
 - **Sentry**: crash/error reporting with hardcoded DSN (opt-out via `SENTRY_DSN` env)
-
-## Future crates (not yet built)
-
-Notable planned additions per the design spec in `docs/superpowers/`: `router`, `agents` (fan-out), `memory`, `learning`, `mcp`, `skills`, `plugins`, `session`, `comms`, `tui`, `viz`, `dogfeed`, `compaction`, `honcho`, `sonar`.
