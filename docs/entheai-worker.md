@@ -1,6 +1,6 @@
 # entheai-worker — Headless Remote Agent Executor
 
-**Status:** spec — **partially implemented in v0.2.0 (F2.1); see "Implemented today" below.** · **Vision version:** v0.3 · **Author:** entheai
+**Status:** spec — **partially implemented in v0.2.1 (F2.1); see "Implemented today" below.** · **Vision version:** v0.4+ · **Author:** entheai
 
 ## Summary
 
@@ -8,7 +8,7 @@
 
 **Think of it as:** the agent runtime without the face. Same agent loop, same tools, same memory engine — just no TUI, no viz, no Kitty shaders, no macOS-specific sandbox. Runs on Linux, macOS (Intel + Apple Silicon), and Windows (best-effort).
 
-## Implemented today (v0.2.0 — F2.1)
+## Implemented today (v0.2.1 — F2.1)
 
 The first working slice ships a **NATS JetStream** transport — *not* the gRPC/`comms` design sketched below, which remains the forward vision. Plan: [`docs/superpowers/plans/2026-07-20-federation-f2-distributed-swarm.md`](superpowers/plans/2026-07-20-federation-f2-distributed-swarm.md); design: [federation spec §4](superpowers/specs/2026-07-20-entheai-nats-federation-design.md).
 

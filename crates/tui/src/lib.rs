@@ -520,7 +520,7 @@ async fn event_loop(
     app.messages.push(Msg {
         role: Role::Assistant,
         text: format!(
-            "🜂 welcome to entheai v0.2.1 🜂\n\n\
+            "🜂 welcome to entheai v{} 🜂\n\n\
              depth-guarded swarm & model-matched workspace coders are online.\n\
              type your instructions below to begin.\n\n\
              useful slash commands:\n\
@@ -529,6 +529,7 @@ async fn event_loop(
                /clear        clear chat history\n\
                /fanout       toggle parallel fan-out swarms (currently: {})\n\n\
              ad visionem — toward vision.",
+            env!("CARGO_PKG_VERSION"),
             fanout_status
         ),
     });

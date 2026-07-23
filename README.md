@@ -7,7 +7,7 @@
 > A personal, macOS-native, **hybrid coding agent for the terminal** — with a brain that fans out.
 
 <p align="center">
-  <a href="https://github.com/entropy-om/entheai/releases/tag/v0.2.1"><img src="https://img.shields.io/badge/release-v0.2.1-00e5ff" alt="release v0.2.1"></a>
+  <a href="https://github.com/entropy-om/entheai/releases/tag/v0.3.0"><img src="https://img.shields.io/badge/release-v0.3.0-00e5ff" alt="release v0.3.0"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20·%20Apple%20Silicon-111" alt="platform">
   <img src="https://img.shields.io/badge/built%20in-Rust-orange" alt="Rust">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="license">
@@ -37,7 +37,7 @@
 
 Built fresh in **Rust**, taking the best ideas from [Crush](https://github.com/charmbracelet/crush) (UX + YOLO), [CodeWhale](https://github.com/Hmbown/CodeWhale) (durable, sandboxed harness), [Ruflo](https://github.com/ruvnet/ruflo) (sub-agents, memory, self-learning), and [jcode](https://jcode.sh) (a lean Rust harness with graph memory + swarm coordination).
 
-> **Status: `v0.2.1` released, built in the open — and now self-hosting.** Working today: the tiered **router** (role→model), **fan-out** (parallel coders in isolated git worktrees → verify → integrate), the agentic tool loop (read / write / **edit** / shell / search + a permission gate), an **MCP** client + supervisor, a **skills** system (incl. `--skills add <url>` from the web), live **token streaming**, the 5-namespace **memory** engine, the **companion** beacon, a live **swarm graph** + an always-on **brain panel** + a shader-backed **native app** (`--app` / `--doctor`), **Obsidian wiki-sync**, **NATS federation** (event bus F1 · distributed swarm F2.1 · fan-out offload F2.2 · **sandboxed workers** F2.3 — Landlock/seccomp on Linux, not yet tagged), an opt-in **prompt-processing** retrieval pipeline (raw store → search → compress), and **recursive development** — fan-out coders can run on the Antigravity CLI (`agy`), so entheai develops entheai, depth-guarded. Install it in one line (below). Later layers — `Sonar` health UI, Honcho personalization, and the `dogfeed` self-improvement flywheel — are on the roadmap. See [`docs/superpowers/`](docs/superpowers/) for the full design spec and milestone plans.
+> **Status: `v0.3.0` released, built in the open — and now self-hosting.** Working today: the tiered **router** (role→model), **fan-out** (parallel coders in isolated git worktrees → verify → integrate), the agentic tool loop (read / write / **edit** / shell / search + a permission gate), an **MCP** client + supervisor, a **skills** system (incl. `--skills add <url>` from the web), live **token streaming**, the 5-namespace **memory** engine + opt-in **prompt-processing** retrieval (raw store → mesh re-rank → compress) with **frozen nodes** and a proactive `BrainJudge`, the **companion** beacon, a live **swarm graph** + an always-on **brain panel** + a shader-backed **native app** (`--app` / `--doctor`), **Obsidian wiki-sync**, **NATS federation** (event bus F1 · distributed swarm F2.1 · fan-out offload F2.2 · **sandboxed workers** F2.3 — Landlock/seccomp on Linux), and **recursive development** — fan-out coders can run on the Antigravity CLI (`agy`), so entheai develops entheai, depth-guarded. Install it in one line (below). Later layers — `Sonar` health UI, Honcho personalization, and the `dogfeed` self-improvement flywheel — are on the roadmap. See [`docs/superpowers/`](docs/superpowers/) for the full design spec and milestone plans.
 
 ## Highlights
 
@@ -216,9 +216,9 @@ Roadmap crates (per the design spec): `dogfeed`, `compaction`, `honcho`, `sonar`
 | **v0.1** | Router · fan-out · tools + permission · MCP · skills · streaming · memory · companion. **Released ✅** |
 | **v0.2** | Live swarm **visualization** + shader **native app**; **Obsidian wiki-sync**; **NATS federation event bus** (F1); `--skills add <url>`; `--memory` inspection; portable headless build. **Released ✅** |
 | **v0.2.1** | Federation **F2.1** (distributed swarm) + **F2.2** (fan-out offload to the fleet). **Released ✅** |
-| *unreleased (`main`)* | Federation **F2.3** (sandboxed workers, `/fleet`) + **F2.4 Slice 1** (shared-base coder caching) — code-complete, awaiting a version tag. |
-| **v0.3** | **F3** shared state (JetStream KV, gated on a `crates/memory` co-design); `Sonar` health UI; durable sessions; `dogfeed` flywheel → HF. |
-| **v0.4+** | Honcho personalization; pluggable topologies; more providers. |
+| **v0.3.0** | BRAIN v1 — prompt-processing memory, frozen nodes, `BrainJudge`; federation **F2.3** (sandboxed workers, `/fleet`) + **F2.4 Slice 1** (shared-base caching); `adk-rust` engine swap; permission+mode, `/setup`, `/config`. **Released ✅** |
+| **v0.4** | **F3** shared state (JetStream KV, gated on a `crates/memory` co-design + landing fan-out sub-agent memory sharing); `Sonar` health UI; durable sessions; `dogfeed` flywheel → HF. |
+| **v0.5+** | Honcho personalization; pluggable topologies; more providers. |
 | **v1.0** | Config freeze, perf passes, docs. |
 
 Versioning follows strict [SemVer](VERSIONING.md); see [`CHANGELOG.md`](CHANGELOG.md).
