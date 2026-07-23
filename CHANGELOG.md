@@ -6,6 +6,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-23
+
+AHOGY A DOLGOK VANNAK — as things are. The flywheel audits itself, the release
+bytes prove themselves, and the root creed is frozen doctrine.
+
 ### Added
 - **"AHOGY A DOLGOK VANNAK" — the root creed, frozen.** New doctrine node `frozen/ahogy-a-dolgok-vannak.md` (*as things are — nothing more, nothing less, just how it should be*): never report better than reality, never hide worse than reality; when report and reality drift, reality wins. Grounded in the README's Genesis Block. It wakes on honesty/claim/report triggers like every other frozen node — the creed is doctrine the system itself recalls, not a slogan.
 - **Byte-reproducible release builds, empirically verified (roadmap Phase 2.2).** `scripts/build-repro.sh` is the deterministic sibling of the PGO pipeline: anchored `aarch64-apple-darwin`, fixed `apple-m1` CPU baseline, `--remap-path-prefix`, `SOURCE_DATE_EPOCH` pinned to HEAD, `ZERO_AR_DATE`, `--locked`, and `-C strip=debuginfo` (macOS `N_OSO` stab entries record rustc's random per-invocation temp dir — untouchable by remapping; the PGO build keeps the full debug map for Sentry). `--verify` builds twice, cleanly and sequentially, into the same target dir and compares SHA-256: **all three binaries byte-identical** on rustc 1.96.0, sealed into `dist/repro-manifest.json` (`entheai.repro.v1` — records the exact toolchain the promise binds to).
