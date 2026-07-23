@@ -3,7 +3,35 @@
 //! subject-suffix + JSON contract that tailnet subscribers depend on.
 
 use entheai_orchestrator::FanoutEvent;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// Schema tag AND subject prefix for entropy telemetry (roadmap Phase 1.2).
+/// A breaking layout change bumps the `v1` in both — wire rules per
+/// VERSIONING.md.
+pub const ENTROPY_SUBJECT_PREFIX: &str = "entheai.entropy.v1";
+
+/// Live TUI entropy telemetry, published to `entheai.entropy.v1.<session>` at
+/// ~1 Hz while the TUI runs with the bus on: brain-ring glow intensities,
+/// frozen-node wake glows, the pomodoro tick, and the `wk N` worker count.
+/// `Deserialize` too — subscribers (the site bridge, tailnet dashboards)
+/// decode with the same type.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EntropySnapshot {
+    /// Always [`ENTROPY_SUBJECT_PREFIX`].
+    pub schema: String,
+    pub session: String,
+    pub at_ms: i64,
+    /// (faculty name, glow 0..=1) — the brain-ring intensities.
+    pub glow: Vec<(String, f32)>,
+    /// (frozen node name, wake glow 0..=1) for currently-loaded nodes.
+    pub frozen: Vec<(String, f32)>,
+    /// Seconds elapsed in the always-on pomodoro.
+    pub pomodoro_sec: u64,
+    /// Live `wk N` worker count.
+    pub workers: usize,
+    /// Last compression cycle's output/input ratio, when one has run.
+    pub compression_ratio: Option<f64>,
+}
 
 /// JSON-serializable mirror of `FanoutEvent`, tagged by `event` kind. Published
 /// to `entheai.fanout.<session>.<subject_suffix()>`. The `event` tag is kept
@@ -95,6 +123,27 @@ impl From<&FanoutEvent> for BusEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entropy_snapshot_round_trips_and_carries_the_schema_tag() {
+        let snap = EntropySnapshot {
+            schema: ENTROPY_SUBJECT_PREFIX.to_string(),
+            session: "sess-1".into(),
+            at_ms: 1_753_000_000_000,
+            glow: vec![("Model".into(), 0.8), ("Tools".into(), 0.1)],
+            frozen: vec![("verification".into(), 1.0)],
+            pomodoro_sec: 300,
+            workers: 4,
+            compression_ratio: Some(0.42),
+        };
+        let json = serde_json::to_string(&snap).unwrap();
+        // The wire contract subscribers grep for.
+        assert!(json.contains("\"schema\":\"entheai.entropy.v1\""));
+        assert!(json.contains("\"pomodoro_sec\":300"));
+        assert!(json.contains("\"workers\":4"));
+        let back: EntropySnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, snap, "2-way wire serialization is lossless");
+    }
 
     #[test]
     fn every_variant_has_a_distinct_subject_suffix() {

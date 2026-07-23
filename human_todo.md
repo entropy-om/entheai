@@ -17,8 +17,8 @@ To achieve true **Quantum Completeness**, `entheai` must perfectly bridge the fl
   - ✅ 2-way serialization of the transient entropy field: `EntropyState` (`entheai.checkpoint.v1`) carries active frozen node activations **with live experience-weighted ranks**, raw memory span anchors (ids — bytes stay in the raw store), Marqant compression ratio, and audio seed state.
   - ✅ `/freeze` snapshots to `.entheai/checkpoints/<id>.json` (deterministic blake3 content id, idempotent); `/thaw <id>` restores activation ranks into the live overlay and rehydrates surviving spans into an injected context brief — pruned spans are skipped and counted honestly.
 
-- [ ] **1.2 Real-Time Entropy Telemetry Stream (`crates/bus` & `crates/tui`)**
-  - Stream live TUI state (active brain-ring glow intensities, pomodoro ticks, and `wk N` worker counts) over the NATS bus (`entheai.entropy.v1`).
+- [x] **1.2 Real-Time Entropy Telemetry Stream (`crates/bus` & `crates/tui`)** — *shipped in 0.8.0*
+  - ✅ Live TUI state — brain-ring glow intensities, frozen wake glows, pomodoro ticks, `wk N` worker counts, compression ratio — streams as `EntropySnapshot` over NATS `entheai.entropy.v1.<session>` at ~1 Hz, fire-and-forget (never blocks the UI loop).
 
 ---
 
@@ -47,12 +47,13 @@ To achieve true **Quantum Completeness**, `entheai` must perfectly bridge the fl
 
 ### Phase 4: Live Quantum Site Integration (`entheai.com/docs`)
 
-- [ ] **4.1 Live `/api/entropy` Telemetry Endpoint (`wrangler.jsonc` & Worker)**
-  - Connect `entheai.com/docs` to the NATS event bus or Cloudflare KV store.
-  - Display a live visual beacon showing real-time active nodes, prompt compression ratios, and Vaked genesis seals directly on the web documentation header.
+- [x] **4.1 Live `/api/entropy` Telemetry Endpoint (`wrangler.jsonc` & Worker)** — *shipped in 0.8.0*
+  - ✅ `src/worker.mjs` serves `GET /api/entropy` from Cloudflare KV (`{live, stale, snapshot}` — never fakes liveness; snapshots older than 15 min report `live:false`) and an authenticated `POST` write path (`Bearer ENTROPY_TOKEN`, schema-validated `entheai.entropy.v1` only). Static assets unchanged.
+  - ⚠️ **Human step before the beacon lights up:** `wrangler kv namespace create ENTROPY` (paste id into `wrangler.jsonc`, uncomment the binding), `wrangler secret put ENTROPY_TOKEN`. Until then the endpoint answers an honest 503 and deploys keep working.
+  - ☐ *Remaining:* the docs-header beacon UI consuming the endpoint, and a local NATS→POST bridge for the `entheai.entropy.v1` stream.
 
-- [ ] **4.2 Automated Hourly Site Build & Sync (`scripts/build-site.mjs`)**
-  - Maintain the automated hourly build cycle (`node scripts/build-site.mjs`) updating `public/index.html`, `public/docs/index.html`, `llms.txt`, and `llms-full.txt`.
+- [x] **4.2 Automated Hourly Site Build & Sync (`scripts/build-site.mjs`)** — *shipped in 0.8.0*
+  - ✅ `deploy.yml` now runs on an hourly cron (plus pushes and manual dispatch): `npm ci → build → test → wrangler deploy`, refreshing `public/index.html`, `public/docs/index.html`, `llms.txt`, `llms-full.txt`.
 
 ---
 

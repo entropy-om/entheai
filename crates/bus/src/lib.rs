@@ -5,7 +5,7 @@
 //! the caller runs entirely locally.
 
 mod event;
-pub use event::BusEvent;
+pub use event::{BusEvent, EntropySnapshot, ENTROPY_SUBJECT_PREFIX};
 
 use std::time::Duration;
 
@@ -102,6 +102,24 @@ impl Bus {
     /// `done`) actually reach the server. Best-effort — errors are ignored.
     pub async fn flush(&self) {
         let _ = self.client.flush().await;
+    }
+
+    /// Publish one live entropy telemetry snapshot as JSON to
+    /// `entheai.entropy.v1.<session>` (roadmap Phase 1.2). Best-effort
+    /// fire-and-forget, same contract as [`Bus::publish_event`]: telemetry
+    /// must never break the TUI loop.
+    pub async fn publish_entropy(&self, snap: &EntropySnapshot) {
+        let subject = format!("{ENTROPY_SUBJECT_PREFIX}.{}", snap.session);
+        let payload = match serde_json::to_vec(snap) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("nats: serialize entropy snapshot failed: {e}");
+                return;
+            }
+        };
+        if let Err(e) = self.client.publish(subject, payload.into()).await {
+            log::warn!("nats: entropy publish failed: {e}");
+        }
     }
 
     /// Publish one fan-out event as JSON to `entheai.fanout.<session>.<suffix>`.

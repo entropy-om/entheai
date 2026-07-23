@@ -1129,6 +1129,38 @@ async fn event_loop(
                 if pomo_sec != last_pomo_sec {
                     last_pomo_sec = pomo_sec;
                     dirty = true;
+                    // Roadmap 1.2: stream the live entropy field over the bus
+                    // at the same ~1 Hz cadence — glow intensities, frozen wake
+                    // glows, pomodoro tick, worker count. Fire-and-forget on a
+                    // spawned task; telemetry never blocks the UI loop.
+                    if let Some(bus) = &bus {
+                        let snap = entheai_bus::EntropySnapshot {
+                            schema: entheai_bus::ENTROPY_SUBJECT_PREFIX.to_string(),
+                            session: scope.session_id.clone(),
+                            at_ms: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as i64)
+                                .unwrap_or(0),
+                            glow: app
+                                .brain
+                                .faculties
+                                .iter()
+                                .map(|f| (format!("{:?}", f.kind), f.activity))
+                                .collect(),
+                            frozen: app
+                                .brain
+                                .frozen
+                                .iter()
+                                .map(|f| (f.name.clone(), f.awake))
+                                .collect(),
+                            pomodoro_sec: pomo_sec,
+                            workers: app.brain.worker_count,
+                            compression_ratio: (app.brain.compression_tokens != (0, 0))
+                                .then_some(app.brain.compression_ratio),
+                        };
+                        let bus = bus.clone();
+                        tokio::spawn(async move { bus.publish_entropy(&snap).await });
+                    }
                 }
                 // Auto-dismiss a double-tap hint once its window has lapsed.
                 if app.notice.is_some()

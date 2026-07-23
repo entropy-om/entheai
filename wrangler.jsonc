@@ -2,8 +2,19 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "entheai",
   "compatibility_date": "2026-07-18",
+  // Roadmap 4.1: the Worker serves /api/entropy (live beacon) in front of the
+  // static assets. Until the KV binding below is provisioned + uncommented the
+  // endpoint answers 503 {"error":"entropy store unbound"} — deploys never
+  // break. One-time setup:
+  //   wrangler kv namespace create ENTROPY      → paste the id below, uncomment
+  //   wrangler secret put ENTROPY_TOKEN         → the bridge's bearer token
+  "main": "src/worker.mjs",
+  // "kv_namespaces": [
+  //   { "binding": "ENTROPY", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
+  // ],
   "assets": {
     "directory": "./public",
+    "binding": "ASSETS",
     "not_found_handling": "404-page"
   },
   "observability": {
