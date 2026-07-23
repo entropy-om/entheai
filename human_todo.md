@@ -59,9 +59,9 @@ To achieve true **Quantum Completeness**, `entheai` must perfectly bridge the fl
 
 ### Phase 5: Self-Hosting Flywheel & Structural Honesty Audit
 
-- [ ] **5.1 Recursive Development Self-Audit (`bin/entheai`)**
-  - When `entheai` develops `entheai` via `--fanout` / `agy`, run a post-execution self-audit against `AGENTS.md` and `docs/superpowers/`.
-  - Enforce strict depth guards (`ENTHEAI_FANOUT_DEPTH <= 3`) and log all recursive turns transparently.
+- [x] **5.1 Recursive Development Self-Audit (`bin/entheai`)** — *shipped in 0.9.0*
+  - ✅ When the `agy` executor integrates a recursive-development diff, `run_fanout` runs a post-execution self-audit: one orchestrator call judging the integrated diff against `AGENTS.md`'s own rules, appended to the fan-out report as `## Self-audit (recursive development)`; every failure mode degrades to an honest `self-audit skipped (<reason>)` line.
+  - ✅ Depth guard already enforced (`ENTHEAI_FANOUT_DEPTH`, `MAX_DEPTH = 3`, in `agy.rs`); recursive turns now also land transparently in `.entheai/recursion.log` as append-only JSONL (ts, session, layer, role, task, committed/integrated/sealed).
 
 ---
 

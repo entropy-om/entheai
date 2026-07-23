@@ -18,3 +18,5 @@ public/llms-full.txt
 .superpowers
 .playwright-mcp
 .crabcc/
+target-repro-a/
+target-repro-b/

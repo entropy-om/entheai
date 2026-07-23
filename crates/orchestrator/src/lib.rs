@@ -1093,13 +1093,113 @@ pub async fn run_fanout(
         });
     }
 
-    Ok(format_v2_report(
-        task,
-        &base,
-        &session,
-        &outcomes,
-        integration.as_ref(),
-    ))
+    let mut report = format_v2_report(task, &base, &session, &outcomes, integration.as_ref());
+
+    // Roadmap 5.1: the recursive-development path (entheai developing entheai
+    // via agy) leaves a transparent turn ledger and audits its own integrated
+    // diff against AGENTS.md — the flywheel checks itself after every spin.
+    if config.fanout.executor == "agy" {
+        log_recursive_turns(root, &session, &outcomes);
+        if let Some(i) = &integration {
+            if !i.merged.is_empty() {
+                let verdict = recursive_self_audit(config, root, &i.diff).await;
+                report.push_str("\n## Self-audit (recursive development)\n");
+                report.push_str(&verdict);
+                report.push('\n');
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+/// Transparent recursion ledger (roadmap 5.1): when entheai develops entheai
+/// (the `agy` executor), every coder turn is appended as one JSONL line to
+/// `<root>/.entheai/recursion.log` — layer, role, task, and where it ended up.
+/// Best-effort: a ledger write failure warns, never blocks the run.
+fn log_recursive_turns(root: &Path, session: &str, outcomes: &[CoderOutcome]) {
+    let layer: u32 = std::env::var("ENTHEAI_FANOUT_DEPTH")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let dir = root.join(".entheai");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        log::warn!("recursion ledger: mkdir failed (continuing): {e}");
+        return;
+    }
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let mut lines = String::new();
+    for o in outcomes {
+        let line = serde_json::json!({
+            "ts_ms": ts_ms,
+            "session": session,
+            "layer": layer,
+            "index": o.index,
+            "role": o.role,
+            "task": o.task,
+            "committed": o.committed,
+            "integrated": o.integrated,
+            "sealed": matches!(o.verify, VerifyStatus::Passed(_)),
+        });
+        lines.push_str(&line.to_string());
+        lines.push('\n');
+    }
+    use std::io::Write;
+    let result = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("recursion.log"))
+        .and_then(|mut f| f.write_all(lines.as_bytes()));
+    if let Err(e) = result {
+        log::warn!("recursion ledger: append failed (continuing): {e}");
+    }
+}
+
+/// Byte budget for each document fed to the recursive self-audit prompt.
+const AUDIT_DOC_BYTES: usize = 8 * 1024;
+
+/// Post-execution self-audit for the recursive-development path (roadmap 5.1):
+/// judge the integrated diff against AGENTS.md's own rules via one extra
+/// orchestrator call. Returns a report section; every failure mode degrades to
+/// an honest "skipped" line — the audit can flag work, never lose it.
+async fn recursive_self_audit(config: &Config, root: &Path, diff: &str) -> String {
+    let agents_md = match std::fs::read_to_string(root.join("AGENTS.md")) {
+        Ok(s) => s,
+        Err(e) => return format!("self-audit skipped (AGENTS.md unreadable: {e})"),
+    };
+    let orch_model = match entheai_router::orchestrator_model(config) {
+        Ok(m) => m,
+        Err(e) => return format!("self-audit skipped (no orchestrator model: {e})"),
+    };
+    let system = "You are entheai auditing a change that entheai just made to ITSELF \
+        (recursive development). Judge the diff ONLY against the project rules below. \
+        Report: (1) any rule the diff violates, with the rule quoted; (2) any claim the \
+        diff makes that the diff itself does not substantiate. Be terse and concrete. \
+        If nothing is wrong, reply exactly: audit clean.";
+    let user = format!(
+        "## Project rules (AGENTS.md, truncated)\n{}\n\n## Integrated diff (truncated)\n{}",
+        cap_str(&agents_md, AUDIT_DOC_BYTES),
+        cap_str(diff, AUDIT_DOC_BYTES),
+    );
+    match orchestrate_once(config, &orch_model, Some(system), &user).await {
+        Ok(verdict) => verdict.trim().to_string(),
+        Err(e) => format!("self-audit skipped (audit call failed: {e})"),
+    }
+}
+
+/// Char-boundary-safe head of `s`, ≤ `max` bytes.
+fn cap_str(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 /// Render a fan-out v2 run as a structured markdown-ish report. Pure/deterministic
@@ -1566,6 +1666,64 @@ mod tests {
         assert!(report.contains("no verify command"));
         assert!(report.contains("left on branch entheai/sess/coder-0"));
         assert!(report.contains("scripts/check.sh"));
+    }
+
+    #[test]
+    fn cap_str_is_char_boundary_safe() {
+        assert_eq!(cap_str("hello", 10), "hello");
+        assert_eq!(cap_str("hello", 3), "hel");
+        // "🧊" is 4 bytes; a 5-byte cap must not split the second emoji.
+        assert_eq!(cap_str("🧊🧊", 5), "🧊");
+    }
+
+    #[test]
+    fn recursion_ledger_appends_one_jsonl_line_per_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let outcomes = vec![
+            coder_outcome(
+                0,
+                "coder",
+                "add a feature",
+                "entheai/sess/coder-0",
+                true,
+                VerifyStatus::Passed(MergeSeal::compute(b"d", b"l", "cmd")),
+                true,
+            ),
+            coder_outcome(
+                1,
+                "test",
+                "write tests",
+                "entheai/sess/coder-1",
+                true,
+                VerifyStatus::Failed("boom".into()),
+                false,
+            ),
+        ];
+        log_recursive_turns(dir.path(), "sess-a", &outcomes);
+        log_recursive_turns(dir.path(), "sess-b", &outcomes[..1]);
+        let raw = std::fs::read_to_string(dir.path().join(".entheai/recursion.log")).unwrap();
+        let lines: Vec<serde_json::Value> = raw
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 3, "append-only: 2 + 1 turns");
+        assert_eq!(lines[0]["session"], "sess-a");
+        assert_eq!(lines[0]["role"], "coder");
+        assert_eq!(lines[0]["sealed"], true);
+        assert_eq!(lines[1]["sealed"], false);
+        assert_eq!(lines[1]["integrated"], false);
+        assert_eq!(lines[2]["session"], "sess-b");
+    }
+
+    #[tokio::test]
+    async fn recursive_self_audit_degrades_honestly_without_agents_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = entheai_config::Config::from_toml_str("").unwrap();
+        let verdict = recursive_self_audit(&cfg, dir.path(), "diff --git a b").await;
+        assert!(
+            verdict.starts_with("self-audit skipped"),
+            "no AGENTS.md must yield an honest skip, got: {verdict}"
+        );
     }
 
     #[test]

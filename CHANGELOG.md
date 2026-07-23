@@ -6,6 +6,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+### Added
+- **Recursive-development self-audit + transparent turn ledger (roadmap Phase 5.1).** When entheai develops entheai (the `agy` fan-out executor) and an integration merges, `run_fanout` now audits its own integrated diff against `AGENTS.md`'s rules via one extra orchestrator call, appending the verdict to the report as `## Self-audit (recursive development)` — every failure mode (missing AGENTS.md, no model, call error) degrades to an honest `self-audit skipped (<reason>)` line, never a silent pass. Every recursive coder turn is also appended to `.entheai/recursion.log` as JSONL (ts, session, layer from `ENTHEAI_FANOUT_DEPTH`, role, task, committed/integrated/sealed) — the flywheel's moves are inspectable after the fact. The `MAX_DEPTH = 3` guard was already enforced in `agy.rs`.
+
 ## [0.8.0] - 2026-07-23
 
 The entropy field goes on the wire: the TUI streams its live state over NATS,
