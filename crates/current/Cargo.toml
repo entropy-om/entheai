@@ -1,0 +1,21 @@
+[package]
+name = "entheai-current"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Current-awareness ingestion: Valyu + WorldMonitor → the raw memory soil, under hard daily budgets"
+
+[dependencies]
+entheai-config = { path = "../config" }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["fs", "sync", "time"] }
+log = "0.4"
+anyhow = { workspace = true }
+
+[dev-dependencies]
+wiremock = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = "3"

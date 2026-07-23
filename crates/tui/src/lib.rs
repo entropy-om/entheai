@@ -187,6 +187,40 @@ impl Prompter for TuiPrompter {
     }
 }
 
+/// The live current-awareness runtime (Valyu + WorldMonitor → the soil):
+/// shared by the auto-pulse task and the `/current` command.
+struct CurrentRuntime {
+    engine: std::sync::Arc<entheai_current::CurrentEngine>,
+    pp: std::sync::Arc<entheai_memory_pp::PromptProcessor>,
+    report_tx: mpsc::UnboundedSender<(entheai_current::PulseReport, usize)>,
+}
+
+/// One pulse: fetch under budget, ingest every item into the raw soil.
+/// Returns the report + how many spans were genuinely NEW (dedup-aware).
+async fn run_current_pulse(
+    engine: &entheai_current::CurrentEngine,
+    pp: &entheai_memory_pp::PromptProcessor,
+) -> (entheai_current::PulseReport, usize) {
+    let report = engine.pulse().await;
+    let mut fresh = 0usize;
+    for item in &report.items {
+        if pp
+            .ingest_current(
+                &item.source,
+                &item.kind,
+                &item.title,
+                item.url.as_deref(),
+                item.published_at.as_deref(),
+                &item.content,
+            )
+            .await
+        {
+            fresh += 1;
+        }
+    }
+    (report, fresh)
+}
+
 /// Adapts the prompt-processing memory to the orchestrator's [`TrajectorySink`]
 /// (roadmap Phase 3.1): fan-out verify failures land in the raw store's
 /// `trajectories` namespace as soil for the learning loop.
@@ -603,6 +637,45 @@ async fn event_loop(
     // rotation speed (see `BrainState::set_idle_seconds`).
     let mut idle_poll = tokio::time::interval(Duration::from_secs(5));
     idle_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Current-awareness runtime: with `[current].enabled` and PP memory on,
+    // an auto-pulse task pulls Valyu + WorldMonitor under the daily budgets
+    // and ingests into the soil; `/current` shows status / pulses manually.
+    let (current_report_tx, mut current_report_rx) =
+        mpsc::unbounded_channel::<(entheai_current::PulseReport, usize)>();
+    let current: Option<CurrentRuntime> = match (&pp, config.current.enabled) {
+        (Some(pp), true) => {
+            let ledger = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                .join(".entheai")
+                .join("current-budget.json");
+            let engine = std::sync::Arc::new(entheai_current::CurrentEngine::from_config(
+                &config.current,
+                ledger,
+            ));
+            let rt = CurrentRuntime {
+                engine: engine.clone(),
+                pp: pp.clone(),
+                report_tx: current_report_tx.clone(),
+            };
+            // Auto-pulse: first pulse shortly after startup, then every
+            // refresh_minutes. Budget exhaustion is reported, never bypassed.
+            let (task_engine, task_pp, task_tx) = (engine, pp.clone(), current_report_tx.clone());
+            let every = std::time::Duration::from_secs(config.current.refresh_minutes.max(1) * 60);
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(every);
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tick.tick().await;
+                    let out = run_current_pulse(&task_engine, &task_pp).await;
+                    if task_tx.send(out).is_err() {
+                        break; // UI gone — stop pulsing
+                    }
+                }
+            });
+            Some(rt)
+        }
+        _ => None,
+    };
+
     // Seed the NATS indicator from the initial connect results; the live poll below
     // refreshes it whenever the fleet actually responds.
     app.brain.set_nats(bus.is_some() || fleet_fed.is_some());
@@ -720,6 +793,9 @@ async fn event_loop(
                                 &text,
                             )
                             .await;
+                        }
+                        Action::Submit(text) if is_current_command(&text) => {
+                            handle_current_command(&mut app, &current, &text);
                         }
                         Action::Submit(text) if is_workers_command(&text) => {
                             handle_workers_command(&mut app, &text);
@@ -1121,6 +1197,18 @@ async fn event_loop(
                         app.brain.wake_frozen(&name);
                         dirty = true;
                     }
+                }
+                // Drain current-awareness pulse reports: fresh world knowledge
+                // just landed in the soil — flare Context, tell the human.
+                while let Ok((report, fresh)) = current_report_rx.try_recv() {
+                    if fresh > 0 {
+                        app.brain.flare(entheai_viz::FacultyKind::Context);
+                    }
+                    app.messages.push(Msg {
+                        role: Role::Tool,
+                        text: format!("{} · {fresh} new span(s) in the soil", report.summary()),
+                    });
+                    dirty = true;
                 }
                 // Keep the always-on Pomodoro countdown live at ~1 Hz even when
                 // idle and the brain panel is hidden: repaint only when the shown
@@ -1541,6 +1629,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             let is_local_command = is_radio_command(trimmed)
                 || is_speak_command(trimmed)
                 || is_checkpoint_command(trimmed)
+                || is_current_command(trimmed)
                 || is_workers_command(trimmed)
                 || is_viz_command(trimmed)
                 || is_brain_command(trimmed)
@@ -1765,6 +1854,57 @@ async fn handle_checkpoint_command(
                 }
             }
         }
+    };
+    app.messages.push(Msg {
+        role: Role::Tool,
+        text: feedback,
+    });
+    app.follow = true;
+}
+
+/// True when the submitted input is a local `/current` command (never sent to
+/// the agent).
+fn is_current_command(text: &str) -> bool {
+    let t = text.trim_start();
+    t == "/current" || t.starts_with("/current ")
+}
+
+/// Parse and dispatch `/current`: budget status by default; `pulse` fetches
+/// now (spawned — the UI never blocks on the network; the report arrives via
+/// the pulse channel like an automatic one).
+fn handle_current_command(app: &mut App, current: &Option<CurrentRuntime>, text: &str) {
+    app.messages.push(Msg {
+        role: Role::User,
+        text: text.to_string(),
+    });
+    let feedback = match current {
+        None => {
+            "current: off — set [current] enabled = true AND [memory] mode = \"prompt-processing\""
+                .to_string()
+        }
+        Some(rt) => match text.split_whitespace().nth(1) {
+            Some("pulse") => {
+                let (engine, pp, tx) = (rt.engine.clone(), rt.pp.clone(), rt.report_tx.clone());
+                tokio::spawn(async move {
+                    let out = run_current_pulse(&engine, &pp).await;
+                    let _ = tx.send(out);
+                });
+                "🌊 pulsing… report lands here when the fetch completes".to_string()
+            }
+            None | Some("status") => {
+                let lines: Vec<String> = rt
+                    .engine
+                    .budget_status()
+                    .into_iter()
+                    .map(|(source, used, cap)| format!("  {source}: {used}/{cap} requests today"))
+                    .collect();
+                format!(
+                    "current budgets (reset at UTC midnight):\n{}",
+                    lines.join("\n")
+                )
+            }
+            Some(_) => "usage: /current [status|pulse]".to_string(),
+        },
     };
     app.messages.push(Msg {
         role: Role::Tool,
@@ -2861,6 +3001,10 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     (
         "/thaw",
         "list checkpoints · /thaw <id> restores + injects the brief",
+    ),
+    (
+        "/current",
+        "world-awareness budgets · /current pulse fetches Valyu + WorldMonitor now",
     ),
     ("/workers", "fan-out swarm — list · stop <id> · debug <id>"),
     ("/fleet", "show the remote worker fleet (read-only)"),

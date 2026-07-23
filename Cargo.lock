@@ -2214,6 +2214,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "entheai-current"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "entheai-config",
+ "log",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "entheai-federation"
 version = "1.0.0"
 dependencies = [
@@ -2434,6 +2449,7 @@ dependencies = [
  "entheai-companion",
  "entheai-config",
  "entheai-core",
+ "entheai-current",
  "entheai-federation",
  "entheai-memory",
  "entheai-memory-pp",

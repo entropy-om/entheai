@@ -8,6 +8,7 @@ rust-version.workspace = true
 entheai-core = { path = "../core" }
 entheai-memory = { path = "../memory" }
 entheai-memory-pp = { path = "../memory-pp" }
+entheai-current = { path = "../current" }
 entheai-tools = { path = "../tools" }
 entheai-permission = { path = "../permission" }
 # radio with default-features off: its `audio` feature is enabled here only via

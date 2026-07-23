@@ -21,7 +21,10 @@ pub enum RawKind {
     /// or test that failed inside a fan-out worktree) — roadmap Phase 3.1:
     /// "knowledge grows in the soil. Even the brutal notes of failure."
     Trajectory,
-    // Slice 2/3: CodebaseSnapshot, ObsidianNote, External
+    /// Current-world knowledge from external live sources (Valyu search,
+    /// WorldMonitor events) — the brain knowing things AS THEY ARE.
+    External,
+    // Slice 2/3: CodebaseSnapshot, ObsidianNote
 }
 
 impl RawKind {
@@ -30,6 +33,7 @@ impl RawKind {
             RawKind::Transcript => "transcript",
             RawKind::ToolOutput => "tool_output",
             RawKind::Trajectory => "trajectory",
+            RawKind::External => "external",
         }
     }
     fn parse(s: &str) -> Option<Self> {
@@ -37,6 +41,7 @@ impl RawKind {
             "transcript" => Some(RawKind::Transcript),
             "tool_output" => Some(RawKind::ToolOutput),
             "trajectory" => Some(RawKind::Trajectory),
+            "external" => Some(RawKind::External),
             _ => None,
         }
     }

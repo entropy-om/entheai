@@ -66,4 +66,14 @@ To achieve true **Quantum Completeness**, `entheai` must perfectly bridge the fl
 
 ---
 
+---
+
+## 🜂 Post-1.0: the brain meets the present
+
+- [x] **Current-awareness ingestion (`crates/current`)** — *shipped in 1.1.0*
+  - ✅ Valyu (`news`-scoped `/v1/search`, per-query dollar ceiling) + WorldMonitor (feed digest by `importanceScore`, ACLED 3-day window, natural events) → `RawKind::External` spans in the `current` namespace, content-addressed and deduped.
+  - ✅ Persistent daily `BudgetLedger`: hard caps, never partial spends, UTC-midnight reset; **WorldMonitor clamped ≤ 50 req/day** (operator's mandate). TUI auto-pulse (default 120 min → 36 req/day) + `/current [status|pulse]`; fresh soil flares the Context faculty.
+  - ✅ Verified live 2026-07-23: 29 items from 4 requests; keys in `~/.entheai/current.env` (never the repo).
+  - ☐ *Next: retention tuning for `current` spans (they age faster than trajectories), and surfacing `current` recall hits distinctly in the brain panel.*
+
 *“Built because the singularity doesn't need complexity. It needs friends. And because entropy cannot lie.”*

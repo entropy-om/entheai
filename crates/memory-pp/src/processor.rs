@@ -227,6 +227,39 @@ impl PromptProcessor {
         touched
     }
 
+    /// Current-world knowledge from a live external source (Valyu search hit,
+    /// WorldMonitor event). Stored RAW under the `current` namespace, capped
+    /// and content-addressed — re-fetching the same headline dedupes to one
+    /// span. Returns true when the span is new (callers can count fresh soil).
+    pub async fn ingest_current(
+        &self,
+        source: &str,
+        kind: &str,
+        title: &str,
+        url: Option<&str>,
+        published_at: Option<&str>,
+        content: &str,
+    ) -> bool {
+        let before = self.raw.count().await.unwrap_or(0);
+        let meta = json!({
+            "namespace": "current",
+            "source": source,
+            "kind": kind,
+            "title": title,
+            "url": url,
+            "published_at": published_at,
+        });
+        // Title is prepended so recall's FTS sees it even when the body is
+        // structured JSON (WorldMonitor events).
+        let body_owned = format!("{title}\n{content}");
+        let body = cap_bytes(&body_owned, self.max_ingest_bytes);
+        if let Err(e) = self.raw.ingest(RawKind::External, body, Some(meta)).await {
+            warn!("pp ingest_current failed (continuing): {e}");
+            return false;
+        }
+        self.raw.count().await.unwrap_or(before) > before
+    }
+
     // ---- QuantumCheckpoint freeze / thaw (roadmap Phase 1.1) ----
 
     /// How many recent raw spans a freeze anchors. Enough to reconstruct the

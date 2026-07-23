@@ -53,6 +53,20 @@ max_parallel = 4                         # cap on concurrently-running sub-agent
 # verify_required = true            # false = legacy lax mode (integrate unverified)
 # mode = ""                         # "" = inherit parent ceiling; else override: plan | auto | yolo | ask
 
+# ── Current-awareness ingestion (Valyu + WorldMonitor → the raw memory soil) ──
+# Fills the brain with the world AS IT IS, under hard daily request budgets
+# (WorldMonitor clamps to ≤ 50/day regardless of config — operator's mandate).
+# Requires [memory] mode = "prompt-processing". Keys come from the env
+# (~/.entheai/current.env): VALYU_API_KEY, WORLDMONITOR_API_KEY.
+# [current]
+# enabled = true
+# topics = ["your standing Valyu news queries"]  # one request per topic per pulse
+# refresh_minutes = 120               # auto-pulse cadence in the TUI (36 WM req/day)
+# valyu_daily_cap = 50                # requests/day
+# worldmonitor_daily_cap = 50         # requests/day, hard-clamped ≤ 50
+# valyu_max_results = 5               # results per query (1–20)
+# valyu_max_price = 30.0              # CPM dollar ceiling per Valyu query
+
 # ── Permission posture + per-tool pins ─────────────────────────────────────────
 [permission]
 mode = "ask"                      # startup default: plan | auto | yolo | ask

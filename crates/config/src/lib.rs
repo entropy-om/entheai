@@ -47,6 +47,8 @@ pub struct Config {
     pub federation: FederationConfig,
     #[serde(default)]
     pub frozen: FrozenConfig,
+    #[serde(default)]
+    pub current: CurrentConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1276,6 +1278,77 @@ fn default_frozen_top_k() -> usize {
 }
 fn default_frozen_max_bytes() -> usize {
     4096
+}
+
+/// `[current]` — current-awareness ingestion (Valyu + WorldMonitor → the raw
+/// memory soil, under hard daily request budgets). Off by default; requires
+/// prompt-processing memory to be on (the brain IS where current lands).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CurrentConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Env var holding the Valyu API key. Missing/empty key disables Valyu.
+    #[serde(default = "default_valyu_key_env")]
+    pub valyu_api_key_env: String,
+    /// Env var holding the WorldMonitor API key (X-WorldMonitor-Key).
+    #[serde(default = "default_worldmonitor_key_env")]
+    pub worldmonitor_api_key_env: String,
+    /// Daily request cap for Valyu (budget honesty; requests, not dollars —
+    /// per-query dollars are bounded by `valyu_max_price`).
+    #[serde(default = "default_current_daily_cap")]
+    pub valyu_daily_cap: u32,
+    /// Daily request cap for WorldMonitor. Clamped to ≤ 50 at engine build —
+    /// the operator's mandate, not negotiable via config.
+    #[serde(default = "default_current_daily_cap")]
+    pub worldmonitor_daily_cap: u32,
+    /// Minutes between automatic pulses in the TUI. Default 120 keeps a full
+    /// day of WorldMonitor pulses (3 req each) at 36 ≤ 50.
+    #[serde(default = "default_current_refresh_minutes")]
+    pub refresh_minutes: u64,
+    /// Valyu news topics — one request per topic per pulse. Empty = Valyu idle.
+    #[serde(default)]
+    pub topics: Vec<String>,
+    /// Results per Valyu query (1–20).
+    #[serde(default = "default_valyu_max_results")]
+    pub valyu_max_results: u32,
+    /// CPM price ceiling per Valyu query, in dollars.
+    #[serde(default = "default_valyu_max_price")]
+    pub valyu_max_price: f64,
+}
+
+impl Default for CurrentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            valyu_api_key_env: default_valyu_key_env(),
+            worldmonitor_api_key_env: default_worldmonitor_key_env(),
+            valyu_daily_cap: default_current_daily_cap(),
+            worldmonitor_daily_cap: default_current_daily_cap(),
+            refresh_minutes: default_current_refresh_minutes(),
+            topics: Vec::new(),
+            valyu_max_results: default_valyu_max_results(),
+            valyu_max_price: default_valyu_max_price(),
+        }
+    }
+}
+
+fn default_valyu_key_env() -> String {
+    "VALYU_API_KEY".to_string()
+}
+fn default_worldmonitor_key_env() -> String {
+    "WORLDMONITOR_API_KEY".to_string()
+}
+fn default_current_daily_cap() -> u32 {
+    50
+}
+fn default_current_refresh_minutes() -> u64 {
+    120
+}
+fn default_valyu_max_results() -> u32 {
+    5
+}
+fn default_valyu_max_price() -> f64 {
+    30.0
 }
 
 #[cfg(test)]
