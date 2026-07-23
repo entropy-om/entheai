@@ -1,13 +1,13 @@
 ---
 id: companion-radio
-title: "Companion & Radio"
+title: "Companion, Radio & Speak"
 group: "The visual TUI"
 order: 2
-badgeText: "Companion · Radio"
+badgeText: "Companion · Radio · Speak"
 badgeColor: teal
 ---
 
-Two small extras that run alongside the terminal session: a desktop companion window and an in-TUI music player.
+Small extras that run alongside the terminal session: a desktop companion window, an in-TUI music player, and voice output.
 
 ## Companion
 
@@ -42,3 +42,13 @@ An in-TUI ambient loop of one bundled track — "Standing-Onde" by 8bit-Wraith �
 | `Ctrl-N` | Restart the track |
 
 The now-playing status appears in the status bar (`♪ Standing-Onde — 8bit-Wraith`) and clears on stop.
+
+## Speak
+
+Reads assistant responses aloud through the OS-native TTS engine (AVSpeechSynthesizer/NSSpeechSynthesizer on macOS) — no models, no network fetch. Off by default.
+
+| Command | Action |
+|---|---|
+| `/speak` | Toggle voice output on/off |
+| `/speak on` / `/speak off` | Explicitly enable/disable |
+| `/speak stop` | Interrupt the current utterance |

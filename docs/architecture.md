@@ -86,7 +86,8 @@ Cargo.toml                          # Workspace root (resolver=2)
 ├── crates/obsidian/                # Per-session wiki-sync of codebase to Obsidian vault
 ├── crates/bus/                     # Federation Event Bus (F1) streaming over NATS
 ├── crates/federation/              # Distributed Swarm (F2) JetStream queue & git-bundle transport
-├── crates/radio/                   # Procedural ambient audio engine (seeded via ~/Downloads/Mesa*)
+├── crates/radio/                   # Ambient audio engine — one bundled track, looped
+├── crates/tts/                     # OS-native voice output for assistant responses (/speak)
 └── crates/companion/               # Floating 180x180 session QR beacon window
 ```
 

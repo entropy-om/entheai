@@ -53,6 +53,14 @@ pub struct BrainState {
     pub worker_count: usize,
     pub ctx_pct: u16,
     pub frame: u64,
+    /// Fractional carry toward the next `frame` advance — lets rotation speed
+    /// vary continuously (via `rotation_speed_factor`) while `frame` itself
+    /// stays a plain integer for `project`/`pulse`.
+    frame_carry: f64,
+    /// Seconds since the user's last keyboard/mouse input, from a direct
+    /// `user-idle` poll (not MCP — see `crates/tui`'s idle-poll timer).
+    /// `None` when the sensor is unavailable; rotation then runs at full speed.
+    idle_seconds: Option<u64>,
     /// Last compression cycle's output/input ratio, e.g. 0.42 == kept 42% of tokens.
     /// `compression_tokens == (0, 0)` means never compressed yet — `footer_line`
     /// checks that before rendering the readout.
@@ -89,6 +97,8 @@ impl BrainState {
             worker_count: 0,
             ctx_pct: 0,
             frame: 0,
+            frame_carry: 0.0,
+            idle_seconds: None,
             compression_ratio: 0.0,
             compression_tokens: (0, 0),
         }
@@ -136,14 +146,43 @@ impl BrainState {
         }
     }
 
-    /// Advance rotation + decay every faculty's activity toward 0.
+    /// Advance rotation + decay every faculty's activity toward 0. Rotation
+    /// speed scales with `rotation_speed_factor` (idle presence), so the
+    /// panel visibly slows when the user's away and speeds back up when they
+    /// return — `frame` itself stays a plain per-tick integer for
+    /// `project`/`pulse`, driven by a fractional carry.
     pub fn tick(&mut self) {
-        self.frame = self.frame.wrapping_add(1);
+        self.frame_carry += self.rotation_speed_factor();
+        while self.frame_carry >= 1.0 {
+            self.frame = self.frame.wrapping_add(1);
+            self.frame_carry -= 1.0;
+        }
         for f in &mut self.faculties {
             f.activity = (f.activity * DECAY).max(0.0);
         }
         for f in &mut self.frozen {
             f.awake = (f.awake * DECAY).max(0.0);
+        }
+    }
+
+    /// Report the user's idle time (seconds since last input), from a direct
+    /// sensor poll — `None` if the sensor is unavailable, in which case
+    /// rotation runs at full speed (today's behavior, unchanged).
+    pub fn set_idle_seconds(&mut self, secs: Option<u64>) {
+        self.idle_seconds = secs;
+    }
+
+    /// 1.0 at full speed (active, or idle state unknown); falls linearly to a
+    /// 0.15 floor as idle time grows from 30s to 5 minutes, so the panel
+    /// visibly slows when the user steps away but never fully stops.
+    fn rotation_speed_factor(&self) -> f64 {
+        match self.idle_seconds {
+            None => 1.0,
+            Some(s) if s < 30 => 1.0,
+            Some(s) => {
+                let t = ((s - 30) as f64 / 270.0).min(1.0);
+                1.0 - 0.85 * t
+            }
         }
     }
 
@@ -522,6 +561,46 @@ mod tests {
         );
         let db = depth_brightness(0.0, 0.5);
         assert!((0.0..=1.0).contains(&db));
+    }
+
+    #[test]
+    fn tick_advances_frame_by_one_when_idle_unknown_or_active() {
+        let mut b = BrainState::new();
+        b.tick();
+        assert_eq!(b.frame, 1);
+        b.tick();
+        assert_eq!(b.frame, 2);
+
+        b.set_idle_seconds(Some(5)); // below the 30s slow-down threshold
+        b.tick();
+        assert_eq!(b.frame, 3);
+    }
+
+    #[test]
+    fn tick_slows_rotation_when_idle_and_never_fully_stops() {
+        let mut b = BrainState::new();
+        b.set_idle_seconds(Some(300)); // >= 5 min idle -> speed floor (0.15x)
+        for _ in 0..20 {
+            b.tick();
+        }
+        // At 0.15x speed, 20 ticks accumulate 3.0 of frame_carry -> frame == 3.
+        assert_eq!(b.frame, 3);
+        assert!(b.frame > 0, "rotation must still advance, never freeze solid");
+    }
+
+    #[test]
+    fn tick_resumes_full_speed_when_idle_clears() {
+        let mut b = BrainState::new();
+        b.set_idle_seconds(Some(600));
+        for _ in 0..10 {
+            b.tick();
+        }
+        let slow_frame = b.frame;
+        b.set_idle_seconds(None); // user returned
+        for _ in 0..10 {
+            b.tick();
+        }
+        assert_eq!(b.frame, slow_frame + 10, "full speed resumes immediately");
     }
 
     #[test]

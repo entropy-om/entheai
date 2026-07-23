@@ -13,6 +13,8 @@ entheai-permission = { path = "../permission" }
 # radio with default-features off: its `audio` feature is enabled here only via
 # the `desktop` feature below, so a headless TUI drops the audio system libs.
 entheai-radio = { path = "../radio", default-features = false }
+# same pattern as entheai-radio above, gated behind `desktop`.
+entheai-tts = { path = "../tts", default-features = false }
 entheai-config = { path = "../config" }
 entheai-orchestrator = { path = "../orchestrator" }
 entheai-federation = { path = "../federation" }
@@ -30,10 +32,14 @@ serde_json = { workspace = true }
 reqwest = { workspace = true }
 unicode-width = "0.2"
 uuid = { version = "1", features = ["v4"] }
+# Direct idle-time poll (same crate rmcp-sensors' idle tool uses) driving the
+# brain panel's rotation speed. Optional (behind `desktop`) — Linux needs X11
+# dev libs for it, which a headless build shouldn't require.
+user-idle = { version = "0.6", optional = true }
 
 [features]
 # `desktop` (default) turns on the in-TUI audio radio. `--no-default-features`
 # builds a headless TUI with no audio system libs (the radio stub still answers
 # commands, silently).
 default = ["desktop"]
-desktop = ["entheai-radio/audio"]
+desktop = ["entheai-radio/audio", "entheai-tts/speech", "dep:user-idle"]

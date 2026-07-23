@@ -37,6 +37,7 @@ use entheai_core::AgentEvent;
 use entheai_permission::{Grant, Policy, Prompter};
 use entheai_radio::{Command as RadioCommand, Event as RadioEvent, Radio};
 use entheai_tools::ToolRegistry;
+use entheai_tts::Voice;
 
 /// Spinner animation frames for the live progress line (Charm/Bubbletea-style
 /// braille spinner), advanced on each animation tick while a run is in flight.
@@ -208,6 +209,9 @@ struct App {
     current_action: String,
     /// Title of the radio track currently playing, shown in the status bar.
     now_playing: Option<String>,
+    /// Whether assistant responses are spoken aloud via the OS TTS engine
+    /// when a turn completes. Off by default — opt in with `/speak`.
+    speak_enabled: bool,
     /// Whether this session runs submitted messages through fan-out
     /// (decompose → parallel coders → integrate) instead of the single-agent
     /// `run_task` loop. Set once at construction; shown in the status bar.
@@ -295,6 +299,20 @@ async fn probe_osaurus(base_url: &str) -> (bool, Vec<String>) {
         Ok(Some(models)) => (true, models),
         _ => (false, Vec::new()),
     }
+}
+
+/// Seconds since the user's last keyboard/mouse input, via a direct
+/// `user-idle` syscall (the same sensor `rmcp-sensors`' idle tool wraps) —
+/// `None` if unavailable (headless build, or the platform call failed).
+/// A local syscall, cheap enough to call inline on the event loop.
+#[cfg(feature = "desktop")]
+fn poll_idle_seconds() -> Option<u64> {
+    user_idle::UserIdle::get_time().ok().map(|i| i.as_seconds())
+}
+
+#[cfg(not(feature = "desktop"))]
+fn poll_idle_seconds() -> Option<u64> {
+    None
 }
 
 /// Which main view the TUI is showing.
@@ -491,6 +509,7 @@ async fn event_loop(
         spinner_frame: 0,
         current_action: "thinking".to_string(),
         now_playing: None,
+        speak_enabled: false,
         fanout,
         worker_pool: None,
         system_prompt,
@@ -543,6 +562,10 @@ async fn event_loop(
         Radio::noop()
     });
 
+    // OS-native TTS voice for `/speak`. Never fails hard — if the platform
+    // engine can't initialize, speak()/stop() are silent no-ops.
+    let mut voice = Voice::new();
+
     let mut events = EventStream::new();
     // Floor the tick at 16ms (~60fps) so a `tick_ms = 0` config can't spin a
     // 0ms busy-loop.
@@ -556,6 +579,10 @@ async fn event_loop(
     // Throttled poll for local Osaurus endpoint (~5s).
     let mut osaurus_poll = tokio::time::interval(Duration::from_secs(5));
     osaurus_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Throttled poll for user idle time (~5s) — drives the brain panel's
+    // rotation speed (see `BrainState::set_idle_seconds`).
+    let mut idle_poll = tokio::time::interval(Duration::from_secs(5));
+    idle_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Seed the NATS indicator from the initial connect results; the live poll below
     // refreshes it whenever the fleet actually responds.
     app.brain.set_nats(bus.is_some() || fleet_fed.is_some());
@@ -660,6 +687,9 @@ async fn event_loop(
                         }
                         Action::Submit(text) if is_radio_command(&text) => {
                             handle_radio_command(&mut app, &radio, &text);
+                        }
+                        Action::Submit(text) if is_speak_command(&text) => {
+                            handle_speak_command(&mut app, &mut voice, &text);
                         }
                         Action::Submit(text) if is_workers_command(&text) => {
                             handle_workers_command(&mut app, &text);
@@ -840,6 +870,9 @@ async fn event_loop(
                 dirty = true;
                 match result {
                     Some(Ok(answer)) => {
+                        if app.speak_enabled {
+                            voice.speak(&answer);
+                        }
                         if let Some(idx) = app.streaming_idx {
                             // Authoritative final text overwrites whatever streamed in live.
                             app.messages[idx].text = answer;
@@ -1105,6 +1138,9 @@ async fn event_loop(
                         dirty = true;
                     }
                 }
+            }
+            _ = idle_poll.tick() => {
+                app.brain.set_idle_seconds(poll_idle_seconds());
             }
         }
     }
@@ -1428,6 +1464,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             // Commands safe to run mid-flight (read-only or run-management). The
             // state-mutating ones (/clear, /fanout, /quit) stay idle-only.
             let is_local_command = is_radio_command(trimmed)
+                || is_speak_command(trimmed)
                 || is_workers_command(trimmed)
                 || is_viz_command(trimmed)
                 || is_brain_command(trimmed)
@@ -1513,6 +1550,55 @@ fn handle_radio_command(app: &mut App, radio: &Radio, text: &str) {
             "♪ stopping".to_string()
         }
         _ => "usage: /radio pause | next | stop — entheai radio always plays Standing-Onde by 8bit-Wraith".to_string(),
+    };
+    app.messages.push(Msg {
+        role: Role::Tool,
+        text: feedback,
+    });
+    app.follow = true;
+}
+
+/// True when the submitted input is a local `/speak` command (never sent to
+/// the agent).
+fn is_speak_command(text: &str) -> bool {
+    let t = text.trim_start();
+    t == "/speak" || t.starts_with("/speak ")
+}
+
+/// Parse and dispatch a `/speak` command, echoing feedback into the history.
+///
+/// Forms: `/speak on` · `/speak off` · `/speak stop` (interrupt current
+/// utterance) · `/speak` (toggle).
+fn handle_speak_command(app: &mut App, voice: &mut Voice, text: &str) {
+    app.messages.push(Msg {
+        role: Role::User,
+        text: text.to_string(),
+    });
+    let mut parts = text.split_whitespace().skip(1); // skip "/speak"
+    let feedback = match parts.next() {
+        Some("on") => {
+            app.speak_enabled = true;
+            "🔊 speak: on — assistant responses will be read aloud".to_string()
+        }
+        Some("off") => {
+            app.speak_enabled = false;
+            voice.stop();
+            "🔇 speak: off".to_string()
+        }
+        Some("stop") => {
+            voice.stop();
+            "🔇 stopped speaking".to_string()
+        }
+        None => {
+            app.speak_enabled = !app.speak_enabled;
+            if app.speak_enabled {
+                "🔊 speak: on — assistant responses will be read aloud".to_string()
+            } else {
+                voice.stop();
+                "🔇 speak: off".to_string()
+            }
+        }
+        Some(_) => "usage: /speak [on|off|stop]".to_string(),
     };
     app.messages.push(Msg {
         role: Role::Tool,
@@ -2597,8 +2683,9 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/setup", "interactive first-time setup / install wizard"),
     (
         "/radio",
-        "music — add <url> · pause · next · stop  (Ctrl-P / Ctrl-N)",
+        "ambient loop (Standing-Onde) — pause · next · stop  (Ctrl-P / Ctrl-N)",
     ),
+    ("/speak", "read assistant responses aloud — on · off · stop"),
     ("/workers", "fan-out swarm — list · stop <id> · debug <id>"),
     ("/fleet", "show the remote worker fleet (read-only)"),
     ("/viz", "toggle the full-screen swarm view  (Ctrl-V)"),
@@ -2873,6 +2960,7 @@ mod tests {
             spinner_frame: 0,
             current_action: String::new(),
             now_playing: None,
+        speak_enabled: false,
             fanout: false,
             worker_pool: None,
             system_prompt: None,
@@ -3275,6 +3363,34 @@ mod tests {
     }
 
     #[test]
+    fn speak_command_detection() {
+        assert!(is_speak_command("/speak"));
+        assert!(is_speak_command("/speak on"));
+        assert!(is_speak_command("  /speak off"));
+        assert!(!is_speak_command("/speakup"));
+        assert!(!is_speak_command("say something"));
+    }
+
+    #[test]
+    fn speak_command_toggles_and_reports() {
+        let mut app = test_app();
+        let mut voice = Voice::new();
+
+        handle_speak_command(&mut app, &mut voice, "/speak");
+        assert!(app.speak_enabled);
+        assert!(app.messages.iter().any(|m| m.text.contains("speak: on")));
+
+        handle_speak_command(&mut app, &mut voice, "/speak off");
+        assert!(!app.speak_enabled);
+
+        handle_speak_command(&mut app, &mut voice, "/speak on");
+        assert!(app.speak_enabled);
+
+        handle_speak_command(&mut app, &mut voice, "/speak bogus");
+        assert!(app.messages.iter().any(|m| m.text.contains("usage: /speak")));
+    }
+
+    #[test]
     fn workers_command_detection() {
         assert!(is_workers_command("/workers"));
         assert!(is_workers_command("/workers list"));
@@ -3297,6 +3413,7 @@ mod tests {
             spinner_frame: 0,
             current_action: String::new(),
             now_playing: None,
+        speak_enabled: false,
             fanout: true,
             worker_pool: None,
             system_prompt: None,
@@ -3343,6 +3460,7 @@ mod tests {
             spinner_frame: 0,
             current_action: String::new(),
             now_playing: None,
+        speak_enabled: false,
             fanout: false,
             worker_pool: None,
             system_prompt: None,
@@ -3387,6 +3505,7 @@ mod tests {
             spinner_frame: 0,
             current_action: String::new(),
             now_playing: None,
+        speak_enabled: false,
             fanout: true,
             worker_pool: None,
             system_prompt: None,
@@ -3486,6 +3605,7 @@ mod tests {
             spinner_frame: 0,
             current_action: String::new(),
             now_playing: None,
+        speak_enabled: false,
             fanout: true,
             worker_pool: None,
             system_prompt: None,
@@ -3533,6 +3653,7 @@ mod tests {
             spinner_frame: 0,
             current_action: String::new(),
             now_playing: None,
+        speak_enabled: false,
             fanout: false,
             worker_pool: None,
             system_prompt: None,

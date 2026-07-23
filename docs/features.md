@@ -57,6 +57,18 @@ thread so audio never blocks the UI.
 | `/radio next` | Restart the track from the beginning |
 | `/radio stop` | Stop playback (starts again on `/radio next`) |
 
+## Speak
+
+Reads assistant responses aloud via the OS-native TTS engine (`crates/tts`, AVSpeechSynthesizer/NSSpeechSynthesizer on macOS). No models, no network fetch. Off by default.
+
+### Commands
+
+| Command | Action |
+|---|---|
+| `/speak` | Toggle voice output on/off |
+| `/speak on` / `/speak off` | Explicitly enable/disable |
+| `/speak stop` | Interrupt the current utterance |
+
 ### Shortcuts
 
 | Key | Action |

@@ -1,0 +1,16 @@
+[package]
+name = "entheai-tts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# OS-native speech synthesis (AVSpeechSynthesizer/NSSpeechSynthesizer on
+# macOS via objc2, speech-dispatcher on Linux, SAPI on Windows) — no models
+# to fetch, no external tool. Optional (behind `speech`, default-on) so
+# headless builds skip it.
+tts = { version = "0.26", optional = true }
+
+[features]
+default = ["speech"]
+speech = ["dep:tts"]

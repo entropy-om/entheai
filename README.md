@@ -198,7 +198,8 @@ A Rust workspace of small, focused crates.
 | `obsidian` | Per-session wiki-sync of the repo into an Obsidian vault (docs mirror + architecture generator + MCP nudge). |
 | `viz` | Live `ratatui` swarm graph rendered during fan-out. |
 | `launcher` | The native `--app` window — bundled Ghostty shader/config + the `--doctor` installer. |
-| `radio` | Optional in-TUI audio player (feature-gated). |
+| `radio` | In-TUI ambient loop of one bundled track (feature-gated). |
+| `tts` | OS-native voice output for assistant responses (feature-gated). |
 | `bus` | Federation **event bus** (F1) — publishes the fan-out lifecycle to NATS. |
 | `federation` | Distributed **swarm** (F2) — JetStream work-queue + object-store git-bundles. |
 | `tui` | `ratatui` chat — streaming, inline tool progress, permission modal. |
