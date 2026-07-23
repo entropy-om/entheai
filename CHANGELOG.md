@@ -6,6 +6,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-23
+
+The entropy field goes on the wire: the TUI streams its live state over NATS,
+and entheai.com answers /api/entropy with honest liveness.
+
 ### Added
 - **Live `/api/entropy` site beacon (roadmap Phase 4.1) + hourly build cycle (4.2).** `entheai.com` gains a Worker (`src/worker.mjs`) in front of the static assets: `GET /api/entropy` returns the latest snapshot from Cloudflare KV as `{live, stale, snapshot}` — snapshots older than 15 minutes report `live: false`, the site never fakes liveness — and `POST /api/entropy` is the authenticated write path (Bearer `ENTROPY_TOKEN` secret, body schema must be exactly `entheai.entropy.v1`, 32 KiB cap, 1 h KV TTL). Until the KV namespace is provisioned the endpoint answers an honest 503 and deploys keep working (binding ships commented in `wrangler.jsonc` with setup steps). `deploy.yml` adds the hourly cron + `src/**` path trigger. 5 new node tests cover liveness, auth, validation, staleness, and 503/405 paths.
 - **Real-time entropy telemetry stream (roadmap Phase 1.2).** The TUI now publishes an `EntropySnapshot` to NATS subject `entheai.entropy.v1.<session>` at ~1 Hz (piggybacked on the pomodoro tick, fire-and-forget on a spawned task — telemetry never blocks the UI loop): brain-ring faculty glow intensities, frozen-node wake glows, the pomodoro second, the live `wk N` worker count, and the last compression ratio when one has run. The DTO lives in `entheai-bus` (`Serialize + Deserialize` — subscribers decode with the same type); a breaking layout change bumps the `v1` in both the schema tag and the subject per VERSIONING.md wire rules. Publishes only when the bus is connected; with NATS off, nothing changes.
