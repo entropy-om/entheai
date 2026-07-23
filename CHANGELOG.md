@@ -6,6 +6,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-07-23
+
+AHOGY A DOLGOK VANNAK. The public API is stable and committed — this release
+adds nothing and removes nothing; it is the commitment itself.
+
+### Changed
+- **The public API is declared stable** per [docs/STABILITY.md](docs/STABILITY.md): the CLI surface, the `entheai.toml` schema, the five versioned wire/on-disk schemas (`entheai.fanout.*`, `entheai.entropy.v1`, `entheai.checkpoint.v1`, `entheai.learning.v1`, `entheai.repro.v1`), the verification invariants (mandatory empirical gate, deterministic seals, depth-guarded + self-auditing recursion, honest liveness), and the frozen-doctrine format. From here, SemVer runs on post-1.0 rules: breaking any stable surface bumps MAJOR. Internal crate APIs, TUI prose, and tunable experience deltas remain explicitly unstable.
+
 ## [0.9.0] - 2026-07-23
 
 AHOGY A DOLGOK VANNAK — as things are. The flywheel audits itself, the release
