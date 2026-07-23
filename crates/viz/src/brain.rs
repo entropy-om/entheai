@@ -13,7 +13,7 @@ use ratatui::widgets::canvas::{Canvas, Context, Line as CanvasLine};
 use ratatui::widgets::Widget;
 
 /// Rotation speed, radians per animation tick.
-const OMEGA: f64 = 0.06;
+pub(crate) const OMEGA: f64 = 0.06;
 /// Per-tick activity decay factor (a flare eases back to a dim glow).
 const DECAY: f32 = 0.90;
 
@@ -66,6 +66,10 @@ pub struct BrainState {
     /// checks that before rendering the readout.
     pub compression_ratio: f64,
     pub compression_tokens: (usize, usize),
+    /// Current-awareness glow 0..=1: flares to 1.0 when fresh world knowledge
+    /// lands in the soil (a `/current` pulse), decays each tick. Drives the
+    /// drifting-mote field in the Zen view.
+    pub current_glow: f32,
 }
 
 impl Default for BrainState {
@@ -101,6 +105,7 @@ impl BrainState {
             idle_seconds: None,
             compression_ratio: 0.0,
             compression_tokens: (0, 0),
+            current_glow: 0.0,
         }
     }
 
@@ -146,6 +151,12 @@ impl BrainState {
         }
     }
 
+    /// Fresh world knowledge landed in the soil — light the current-awareness
+    /// mote field. Decays each `tick`.
+    pub fn flare_current(&mut self) {
+        self.current_glow = 1.0;
+    }
+
     /// Advance rotation + decay every faculty's activity toward 0. Rotation
     /// speed scales with `rotation_speed_factor` (idle presence), so the
     /// panel visibly slows when the user's away and speeds back up when they
@@ -163,6 +174,9 @@ impl BrainState {
         for f in &mut self.frozen {
             f.awake = (f.awake * DECAY).max(0.0);
         }
+        // Current glow decays slower than a faculty flare — fresh world
+        // knowledge lingers as a soft shimmer, not a blink.
+        self.current_glow = (self.current_glow * 0.97).max(0.0);
     }
 
     /// Report the user's idle time (seconds since last input), from a direct
@@ -212,13 +226,13 @@ impl BrainState {
 
 /// A subtle sinusoidal pulse that modulates brightness by ~±15% over the
 /// animation cycle, so nodes breathe even at rest.
-fn pulse(frame: u64, magnitude: f64) -> f64 {
+pub(crate) fn pulse(frame: u64, magnitude: f64) -> f64 {
     1.0 + magnitude * (frame as f64 * 0.04).sin()
 }
 
 /// Project a node on a ring (radius `r`, vertical offset `y_off`) rotating about the
 /// vertical axis by `frame`. Returns (screen_x, screen_y, depth); x/y land ~[-1,1].
-fn project(angle: f64, r: f64, y_off: f64, frame: u64) -> (f64, f64, f64) {
+pub(crate) fn project(angle: f64, r: f64, y_off: f64, frame: u64) -> (f64, f64, f64) {
     let theta = angle + frame as f64 * OMEGA;
     let wx = r * theta.cos();
     let wz = r * theta.sin();
@@ -228,7 +242,7 @@ fn project(angle: f64, r: f64, y_off: f64, frame: u64) -> (f64, f64, f64) {
 }
 
 /// Nearer nodes (larger z) are brighter; result in [0.35, 1.0], monotonic in z.
-fn depth_brightness(wz: f64, r: f64) -> f32 {
+pub(crate) fn depth_brightness(wz: f64, r: f64) -> f32 {
     let t = ((wz / r.max(1e-6)) + 1.0) / 2.0;
     (0.35 + 0.65 * t) as f32
 }

@@ -6,6 +6,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+### Added
+- **Zen view — the full-canvas living field (`/zen`, Ctrl-G).** The operator's vision, first slice: the entire content area becomes entheai alive — a breathing singularity core, the faculties (model · tools · context) as luminous orbiting bodies tethered to the centre and sized by activity, the frozen doctrine as a counter-rotating constellation ring (awake nodes flare and label), and a drifting current-awareness mote field that lights when fresh world knowledge lands in the soil. One message box at the very bottom, the latest reply as a dim whisper above it, everything else gone. Shares the brain module's 3D projection so the field is one coherent rotating sphere; the side panel is suppressed and the canvas cleared each frame so nothing ghosts. `BrainState` gains `current_glow` (flares on fresh soil, decays as a soft shimmer). New `entheai-viz::zen` renderer with no-panic coverage across tiny/huge areas.
+
 ## [1.2.0] - 2026-07-23
 
 The call home: every frozen context becomes a human-readable folder she

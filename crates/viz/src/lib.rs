@@ -8,6 +8,7 @@ pub mod model;
 pub mod pomodoro;
 pub mod swarm;
 pub mod term;
+pub mod zen;
 
 pub use brain::{BrainState, Faculty, FacultyKind, FleetNode};
 pub use model::{NodeStatus, Phase, SwarmModel, SwarmNode};

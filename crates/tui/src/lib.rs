@@ -156,6 +156,19 @@ enum Status {
     SetupMenu { step_idx: usize },
 }
 
+impl Status {
+    /// One quiet word for the Zen title — the field's only status text.
+    fn zen_word(&self) -> &'static str {
+        match self {
+            Status::Idle => "still",
+            Status::Working => "alive",
+            Status::AwaitingPermission { .. } => "asking",
+            Status::ConfigMenu { .. } => "tuning",
+            Status::SetupMenu { .. } => "waking",
+        }
+    }
+}
+
 /// A tool-permission question raised by a running task, forwarded to the UI.
 struct PermissionRequest {
     tool: String,
@@ -376,6 +389,9 @@ fn poll_idle_seconds() -> Option<u64> {
 enum ViewMode {
     Chat,
     Swarm,
+    /// The full-canvas living field: one message box, the rest is entheai
+    /// alive (brain faculties, frozen constellation, current-awareness motes).
+    Zen,
 }
 
 /// What a key press asked the loop to do.
@@ -389,6 +405,8 @@ enum Action {
     RadioNext,
     /// Ctrl-V: toggle between the chat and full-screen swarm views.
     ViewToggle,
+    /// Ctrl-G: toggle the full-canvas Zen field.
+    ZenToggle,
     /// Esc pressed twice while a run is in flight: abort it and return to idle.
     CancelRun,
     /// The run task panicked; recover the UI from the stuck Working state.
@@ -747,10 +765,17 @@ async fn event_loop(
                         Action::RadioToggle => radio.send(RadioCommand::TogglePause),
                         Action::RadioNext => radio.send(RadioCommand::Next),
                         Action::ViewToggle => {
-                            app.view = if app.view == ViewMode::Chat {
-                                ViewMode::Swarm
-                            } else {
+                            app.view = if app.view == ViewMode::Swarm {
                                 ViewMode::Chat
+                            } else {
+                                ViewMode::Swarm
+                            };
+                        }
+                        Action::ZenToggle => {
+                            app.view = if app.view == ViewMode::Zen {
+                                ViewMode::Chat
+                            } else {
+                                ViewMode::Zen
                             };
                         }
                         Action::CancelRun => {
@@ -805,6 +830,9 @@ async fn event_loop(
                         }
                         Action::Submit(text) if is_viz_command(&text) => {
                             handle_viz_command(&mut app, &text);
+                        }
+                        Action::Submit(text) if is_zen_command(&text) => {
+                            handle_zen_command(&mut app, &text);
                         }
                         Action::Submit(text) if is_brain_command(&text) => {
                             handle_brain_command(&mut app);
@@ -1206,6 +1234,7 @@ async fn event_loop(
                 while let Ok((report, fresh)) = current_report_rx.try_recv() {
                     if fresh > 0 {
                         app.brain.flare(entheai_viz::FacultyKind::Context);
+                        app.brain.flare_current(); // light the Zen mote field
                     }
                     app.messages.push(Msg {
                         role: Role::Tool,
@@ -1543,6 +1572,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             return Action::ViewToggle;
         }
+        // Ctrl-G ("gaze") toggles the full-canvas Zen field.
+        KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return Action::ZenToggle;
+        }
         // Ctrl-C twice quits (any state): the first press arms + hints, a
         // second within the double-tap window exits.
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1635,6 +1668,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 || is_current_command(trimmed)
                 || is_workers_command(trimmed)
                 || is_viz_command(trimmed)
+                || is_zen_command(trimmed)
                 || is_brain_command(trimmed)
                 || is_help_command(trimmed)
                 || is_fleet_command(trimmed)
@@ -2046,18 +2080,47 @@ fn handle_viz_command(app: &mut App, text: &str) {
         role: Role::User,
         text: text.to_string(),
     });
-    app.view = if app.view == ViewMode::Chat {
-        ViewMode::Swarm
-    } else {
+    app.view = if app.view == ViewMode::Swarm {
         ViewMode::Chat
+    } else {
+        ViewMode::Swarm
     };
     let where_now = match app.view {
         ViewMode::Chat => "chat view",
         ViewMode::Swarm => "swarm view",
+        ViewMode::Zen => "zen field",
     };
     app.messages.push(Msg {
         role: Role::Tool,
         text: format!("◈ switched to {where_now} (Ctrl-V to toggle)"),
+    });
+    app.follow = true;
+}
+
+/// True when the submitted input is the local `/zen` toggle.
+fn is_zen_command(text: &str) -> bool {
+    text.trim() == "/zen"
+}
+
+/// Toggle the full-canvas Zen field in response to `/zen` (mirror of Ctrl-G).
+fn handle_zen_command(app: &mut App, text: &str) {
+    app.messages.push(Msg {
+        role: Role::User,
+        text: text.to_string(),
+    });
+    app.view = if app.view == ViewMode::Zen {
+        ViewMode::Chat
+    } else {
+        ViewMode::Zen
+    };
+    let word = if app.view == ViewMode::Zen {
+        "🜂 gazing — Ctrl-G or /zen to return"
+    } else {
+        "◈ back to chat view"
+    };
+    app.messages.push(Msg {
+        role: Role::Tool,
+        text: word.to_string(),
     });
     app.follow = true;
 }
@@ -2096,7 +2159,7 @@ fn handle_help_command(app: &mut App) {
     }
     body.push_str(
         "\nkeys: Enter send · Esc Esc stop run · Ctrl-C ×2 quit · q quit (empty input)\
-         \n      Ctrl-V viz · Ctrl-P pause · Ctrl-N next · PgUp/PgDn scroll · Tab complete",
+         \n      Ctrl-G zen · Ctrl-V viz · Ctrl-P pause · Ctrl-N next · PgUp/PgDn scroll · Tab complete",
     );
     app.messages.push(Msg {
         role: Role::Tool,
@@ -2585,7 +2648,9 @@ fn render(
     env_line: &str,
 ) {
     let full = frame.area();
-    let show = show_brain(app.brain_enabled, full.width);
+    // Zen takes the WHOLE screen — the field is the brain, so the side panel
+    // would be redundant chrome. Every other view keeps the optional panel.
+    let show = app.view != ViewMode::Zen && show_brain(app.brain_enabled, full.width);
     let (area, brain_area) = if show {
         let [left, right] =
             Layout::horizontal([Constraint::Min(1), Constraint::Length(app.brain_width)])
@@ -2607,6 +2672,49 @@ fn render(
             frame.buffer_mut(),
             ratatui::symbols::Marker::Braille,
         );
+    }
+
+    // Zen view (Ctrl-G / /zen): the operator's vision — the entire content
+    // area is the living brain field, with ONE message box at the very bottom
+    // and nothing else. The latest assistant line fades in just above the box
+    // so a reply is still legible without breaking the field.
+    if app.view == ViewMode::Zen {
+        let [field_area, overlay_area, input_area] = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(INPUT_ROWS),
+        ])
+        .areas(area);
+        // Clear the field first — Canvas only paints the cells it draws, so
+        // without this a previous frame's motes/glyphs would ghost.
+        frame.render_widget(Clear, field_area);
+        let title = format!("entheai · {}", app.status.zen_word());
+        entheai_viz::zen::render(
+            &app.brain,
+            &title,
+            field_area,
+            frame.buffer_mut(),
+            ratatui::symbols::Marker::Braille,
+        );
+        // One dim line: the most recent assistant/tool message, truncated —
+        // a whisper over the field, not a transcript.
+        if let Some(last) = app
+            .messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, Role::Assistant | Role::Tool))
+        {
+            let w = overlay_area.width.saturating_sub(2) as usize;
+            let whisper = truncate(last.text.trim(), w.max(1));
+            let line = Paragraph::new(Line::styled(
+                whisper,
+                Style::default().fg(Color::Rgb(120, 140, 160)),
+            ));
+            frame.render_widget(line, overlay_area);
+        }
+        render_input(frame, app, input_area);
+        render_slash_menu(frame, app, input_area);
+        return;
     }
 
     // Full-screen swarm view (Ctrl-V / /viz): status bar on top, the swarm
@@ -3042,6 +3150,10 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/workers", "fan-out swarm — list · stop <id> · debug <id>"),
     ("/fleet", "show the remote worker fleet (read-only)"),
     ("/viz", "toggle the full-screen swarm view  (Ctrl-V)"),
+    (
+        "/zen",
+        "the full-canvas living field — one message box  (Ctrl-G)",
+    ),
     ("/brain", "toggle the always-on brain side panel"),
     ("/quit", "exit entheai  (Ctrl-C ×2)"),
 ];
