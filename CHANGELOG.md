@@ -6,6 +6,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-23
+
+Structural honesty lands in the merge path: fan-out integration now demands
+empirical verification and seals every merged diff to the log that earned it.
+
 ### Added
 - **Mandatory deterministic merge seals for fan-out integration (roadmap Phase 2.1).** Every coder worktree merge now passes an empirical verification gate before integrating: `[fanout].verify` when set, else auto-detected `./scripts/check.sh` at the repo root. A passing run produces a deterministic **SHA-256 `MergeSeal`** — `sha256(diff)`, `sha256(verify log)`, and a combined seal over both — carried on the coder's outcome and printed in the fan-out report (`integrated ✓ — seal <12-hex> (verify: <cmd>)`). Self-reported coder success without empirical verification no longer integrates (enforcing `frozen/verification.md`).
 
