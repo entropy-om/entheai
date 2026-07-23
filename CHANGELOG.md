@@ -6,6 +6,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-23
+
+The brain meets the present: two live sources feed the soil under hard,
+honest daily budgets — the world as it is, metered, deduped, never faked.
+
 ### Added
 - **Current-awareness ingestion — the brain drinks from the world as it is (`[current]`, `/current`).** A new `entheai-current` crate pulls two live sources into the raw memory soil as `RawKind::External` spans under the `current` namespace (content-addressed — re-fetched headlines dedupe): **Valyu** (`POST /v1/search`, `news`-scoped, per-query `max_price` dollar ceiling, one request per configured topic) and **WorldMonitor** (news feed digest ranked globally by `importanceScore`, ACLED conflict events over a rolling 3-day window, natural-disaster events). Every request is metered through a persistent daily `BudgetLedger` (UTC-midnight reset) that **hard-stops at the caps and never partially spends** — WorldMonitor's cap clamps to ≤ 50/day regardless of config, the operator's mandate. In the TUI: an auto-pulse task every `refresh_minutes` (default 120 → 36 WM requests/day), `/current` shows live budget status, `/current pulse` fetches now; fresh soil flares the Context faculty. Keys resolve from env (`VALYU_API_KEY`, `WORLDMONITOR_API_KEY`); a missing key disables that source and says so in the pulse report — `keyless`, `budget_exhausted`, and per-source `errors` are first-class report fields, never hidden. Verified live: 29 items from 4 requests on day one.
 
