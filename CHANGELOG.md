@@ -6,6 +6,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-23
+
+Voice output, an idle-aware brain panel, and a fully self-contained radio —
+the binary no longer shells out to or fetches anything for playback.
+
 ### Added
 - **`/speak` — read assistant responses aloud.** A new `entheai-tts` crate wraps the OS-native TTS engine (AVSpeechSynthesizer/NSSpeechSynthesizer on macOS via the `tts` crate) — no models, no network fetch, no external tool. Off by default; `/speak` toggles it, `/speak on`/`/speak off` set it explicitly, `/speak stop` interrupts mid-utterance. Speaks the full assistant answer once a turn completes (not per streamed token).
 - **Brain panel reacts to real idle time.** A direct `user-idle` poll (~5s, the same sensor `rmcp-sensors`' idle tool wraps — already configured as an MCP server in `entheai.toml`) feeds `BrainState`, which now slows the faculties graph's rotation as the user steps away (linear falloff from full speed at <30s idle to a 0.15x floor at 5min+) and snaps back to full speed the moment they return. Bypasses MCP entirely (same direct-poll pattern as the existing NATS/Osaurus footer indicators) since MCP tools only fire on agent-initiated calls, not a continuous background signal. Gated behind the `desktop` feature — headless builds see `idle_seconds: None` and run at full speed, unchanged.

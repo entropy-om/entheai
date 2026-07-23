@@ -2121,7 +2121,7 @@ dependencies = [
 
 [[package]]
 name = "entheai"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "adk-rust",
  "anyhow",
@@ -2153,7 +2153,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-bus"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-nats",
  "entheai-config",
@@ -2167,7 +2167,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-companion"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2182,7 +2182,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-config"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "entheai-sandbox",
  "serde",
@@ -2192,7 +2192,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "adk-rust",
  "anyhow",
@@ -2214,7 +2214,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-federation"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-nats",
@@ -2232,7 +2232,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-launch"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "entheai-launcher",
@@ -2240,7 +2240,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-launcher"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "tempfile",
@@ -2248,7 +2248,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-mapper"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "tempfile",
  "tokio",
@@ -2256,7 +2256,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "entheai-tools",
@@ -2267,7 +2267,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-memory"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2285,7 +2285,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-memory-pp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "adk-rust",
  "async-trait",
@@ -2306,7 +2306,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-obsidian"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -2322,7 +2322,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-orchestrator"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2344,7 +2344,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-permission"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "log",
@@ -2353,7 +2353,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-radio"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "rodio",
  "tokio",
@@ -2361,7 +2361,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-router"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2374,7 +2374,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-sandbox"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "landlock",
  "libc",
@@ -2386,7 +2386,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-skills"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2403,7 +2403,7 @@ dependencies = [
 
 [[package]]
 name = "entheai-tools"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "entheai-permission",
@@ -2416,14 +2416,14 @@ dependencies = [
 
 [[package]]
 name = "entheai-tts"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "tts",
 ]
 
 [[package]]
 name = "entheai-tui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2453,21 +2453,21 @@ dependencies = [
 
 [[package]]
 name = "entheai-ultragraph"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "entheai-viz"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "ratatui",
 ]
 
 [[package]]
 name = "entheai-worker"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3599,7 +3599,7 @@ dependencies = [
 
 [[package]]
 name = "kompress-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "serde",
