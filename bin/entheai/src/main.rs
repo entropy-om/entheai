@@ -299,32 +299,20 @@ async fn main() -> anyhow::Result<()> {
                 // answer alone is printed, matching today's behavior. Sends
                 // to a channel with no reader never block (unbounded).
                 let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
-                let agent = match &runtime {
-                    Some(mem) => entheai_core::EntheaiAgent::new_with_memory(
-                        &model_id,
-                        system_prompt.as_deref(),
-                        &cfg.inference,
-                        &cfg.providers,
-                        &registry,
-                        std::sync::Arc::clone(&policy),
-                        std::sync::Arc::clone(&prompter),
-                        max_iterations,
-                        std::sync::Arc::clone(mem),
-                        pp.clone(),
-                        scope.clone(),
-                        Some(event_tx.clone()),
-                    )?,
-                    None => entheai_core::EntheaiAgent::new_with_instruction(
-                        &model_id,
-                        system_prompt.as_deref(),
-                        &cfg.inference,
-                        &cfg.providers,
-                        &registry,
-                        std::sync::Arc::clone(&policy),
-                        std::sync::Arc::clone(&prompter),
-                        max_iterations,
-                    )?,
-                };
+                let agent = entheai_core::EntheaiAgent::build_auto(
+                    &model_id,
+                    system_prompt.as_deref(),
+                    &cfg.inference,
+                    &cfg.providers,
+                    &registry,
+                    std::sync::Arc::clone(&policy),
+                    std::sync::Arc::clone(&prompter),
+                    max_iterations,
+                    runtime.clone(),
+                    pp.clone(),
+                    scope.clone(),
+                    Some(event_tx.clone()),
+                )?;
                 let answer = entheai_core::event_bridge::run_with_events(
                     &agent,
                     &[],

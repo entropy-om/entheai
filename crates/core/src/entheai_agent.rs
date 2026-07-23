@@ -123,6 +123,55 @@ impl EntheaiAgent {
         )
     }
 
+    /// Picks [`Self::new_with_memory`] or [`Self::new_with_instruction`]
+    /// based on whether `memory` is present — the "build whichever
+    /// `EntheaiAgent` variant this turn needs" branch that both the TUI's
+    /// per-turn interactive spawn and bin/entheai's one-shot path used to
+    /// duplicate independently. `pp`/`scope`/`event_tx` are only consulted
+    /// when `memory` is `Some` (matching `new_with_memory`'s own contract).
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_auto(
+        model_spec: &str,
+        instruction: Option<&str>,
+        inference: &entheai_config::InferenceConfig,
+        providers: &HashMap<String, ProviderConfig>,
+        registry: &entheai_tools::ToolRegistry,
+        policy: Arc<Policy>,
+        prompter: Arc<tokio::sync::Mutex<dyn Prompter>>,
+        max_iterations: u32,
+        memory: Option<Arc<entheai_memory::MemoryRuntime>>,
+        pp: Option<Arc<entheai_memory_pp::PromptProcessor>>,
+        scope: entheai_memory::MemoryScope,
+        event_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::AgentEvent>>,
+    ) -> anyhow::Result<Self> {
+        match memory {
+            Some(memory) => Self::new_with_memory(
+                model_spec,
+                instruction,
+                inference,
+                providers,
+                registry,
+                policy,
+                prompter,
+                max_iterations,
+                memory,
+                pp,
+                scope,
+                event_tx,
+            ),
+            None => Self::new_with_instruction(
+                model_spec,
+                instruction,
+                inference,
+                providers,
+                registry,
+                policy,
+                prompter,
+                max_iterations,
+            ),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn build(
         model_spec: &str,

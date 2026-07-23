@@ -1,12 +1,15 @@
-//! Interactive `ratatui` chat UI driving the agentic `run_task` loop.
+//! Interactive `ratatui` chat UI driving `EntheaiAgent`'s adk-rust-backed
+//! agentic loop.
 //!
-//! Flow: the user types a message and presses Enter; a tokio task runs
-//! `run_task` and streams the outcome back over an mpsc channel. When the model
-//! wants to call a gated tool, [`TuiPrompter`] forwards a permission request to
-//! the UI thread, which pops a modal and answers via a oneshot channel.
-//!
-//! v1 scope: type -> run -> permission modal -> answer/error in history. No
-//! token streaming, no inline tool-progress, no diffs, no sessions.
+//! Flow: the user types a message and presses Enter; a fresh `EntheaiAgent`
+//! is built for that turn (its `MemoryScope.task_id` is per-turn, so the
+//! agent can't be reused across turns) and driven by
+//! `entheai_core::event_bridge::run_with_events`, which streams live
+//! `AgentEvent`s (tokens, tool start/finish, frozen-node wake) back over an
+//! mpsc channel while the whole conversation history is seeded into the
+//! agent's session via `run_with_history`. When the model wants to call a
+//! gated tool, [`TuiPrompter`] forwards a permission request to the UI
+//! thread, which pops a modal and answers via a oneshot channel.
 
 use std::io::Stdout;
 use std::sync::Arc;
@@ -319,12 +322,6 @@ enum Action {
     RecoverRun,
 }
 
-// TODO(@rahulmranga): memory-v1 Task 9 — thread the shared memory into the
-// interactive run loop. Add `memory: Option<std::sync::Arc<entheai_memory::MemoryRuntime>>`
-// and `scope: entheai_memory::MemoryScope` params to `run` (and to `event_loop`),
-// add `entheai-memory = { path = "../memory" }` to crates/tui/Cargo.toml, then swap
-// the internal `.run_task(...)` call for `.run_task_with_memory(..., mem.as_deref(), sc)`
-// with a per-turn `task_id`. Verbatim recipe: docs/superpowers/plans/2026-07-19-entheai-memory-v1.md → "Task 9".
 /// Run the interactive TUI. Sets up the terminal, runs the event loop, and
 /// always restores the terminal on exit (raw mode + alternate screen), even on
 /// error, via [`TerminalGuard`].
@@ -794,32 +791,20 @@ async fn event_loop(
                                     // at construction), and needed anyway since each turn
                                     // gets its own MemoryScope.task_id (a shared, reused
                                     // agent would bake in a stale one).
-                                    let agent = match &mem {
-                                        Some(m) => entheai_core::EntheaiAgent::new_with_memory(
-                                            &model_label,
-                                            instruction.as_deref(),
-                                            &config.inference,
-                                            &config.providers,
-                                            &registry,
-                                            Arc::clone(&policy),
-                                            Arc::clone(&prompter),
-                                            max_iterations,
-                                            Arc::clone(m),
-                                            pp_clone.clone(),
-                                            sc.clone(),
-                                            Some(event_tx.clone()),
-                                        ),
-                                        None => entheai_core::EntheaiAgent::new_with_instruction(
-                                            &model_label,
-                                            instruction.as_deref(),
-                                            &config.inference,
-                                            &config.providers,
-                                            &registry,
-                                            Arc::clone(&policy),
-                                            Arc::clone(&prompter),
-                                            max_iterations,
-                                        ),
-                                    };
+                                    let agent = entheai_core::EntheaiAgent::build_auto(
+                                        &model_label,
+                                        instruction.as_deref(),
+                                        &config.inference,
+                                        &config.providers,
+                                        &registry,
+                                        Arc::clone(&policy),
+                                        Arc::clone(&prompter),
+                                        max_iterations,
+                                        mem.clone(),
+                                        pp_clone.clone(),
+                                        sc.clone(),
+                                        Some(event_tx.clone()),
+                                    );
                                     let res = match agent {
                                         Ok(agent) => {
                                             entheai_core::event_bridge::run_with_events(
