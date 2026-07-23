@@ -417,8 +417,7 @@ impl SqliteStore {
         let db = Arc::clone(&self.db);
         let rows = tokio::task::spawn_blocking(move || -> rusqlite::Result<Vec<RawRow>> {
             let conn = Self::lock_db(&db);
-            let placeholders = std::iter::repeat("?")
-                .take(ids.len())
+            let placeholders = std::iter::repeat_n("?", ids.len())
                 .collect::<Vec<_>>()
                 .join(",");
             let sql = format!(

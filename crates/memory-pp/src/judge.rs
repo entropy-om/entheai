@@ -126,10 +126,12 @@ impl BrainJudge {
             if answer == "none" {
                 return;
             }
-            if let Some(matched) = node_names
-                .iter()
-                .find(|n| answer.contains(&n.to_lowercase()))
-            {
+            // Exact match only: the prompt demands "ONLY the topic name or
+            // 'none'", so a substring match would let stray prose that
+            // happens to mention a node name (the model ignoring the format
+            // instruction) wake it — exactly the false-positive the "none"
+            // default is meant to guard against.
+            if let Some(matched) = node_names.iter().find(|n| answer == n.to_lowercase()) {
                 let _ = tx.send(BrainJudgeEvent::Woke(matched.clone()));
             }
         });

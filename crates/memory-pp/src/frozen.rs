@@ -346,8 +346,8 @@ mod tests {
         if frozen_dir.exists() {
             let store = FrozenStore::load(&frozen_dir);
             assert!(
-                store.len() >= 12,
-                "real frozen/ dir contains at least 12 nodes"
+                store.len() >= 16,
+                "real frozen/ dir contains at least 16 nodes"
             );
         }
     }

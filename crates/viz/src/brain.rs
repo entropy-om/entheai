@@ -1,12 +1,12 @@
-//! Always-on "brain state" panel model (Slice A). Rendering is added in a later task.
-//!
-//! A small living graph: the agent's faculties (model, tools, context), the remote
-//! fleet, a rotation frame, and readouts (worker count, NATS up, context %). Pure +
-//! terminal-agnostic; fed by the TUI from event arms it already has.
+//! Always-on "brain state" panel: a small living graph (the agent's faculties —
+//! model, tools, context — the remote fleet, frozen-node ring, a rotation frame,
+//! and readouts: worker count, NATS up, context %, compression ratio). State is
+//! pure + terminal-agnostic, fed by the TUI from event arms it already has;
+//! `render()` below draws it onto a ratatui `Canvas`.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::canvas::{Canvas, Context, Line as CanvasLine};
@@ -118,6 +118,11 @@ impl BrainState {
             .unwrap_or(0.0)
     }
 
+    /// How many frozen nodes are currently "visibly awake" (awake > 0.05).
+    pub fn frozen_awake_count(&self) -> usize {
+        self.frozen.iter().filter(|f| f.awake > 0.05).count()
+    }
+
     pub fn faculty(&self, kind: FacultyKind) -> &Faculty {
         self.faculties
             .iter()
@@ -166,6 +171,12 @@ impl BrainState {
     }
 }
 
+/// A subtle sinusoidal pulse that modulates brightness by ~±15% over the
+/// animation cycle, so nodes breathe even at rest.
+fn pulse(frame: u64, magnitude: f64) -> f64 {
+    1.0 + magnitude * (frame as f64 * 0.04).sin()
+}
+
 /// Project a node on a ring (radius `r`, vertical offset `y_off`) rotating about the
 /// vertical axis by `frame`. Returns (screen_x, screen_y, depth); x/y land ~[-1,1].
 fn project(angle: f64, r: f64, y_off: f64, frame: u64) -> (f64, f64, f64) {
@@ -181,6 +192,24 @@ fn project(angle: f64, r: f64, y_off: f64, frame: u64) -> (f64, f64, f64) {
 fn depth_brightness(wz: f64, r: f64) -> f32 {
     let t = ((wz / r.max(1e-6)) + 1.0) / 2.0;
     (0.35 + 0.65 * t) as f32
+}
+
+/// Faculty connection-line color: teal at rest, warm-cyan when active.
+fn faculty_line_color(activity: f32, db: f32) -> Color {
+    if activity > 0.01 {
+        // Blend from teal (0,90,90) toward warm cyan (0,180,220) as activity rises.
+        let g = (90.0 + 90.0 * activity.min(1.0)) * db;
+        let b = (90.0 + 130.0 * activity.min(1.0)) * db;
+        Color::Rgb(
+            0,
+            (g.min(255.0) as u8).max(10),
+            (b.min(255.0) as u8).max(10),
+        )
+    } else {
+        // Resting teal.
+        let g = (90.0 * db) as u8;
+        Color::Rgb(0, g.max(10), g.max(10))
+    }
 }
 
 /// Draw the brain panel into `area`: a rotating canvas (all rows but the last) +
@@ -201,23 +230,33 @@ pub fn render(state: &BrainState, area: Rect, buf: &mut Buffer, marker: Marker) 
         .x_bounds([-1.0, 1.0])
         .y_bounds([-1.0, 1.0])
         .paint(|ctx: &mut Context| {
-            for (i, _f) in state.faculties.iter().enumerate() {
+            // Faculty-to-centre connection lines — colour shifts with activity.
+            for (i, f) in state.faculties.iter().enumerate() {
                 let a = i as f64 / n_fac as f64 * std::f64::consts::TAU;
                 let (x, y, wz) = project(a, 0.45, 0.10, state.frame);
-                let g = (depth_brightness(wz, 0.45) * 90.0) as u8;
+                let db = depth_brightness(wz, 0.45);
                 ctx.draw(&CanvasLine {
                     x1: 0.0,
                     y1: 0.0,
                     x2: x,
                     y2: y,
-                    color: Color::Rgb(0, g, g),
+                    color: faculty_line_color(f.activity, db),
                 });
             }
             ctx.layer();
+            // Centre glyph — a subtle pulsing star.
+            let centre_bright = (0.47 + 0.53 * pulse(state.frame, 0.25)) as f32;
             ctx.print(
                 0.0,
                 0.0,
-                Span::styled("✦", Style::default().fg(Color::Rgb(120, 200, 220))),
+                Span::styled(
+                    "✦",
+                    Style::default().fg(Color::Rgb(
+                        (120.0 * centre_bright) as u8,
+                        (200.0 * centre_bright) as u8,
+                        (220.0 * centre_bright) as u8,
+                    )),
+                ),
             );
             for (i, f) in state.faculties.iter().enumerate() {
                 let a = i as f64 / n_fac as f64 * std::f64::consts::TAU;
@@ -251,12 +290,32 @@ pub fn render(state: &BrainState, area: Rect, buf: &mut Buffer, marker: Marker) 
                 );
                 ctx.print(x, y, Span::styled("•", Style::default().fg(col)));
             }
+            // Frozen node ring — the dyad partner to `FrozenStore::wake`.
+            // Each node sits on the outermost ring and glows (green-cyan)
+            // proportionally to `awake`, with a subtle breath pulsing on top.
+            // A freshly-woken node (awake > 0.85) briefly flashes brighter.
             let n_frozen = state.frozen.len().max(1);
             for (i, node) in state.frozen.iter().enumerate() {
                 let a = i as f64 / n_frozen as f64 * std::f64::consts::TAU;
                 let (x, y, wz) = project(a, 1.05, 0.05, state.frame);
                 let db = depth_brightness(wz, 1.05);
-                let v = ((0.20 + 0.80 * node.awake) * db * 255.0) as u8;
+                let p = pulse(state.frame, 0.15);
+                // Combine: depth brightness * (awake level + breath) * wake-flash boost.
+                let raw_v = (0.20 + 0.80 * node.awake) * p as f32;
+                let v = (raw_v * db * 255.0) as u8;
+                // Freshly woken → white-hot centre; settled → green-cyan glow.
+                let (r, g, b) = if node.awake > 0.85 {
+                    // White-hot flash: blends toward (200, 240, 255).
+                    let flash = ((node.awake - 0.85) / 0.15).min(1.0);
+                    (
+                        (160.0 * flash * db) as u8,
+                        ((200.0 + 40.0 * flash) * db) as u8,
+                        ((220.0 + 35.0 * flash) * db) as u8,
+                    )
+                } else {
+                    // Green-cyan resting glow: (0, g, v).
+                    (0, (v as u16 * 200 / 255) as u8, v)
+                };
                 let ch = node
                     .name
                     .chars()
@@ -266,10 +325,7 @@ pub fn render(state: &BrainState, area: Rect, buf: &mut Buffer, marker: Marker) 
                 ctx.print(
                     x,
                     y,
-                    Span::styled(
-                        ch,
-                        Style::default().fg(Color::Rgb(0, (v as u16 * 200 / 255) as u8, v)),
-                    ),
+                    Span::styled(ch, Style::default().fg(Color::Rgb(r, g, b))),
                 );
             }
         });
@@ -307,13 +363,37 @@ fn footer_line(state: &BrainState) -> Line<'static> {
     ];
     if state.compression_tokens.0 > 0 || state.compression_tokens.1 > 0 {
         let pct = (state.compression_ratio * 100.0).round() as i64;
+        let (inp, out) = state.compression_tokens;
         spans.push(Span::raw(" · "));
         spans.push(Span::styled(
             format!("kx {pct}%"),
             Style::default().fg(Color::Magenta),
         ));
+        // Show input→output token counts when both are known: e.g.
+        // "kx 42% · 1.2k→500t" so the operator sees the absolute reduction,
+        // not only the ratio.
+        if inp > 0 && out > 0 {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                format!("{}→{}t", fmt_tokens(inp), fmt_tokens(out)),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            ));
+        }
     }
     Line::from(spans)
+}
+
+/// Compact token count label: `950`, `18.4k`, `1.2M`.
+fn fmt_tokens(n: usize) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -383,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn compression_round_trip_and_footer_shows_ratio() {
+    fn compression_round_trip_and_footer_shows_ratio_and_token_arrow() {
         let mut b = BrainState::new();
         b.set_compression(0.42, 1000, 420);
         assert!((b.compression_ratio - 0.42).abs() < 1e-9);
@@ -392,7 +472,7 @@ mod tests {
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect;
         use ratatui::symbols::Marker;
-        let area = Rect::new(0, 0, 40, 12);
+        let area = Rect::new(0, 0, 50, 12);
         let mut buf = Buffer::empty(area);
         render(&b, area, &mut buf, Marker::Braille);
         let y = area.bottom() - 1;
@@ -404,6 +484,7 @@ mod tests {
             row.contains("kx 42%"),
             "footer compression readout missing: {row:?}"
         );
+        assert!(row.contains("→"), "token arrow should be present: {row:?}");
     }
 
     #[test]

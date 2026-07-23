@@ -15,7 +15,7 @@ fn glyph(status: NodeStatus, frame: u64) -> char {
     match status {
         NodeStatus::Pending => '◻',
         NodeStatus::Running => {
-            if frame % 2 == 0 {
+            if frame.is_multiple_of(2) {
                 '◑'
             } else {
                 '◐'

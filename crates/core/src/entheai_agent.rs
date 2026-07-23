@@ -230,8 +230,12 @@ impl EntheaiAgent {
     }
 
     /// Test/CLI convenience: collect the stream into the final assistant text.
-    /// Uses the last non-partial event carrying text content as the answer.
+    /// Uses the last non-partial, pure-text event (no tool calls/results
+    /// alongside it — mirrors `event_bridge::run_with_events`'s stricter
+    /// candidate-final-answer filter, so a model that emits preamble text
+    /// alongside a tool call isn't mistaken for having finished) as the answer.
     pub async fn run_to_text(&self, user_message: &str) -> anyhow::Result<String> {
+        use adk_rust::Part;
         use futures::StreamExt;
 
         let mut stream = self.run(user_message).await?;
@@ -240,8 +244,12 @@ impl EntheaiAgent {
             let ev = ev?;
             if !ev.llm_response.partial {
                 if let Some(content) = ev.content() {
+                    let has_calls =
+                        content.parts.iter().any(|p| matches!(p, Part::FunctionCall { .. }));
+                    let has_results =
+                        content.parts.iter().any(|p| matches!(p, Part::FunctionResponse { .. }));
                     let joined: String = content.parts.iter().filter_map(|p| p.text()).collect();
-                    if !joined.is_empty() {
+                    if !joined.is_empty() && !has_calls && !has_results {
                         text = joined;
                     }
                 }

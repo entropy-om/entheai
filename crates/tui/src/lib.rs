@@ -1074,8 +1074,8 @@ async fn event_loop(
                 }
                 // Auto-dismiss a double-tap hint once its window has lapsed.
                 if app.notice.is_some()
-                    && app.last_esc.map_or(true, |t| t.elapsed() >= DOUBLE_TAP)
-                    && app.last_ctrl_c.map_or(true, |t| t.elapsed() >= DOUBLE_TAP)
+                    && app.last_esc.is_none_or(|t| t.elapsed() >= DOUBLE_TAP)
+                    && app.last_ctrl_c.is_none_or(|t| t.elapsed() >= DOUBLE_TAP)
                 {
                     app.notice = None;
                     dirty = true;

@@ -70,8 +70,7 @@ Cargo.toml                          # Workspace root (resolver=2)
 ├── bin/entheai-worker/             # Federation worker / dispatcher (--serve / --dispatch)
 ├── bin/entheai-launch/             # Native .app executable launching Ghostty window
 ├── crates/config/                  # TOML settings & Config deserialization
-├── crates/providers/               # OpenAI-compatible client + Provider trait
-├── crates/core/                    # Agentic loop, streaming, and tool-dispatch engine
+├── crates/core/                    # adk-rust-backed agentic loop (EntheaiAgent), streaming, tool-dispatch
 ├── crates/router/                  # Role-to-model resolution + agent factory
 ├── crates/orchestrator/            # Fan-out decomposition, git worktree isolation & merge
 ├── crates/mapper/                  # Text & @{path} file input sectioning and chunking
