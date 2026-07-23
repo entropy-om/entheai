@@ -187,6 +187,20 @@ impl Prompter for TuiPrompter {
     }
 }
 
+/// Adapts the prompt-processing memory to the orchestrator's [`TrajectorySink`]
+/// (roadmap Phase 3.1): fan-out verify failures land in the raw store's
+/// `trajectories` namespace as soil for the learning loop.
+///
+/// [`TrajectorySink`]: entheai_orchestrator::TrajectorySink
+struct PpTrajectorySink(std::sync::Arc<entheai_memory_pp::PromptProcessor>);
+
+#[async_trait]
+impl entheai_orchestrator::TrajectorySink for PpTrajectorySink {
+    async fn ingest_failure(&self, meta: serde_json::Value, trace: &str) {
+        self.0.ingest_failure_trajectory(meta, trace).await;
+    }
+}
+
 /// All mutable UI state.
 struct App {
     messages: Vec<Msg>,
@@ -785,9 +799,16 @@ async fn event_loop(
                                     task_id: format!("fanout-{}", uuid::Uuid::new_v4()),
                                     ..scope.clone()
                                 };
+                                // Roadmap 3.1: PP memory (when on) soaks up
+                                // fan-out verify failures as trajectories.
+                                let sink = pp.clone().map(|p| {
+                                    std::sync::Arc::new(PpTrajectorySink(p))
+                                        as std::sync::Arc<dyn entheai_orchestrator::TrajectorySink>
+                                });
                                 run_handle = Some(tokio::spawn(async move {
                                     let res = entheai_orchestrator::run_fanout(
                                         &config, &root, &text, events, pool, fed_exec, mem, sc,
+                                        sink,
                                     )
                                     .await;
                                     // Drain + flush the tee before dropping it so

@@ -279,8 +279,14 @@ async fn main() -> anyhow::Result<()> {
                     cwd: root.clone(),
                     role: None,
                 };
+                // Roadmap 3.1: with PP memory on, fan-out verify failures are
+                // ingested as raw trajectories (the soil learns from failure).
+                let sink = build_prompt_processor(&cfg)?.map(|p| {
+                    std::sync::Arc::new(PpTrajectorySink(std::sync::Arc::new(p)))
+                        as std::sync::Arc<dyn entheai_orchestrator::TrajectorySink>
+                });
                 let answer = entheai_orchestrator::run_fanout(
-                    &cfg, &root, &prompt, events, pool, fed_exec, runtime, scope,
+                    &cfg, &root, &prompt, events, pool, fed_exec, runtime, scope, sink,
                 )
                 .await?;
                 // Drain + flush the tee before teardown so the final events
@@ -622,6 +628,18 @@ fn build_memory(cfg: &Config) -> anyhow::Result<Option<entheai_memory::SharedMem
 /// Build the prompt-processing pipeline when `[memory] mode = "prompt-processing"`
 /// and memory is enabled. Slice 2 selects the real subprocess seams when their
 /// commands are configured (the non-empty defaults): the stdio-JSON-RPC mesh
+/// Adapts the prompt-processing memory to the orchestrator's
+/// [`entheai_orchestrator::TrajectorySink`] (roadmap Phase 3.1): fan-out verify
+/// failures land in the raw store's `trajectories` namespace.
+struct PpTrajectorySink(std::sync::Arc<entheai_memory_pp::PromptProcessor>);
+
+#[async_trait::async_trait]
+impl entheai_orchestrator::TrajectorySink for PpTrajectorySink {
+    async fn ingest_failure(&self, meta: serde_json::Value, trace: &str) {
+        self.0.ingest_failure_trajectory(meta, trace).await;
+    }
+}
+
 /// sidecar and the `mq compress --semantic` compressor. Both degrade to top-K via
 /// the pipeline's fail-safe when the tool is absent, so this is safe even without
 /// python/`mq` installed; an empty `sidecar_cmd`/`marqant_cmd` forces the in-process

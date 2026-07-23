@@ -2125,6 +2125,7 @@ version = "0.5.0"
 dependencies = [
  "adk-rust",
  "anyhow",
+ "async-trait",
  "clap",
  "dotenvy",
  "entheai-bus",

@@ -6,6 +6,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+### Added
+- **Failure-trajectory auto-ingestion (roadmap Phase 3.1, first half).** When a fan-out coder's verify run fails (build, clippy, or test), the orchestrator now feeds the **full raw traceback** — not the 500-char display tail — to a new `TrajectorySink` seam, implemented by the prompt-processing memory: `PromptProcessor::ingest_failure_trajectory` stores it as `RawKind::Trajectory` under the `trajectories` namespace, capped and content-addressed (identical failures dedupe to one span). Wired in both the TUI and the one-shot `--fanout` CLI path whenever PP memory is on; best-effort, never blocks the fan-out.
+
 ## [0.5.0] - 2026-07-23
 
 Structural honesty lands in the merge path: fan-out integration now demands

@@ -612,6 +612,19 @@ async fn run_coder_maybe_remote(
     run_coder_inner(config, wt, st, memory, scope, session).await
 }
 
+/// Where fan-out reports empirical failure trajectories (roadmap Phase 3.1:
+/// "knowledge grows in the soil. Even the brutal notes of failure.").
+///
+/// The consumer's contract — implemented outside this crate (the prompt-
+/// processing memory's raw store adapts to it), so the orchestrator stays
+/// agnostic of which memory tier soaks up the failures. Implementations must
+/// be best-effort: never fail or block the fan-out.
+#[async_trait::async_trait]
+pub trait TrajectorySink: Send + Sync {
+    /// Ingest one failure: structured metadata + the raw verify traceback.
+    async fn ingest_failure(&self, meta: serde_json::Value, trace: &str);
+}
+
 /// Cryptographic seal binding a coder's committed diff to the empirical verify
 /// log that earned it integration (human_todo.md Phase 2.1 / frozen/verification.md:
 /// self-reported success is worthless without verified execution evidence).
@@ -726,9 +739,11 @@ async fn verify_worktree(
             VerifyStatus::Passed(MergeSeal::compute(&diff, &log, cmd))
         }
         Ok(output) => {
+            // Carry the FULL combined log: the trajectory sink (roadmap 3.1)
+            // wants the raw traceback; display sites tail it themselves.
             let mut combined = String::from_utf8_lossy(&output.stderr).into_owned();
             combined.push_str(&String::from_utf8_lossy(&output.stdout));
-            VerifyStatus::Failed(tail_chars(&combined, 500))
+            VerifyStatus::Failed(combined)
         }
         Err(e) => VerifyStatus::Failed(format!("failed to spawn verify command `{cmd}`: {e}")),
     }
@@ -777,6 +792,7 @@ pub async fn run_fanout(
     executor: Option<Arc<dyn CoderExecutor>>,
     memory: Option<Arc<MemoryRuntime>>,
     scope: MemoryScope,
+    trajectories: Option<Arc<dyn TrajectorySink>>,
 ) -> anyhow::Result<String> {
     if !worktree::is_git_repo(root).await {
         if let Some(tx) = &events {
@@ -941,18 +957,32 @@ pub async fn run_fanout(
         )
         .await
         .unwrap_or(false);
+        let verify_cmd = config.fanout.resolve_verify(root);
         let verify = if committed {
-            let cmd = config.fanout.resolve_verify(root);
             verify_worktree(
                 &run.path,
                 &base,
-                cmd.as_deref(),
+                verify_cmd.as_deref(),
                 config.fanout.verify_required,
             )
             .await
         } else {
             VerifyStatus::NoChanges
         };
+        // Roadmap 3.1: an empirical failure (build/clippy/test) is soil, not
+        // noise — feed the raw traceback to the trajectory sink, best-effort.
+        if let (VerifyStatus::Failed(trace), Some(sink)) = (&verify, &trajectories) {
+            let meta = serde_json::json!({
+                "source": "fanout-verify",
+                "session": session,
+                "role": run.role,
+                "task": run.task,
+                "branch": run.branch,
+                "base": base,
+                "verify_cmd": verify_cmd,
+            });
+            sink.ingest_failure(meta, trace).await;
+        }
         if let Some(tx) = &events {
             let status = if !committed {
                 "no changes"
@@ -1086,8 +1116,10 @@ pub fn format_v2_report(
                 _ => "integrated ✓ (UNVERIFIED — [fanout].verify_required = false)".to_string(),
             }
         } else if let VerifyStatus::Failed(msg) = &o.verify {
+            // Failed carries the FULL log for the trajectory sink — tail it here.
             format!(
-                "changes not integrated (verify failed: {msg}) — left on branch {}",
+                "changes not integrated (verify failed: {}) — left on branch {}",
+                tail_chars(msg, 500),
                 o.branch
             )
         } else if matches!(o.verify, VerifyStatus::Unverifiable) {
@@ -1455,6 +1487,46 @@ mod tests {
             VerifyStatus::Failed(msg) => assert!(msg.contains("boom")),
             other => panic!("expected Failed, got {other:?}"),
         }
+    }
+
+    /// Capture-only sink: records every (meta, trace) it is fed.
+    struct CaptureSink(std::sync::Mutex<Vec<(serde_json::Value, String)>>);
+
+    #[async_trait::async_trait]
+    impl TrajectorySink for CaptureSink {
+        async fn ingest_failure(&self, meta: serde_json::Value, trace: &str) {
+            self.0.lock().unwrap().push((meta, trace.to_string()));
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_verify_feeds_the_trajectory_sink_with_full_log() {
+        // The seam run_fanout uses: a Failed verify + a sink → one ingest with
+        // the FULL traceback (not the display tail).
+        let dir = tempfile::tempdir().unwrap();
+        let long_msg = "x".repeat(2000);
+        let status = verify_worktree(
+            dir.path(),
+            "HEAD",
+            Some(&format!("echo '{long_msg}' >&2; exit 1")),
+            true,
+        )
+        .await;
+        let sink = CaptureSink(std::sync::Mutex::new(Vec::new()));
+        if let VerifyStatus::Failed(trace) = &status {
+            let meta = serde_json::json!({
+                "source": "fanout-verify",
+                "role": "coder",
+                "branch": "entheai/sess/coder-0",
+            });
+            sink.ingest_failure(meta, trace).await;
+        }
+        let captured = sink.0.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        let (meta, trace) = &captured[0];
+        assert_eq!(meta["source"], "fanout-verify");
+        // Full log survives (>500 chars — the display tail must not truncate it).
+        assert!(trace.chars().count() > 1500, "sink got a tail, not the log");
     }
 
     #[test]

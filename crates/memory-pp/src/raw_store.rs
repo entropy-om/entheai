@@ -17,6 +17,10 @@ use crate::error::PpError;
 pub enum RawKind {
     Transcript,
     ToolOutput,
+    /// Raw failure traceback from empirical execution (a build, clippy check,
+    /// or test that failed inside a fan-out worktree) — roadmap Phase 3.1:
+    /// "knowledge grows in the soil. Even the brutal notes of failure."
+    Trajectory,
     // Slice 2/3: CodebaseSnapshot, ObsidianNote, External
 }
 
@@ -25,12 +29,14 @@ impl RawKind {
         match self {
             RawKind::Transcript => "transcript",
             RawKind::ToolOutput => "tool_output",
+            RawKind::Trajectory => "trajectory",
         }
     }
     fn parse(s: &str) -> Option<Self> {
         match s {
             "transcript" => Some(RawKind::Transcript),
             "tool_output" => Some(RawKind::ToolOutput),
+            "trajectory" => Some(RawKind::Trajectory),
             _ => None,
         }
     }

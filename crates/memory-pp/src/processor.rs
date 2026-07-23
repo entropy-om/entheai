@@ -179,6 +179,21 @@ impl PromptProcessor {
         }
     }
 
+    /// A raw failure traceback from empirical execution — a build, clippy
+    /// check, or test that failed inside a fan-out worktree (roadmap Phase 3.1).
+    /// Stored under the `trajectories` namespace (stamped into `meta`), capped
+    /// and content-addressed like every raw ingest: repeated identical failures
+    /// dedupe to one span. Best-effort — never fails the caller.
+    pub async fn ingest_failure_trajectory(&self, mut meta: serde_json::Value, trace: &str) {
+        if let Some(obj) = meta.as_object_mut() {
+            obj.insert("namespace".into(), json!("trajectories"));
+        }
+        let body = cap_bytes(trace, self.max_ingest_bytes);
+        if let Err(e) = self.raw.ingest(RawKind::Trajectory, body, Some(meta)).await {
+            warn!("pp ingest_failure_trajectory failed (continuing): {e}");
+        }
+    }
+
     /// Full session transcript (every turn + the final answer), captured RAW —
     /// the counterpart to `record_final_answer`, which stores previews only.
     /// The caller passes `(role, content)` pairs already cleaned of the injected
@@ -398,6 +413,47 @@ mod tests {
             FrozenStore::from_nodes(vec![]),
         );
         assert!(pp.wake_frozen("anything", 1).is_empty());
+    }
+
+    #[tokio::test]
+    async fn ingest_failure_trajectory_lands_in_the_soil_namespaced() {
+        use crate::frozen::FrozenStore;
+        use crate::raw_store::RawKind;
+        let raw = RawStore::open_memory().unwrap();
+        let probe = raw.clone(); // shares the same in-memory connection
+        let pp = PromptProcessor::new(
+            raw,
+            Box::new(StubMesh),
+            Box::new(StubMarqant),
+            Duration::from_millis(50),
+            16,
+            1 << 20,
+            FrozenStore::from_nodes(vec![]),
+        );
+
+        pp.ingest_failure_trajectory(
+            serde_json::json!({"source": "fanout-verify", "role": "coder"}),
+            "error[E0308]: mismatched types --> src/lib.rs:42",
+        )
+        .await;
+
+        assert_eq!(probe.count().await.unwrap(), 1);
+        let spans = probe.recall("mismatched types", 4).await.unwrap();
+        assert_eq!(spans.len(), 1, "trajectory must be recallable");
+        assert!(matches!(spans[0].kind, RawKind::Trajectory));
+        let content = probe.get(&spans[0].id).await.unwrap().unwrap();
+        let meta = content.meta.unwrap();
+        assert_eq!(meta["namespace"], "trajectories");
+        assert_eq!(meta["source"], "fanout-verify");
+        assert!(content.bytes.contains("E0308"));
+
+        // Content-addressed: the identical failure ingests to the same span.
+        pp.ingest_failure_trajectory(
+            serde_json::json!({"source": "fanout-verify", "role": "coder"}),
+            "error[E0308]: mismatched types --> src/lib.rs:42",
+        )
+        .await;
+        assert_eq!(probe.count().await.unwrap(), 1, "dedupe by content id");
     }
 
     #[tokio::test]
