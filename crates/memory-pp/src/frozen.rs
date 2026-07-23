@@ -176,6 +176,31 @@ impl FrozenStore {
         names
     }
 
+    /// Set a node's live rank directly — checkpoint thaw restoring a saved
+    /// activation (roadmap 1.1). Clamped to `[0, RANK_MAX]` and persisted like
+    /// [`FrozenStore::reweight`]. Returns false (no write) for unknown names.
+    pub fn set_rank(&self, name: &str, rank: f32) -> bool {
+        if !self.nodes.iter().any(|n| n.name == name) {
+            return false;
+        }
+        if let Ok(mut m) = self.ranks.write() {
+            m.insert(name.to_string(), rank.clamp(0.0, RANK_MAX));
+            if let Some(path) = &self.overlay_path {
+                match serde_json::to_string_pretty(&*m) {
+                    Ok(json) => {
+                        if let Err(e) = std::fs::write(path, json) {
+                            log::warn!("frozen: rank overlay write failed (continuing): {e}");
+                        }
+                    }
+                    Err(e) => log::warn!("frozen: rank overlay serialize failed: {e}"),
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     /// Load every `*.md` in `dir`; skip (warn) any that don't parse. A missing directory
     /// yields an empty store because frozen nodes are optional domain priors; missing nodes
     /// must gracefully fall back to baseline LLM reasoning rather than crashing agent startup.

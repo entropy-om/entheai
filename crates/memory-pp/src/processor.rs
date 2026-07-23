@@ -227,6 +227,85 @@ impl PromptProcessor {
         touched
     }
 
+    // ---- QuantumCheckpoint freeze / thaw (roadmap Phase 1.1) ----
+
+    /// How many recent raw spans a freeze anchors. Enough to reconstruct the
+    /// working set; small enough that a thaw brief stays within budget.
+    const FREEZE_ANCHOR_SPANS: usize = 16;
+
+    /// Freeze the fluid entropy field into an [`EntropyState`]: frozen nodes
+    /// woken by `prompt` with their LIVE (experience-weighted) ranks, the most
+    /// recent raw span anchors, and whatever ratio/seed the caller's layers
+    /// know. Pure snapshot — writes nothing; pair with [`EntropyState::save`].
+    pub async fn freeze(
+        &self,
+        session_id: &str,
+        prompt: &str,
+        marqant_ratio: Option<f32>,
+        audio_seed: Option<u64>,
+    ) -> Result<crate::checkpoint::EntropyState, PpError> {
+        let frozen_activations = self
+            .frozen
+            .wake(prompt, self.frozen.len().max(1))
+            .into_iter()
+            .map(|n| crate::checkpoint::FrozenActivation {
+                rank: self.frozen.effective_rank(&n),
+                name: n.name,
+            })
+            .collect();
+        let raw_span_ids = self
+            .raw
+            .recent(Self::FREEZE_ANCHOR_SPANS)
+            .await?
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        Ok(crate::checkpoint::EntropyState {
+            schema: crate::checkpoint::CHECKPOINT_SCHEMA.to_string(),
+            session_id: session_id.to_string(),
+            created_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+            frozen_activations,
+            raw_span_ids,
+            marqant_ratio,
+            audio_seed,
+        })
+    }
+
+    /// Thaw a checkpoint back into a context brief: rehydrate every span id
+    /// that still exists in the raw store (pruned spans are skipped, counted
+    /// honestly in the header) and re-apply the frozen activations' saved
+    /// ranks to the live overlay. Returns the brief for prompt injection.
+    pub async fn thaw(&self, state: &crate::checkpoint::EntropyState) -> Result<String, PpError> {
+        let mut restored = 0usize;
+        for a in &state.frozen_activations {
+            // Restore each saved activation's rank exactly (clamped, persisted);
+            // activations for nodes that no longer exist are skipped honestly.
+            if self.frozen.set_rank(&a.name, a.rank) {
+                restored += 1;
+            }
+        }
+        let mut brief = String::new();
+        let mut hydrated = 0usize;
+        for id in &state.raw_span_ids {
+            if let Some(content) = self.raw.get(id).await? {
+                hydrated += 1;
+                let body = cap_bytes(&content.bytes, self.max_ingest_bytes / 8);
+                brief.push_str(&format!("--- span {id} ---\n{body}\n"));
+            }
+        }
+        let header = format!(
+            "[checkpoint {} thawed: session {}, {hydrated}/{} span(s) rehydrated, {restored}/{} frozen activation(s) restored]\n",
+            state.id(),
+            state.session_id,
+            state.raw_span_ids.len(),
+            state.frozen_activations.len(),
+        );
+        Ok(format!("{header}{brief}"))
+    }
+
     /// Full session transcript (every turn + the final answer), captured RAW —
     /// the counterpart to `record_final_answer`, which stores previews only.
     /// The caller passes `(role, content)` pairs already cleaned of the injected
@@ -526,6 +605,64 @@ mod tests {
 
         // Non-matching outcomes leave the prior alone.
         assert!(pp.record_verified_success("write the changelog").is_empty());
+    }
+
+    #[tokio::test]
+    async fn freeze_thaw_round_trips_the_entropy_field() {
+        use crate::frozen::{FrozenNode, FrozenStore};
+        let node = FrozenNode {
+            name: "hetzner".into(),
+            domain: "cloud".into(),
+            triggers: vec!["hetzner".into()],
+            mcp: None,
+            rank: 1.0,
+            knowledge: "use nix flakes".into(),
+        };
+        let raw = RawStore::open_memory().unwrap();
+        let pp = PromptProcessor::new(
+            raw,
+            Box::new(StubMesh),
+            Box::new(StubMarqant),
+            Duration::from_millis(50),
+            16,
+            1 << 20,
+            FrozenStore::from_nodes(vec![node]),
+        );
+
+        // Live state: one span in the soil, one drifted rank.
+        pp.ingest_failure_trajectory(
+            serde_json::json!({"task": "deploy to hetzner", "source": "fanout-verify"}),
+            "error: ssh timeout",
+        )
+        .await;
+        let n = &pp.frozen.nodes()[0];
+        let drifted = pp.frozen.effective_rank(n);
+        assert!((drifted - 0.95).abs() < 1e-6);
+
+        // Freeze: activations carry the LIVE rank; recent span is anchored.
+        let state = pp
+            .freeze("sess-42", "deploy to hetzner", Some(0.31), Some(7))
+            .await
+            .unwrap();
+        assert_eq!(state.schema, crate::checkpoint::CHECKPOINT_SCHEMA);
+        assert_eq!(state.frozen_activations.len(), 1);
+        assert!((state.frozen_activations[0].rank - drifted).abs() < 1e-6);
+        assert_eq!(state.raw_span_ids.len(), 1);
+
+        // Save → load → thaw round trip.
+        let dir = tempfile::tempdir().unwrap();
+        let id = state.save(dir.path()).unwrap();
+        let loaded = crate::checkpoint::EntropyState::load(dir.path(), &id).unwrap();
+        assert_eq!(loaded, state);
+
+        // Drift the rank further, then thaw: the saved rank is restored and
+        // the brief rehydrates the span's raw bytes.
+        pp.frozen.set_rank("hetzner", 0.2);
+        let brief = pp.thaw(&loaded).await.unwrap();
+        assert!((pp.frozen.effective_rank(n) - drifted).abs() < 1e-6);
+        assert!(brief.contains("1/1 span(s) rehydrated"));
+        assert!(brief.contains("1/1 frozen activation(s) restored"));
+        assert!(brief.contains("ssh timeout"), "raw bytes rehydrated");
     }
 
     #[tokio::test]

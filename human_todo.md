@@ -13,9 +13,9 @@ To achieve true **Quantum Completeness**, `entheai` must perfectly bridge the fl
 
 ### Phase 1: Fluid Entropy Field State Serialization (Fluid Phase)
 
-- [ ] **1.1 `QuantumCheckpoint` State Engine (`crates/memory-pp`)**
-  - Implement 2-way serialization for transient prompt entropy fields (`EntropyState` containing active frozen node activations, raw memory spans, Marqant compression ratio, and audio seed state).
-  - Allow snapshotting fluid work-in-progress state to `.entheai/checkpoints/<id>.json` so session context can freeze and unfreeze seamlessly without context decay or token loss.
+- [x] **1.1 `QuantumCheckpoint` State Engine (`crates/memory-pp`)** — *shipped in 0.7.0*
+  - ✅ 2-way serialization of the transient entropy field: `EntropyState` (`entheai.checkpoint.v1`) carries active frozen node activations **with live experience-weighted ranks**, raw memory span anchors (ids — bytes stay in the raw store), Marqant compression ratio, and audio seed state.
+  - ✅ `/freeze` snapshots to `.entheai/checkpoints/<id>.json` (deterministic blake3 content id, idempotent); `/thaw <id>` restores activation ranks into the live overlay and rehydrates surviving spans into an injected context brief — pruned spans are skipped and counted honestly.
 
 - [ ] **1.2 Real-Time Entropy Telemetry Stream (`crates/bus` & `crates/tui`)**
   - Stream live TUI state (active brain-ring glow intensities, pomodoro ticks, and `wk N` worker counts) over the NATS bus (`entheai.entropy.v1`).

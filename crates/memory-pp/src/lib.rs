@@ -6,6 +6,7 @@
 //! types (`MemoryScope`, `ToolEvidence`); `entheai-memory` never depends on it.
 //! See docs/superpowers/specs/2026-07-22-prompt-processing-design.md.
 
+pub mod checkpoint;
 mod error;
 pub mod frozen;
 pub mod judge;
@@ -14,6 +15,7 @@ mod mesh;
 mod processor;
 mod raw_store;
 
+pub use checkpoint::{default_checkpoint_dir, EntropyState, FrozenActivation, CHECKPOINT_SCHEMA};
 pub use error::PpError;
 pub use frozen::{activate, FrozenNode, FrozenStore};
 pub use judge::{BrainJudge, BrainJudgeEvent};

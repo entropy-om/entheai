@@ -236,6 +236,43 @@ impl RawStore {
         .map_err(|e| PpError::Join(e.to_string()))?
     }
 
+    /// Most recently ingested spans, newest first, ≤ `k` — the anchors a
+    /// checkpoint freeze records (roadmap 1.1). Ties on `created_at` break by
+    /// id for a deterministic order.
+    pub async fn recent(&self, k: usize) -> Result<Vec<RawSpan>, PpError> {
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<RawSpan>, PpError> {
+            let conn = db.lock().map_err(|_| PpError::Lock)?;
+            let mut stmt = conn.prepare(
+                "SELECT id, kind, created_at FROM raw
+                 ORDER BY created_at DESC, id ASC
+                 LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![k as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?;
+            let mut out = Vec::new();
+            for r in rows {
+                let (id, kind_s, created_at) = r?;
+                if let Some(kind) = RawKind::parse(&kind_s) {
+                    out.push(RawSpan {
+                        id,
+                        kind,
+                        score: 0.0,
+                        created_at,
+                    });
+                }
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| PpError::Join(e.to_string()))?
+    }
+
     /// Stage-1 lexical recall (FTS5/BM25). Returns candidate spans best-first,
     /// ≤ `k`. The vector arm is Slice 2 (same signature). An unmatchable query
     /// yields an empty Vec — which the processor treats as "fall back to top-K".

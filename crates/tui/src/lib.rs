@@ -711,6 +711,16 @@ async fn event_loop(
                         Action::Submit(text) if is_speak_command(&text) => {
                             handle_speak_command(&mut app, &mut voice, &text);
                         }
+                        Action::Submit(text) if is_checkpoint_command(&text) => {
+                            handle_checkpoint_command(
+                                &mut app,
+                                &pp,
+                                &scope.session_id,
+                                &root,
+                                &text,
+                            )
+                            .await;
+                        }
                         Action::Submit(text) if is_workers_command(&text) => {
                             handle_workers_command(&mut app, &text);
                         }
@@ -1498,6 +1508,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             // state-mutating ones (/clear, /fanout, /quit) stay idle-only.
             let is_local_command = is_radio_command(trimmed)
                 || is_speak_command(trimmed)
+                || is_checkpoint_command(trimmed)
                 || is_workers_command(trimmed)
                 || is_viz_command(trimmed)
                 || is_brain_command(trimmed)
@@ -1632,6 +1643,96 @@ fn handle_speak_command(app: &mut App, voice: &mut Voice, text: &str) {
             }
         }
         Some(_) => "usage: /speak [on|off|stop]".to_string(),
+    };
+    app.messages.push(Msg {
+        role: Role::Tool,
+        text: feedback,
+    });
+    app.follow = true;
+}
+
+/// True when the submitted input is a local `/freeze` / `/thaw` checkpoint
+/// command (never sent to the agent).
+fn is_checkpoint_command(text: &str) -> bool {
+    let t = text.trim_start();
+    t == "/freeze" || t.starts_with("/freeze ") || t == "/thaw" || t.starts_with("/thaw ")
+}
+
+/// Parse and dispatch the QuantumCheckpoint commands (roadmap Phase 1.1).
+///
+/// Forms: `/freeze` (snapshot the fluid entropy field to
+/// `.entheai/checkpoints/<id>.json`) · `/thaw` (list checkpoint ids, newest
+/// first) · `/thaw <id>` (restore the frozen activations' ranks and inject the
+/// rehydrated span brief as a labelled user turn — Tool rows never reach the
+/// model, user rows do).
+async fn handle_checkpoint_command(
+    app: &mut App,
+    pp: &Option<std::sync::Arc<entheai_memory_pp::PromptProcessor>>,
+    session_id: &str,
+    root: &std::path::Path,
+    text: &str,
+) {
+    app.messages.push(Msg {
+        role: Role::User,
+        text: text.to_string(),
+    });
+    let dir = entheai_memory_pp::default_checkpoint_dir(root);
+    let feedback = match pp {
+        None => "checkpoint: prompt-processing memory is off — set [memory] mode = \"prompt-processing\"".to_string(),
+        Some(pp) => {
+            let t = text.trim_start();
+            if t == "/freeze" || t.starts_with("/freeze ") {
+                // Wake text = the last real user prompt (skip slash commands),
+                // so the snapshot captures the activations of the live topic.
+                let prompt = app
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|m| matches!(m.role, Role::User) && !m.text.trim_start().starts_with('/'))
+                    .map(|m| m.text.clone())
+                    .unwrap_or_default();
+                match pp.freeze(session_id, &prompt, None, None).await {
+                    Ok(state) => match state.save(&dir) {
+                        Ok(id) => format!(
+                            "🧊 frozen: checkpoint {id} — {} span(s), {} activation(s) → {}",
+                            state.raw_span_ids.len(),
+                            state.frozen_activations.len(),
+                            dir.display()
+                        ),
+                        Err(e) => format!("checkpoint save failed: {e}"),
+                    },
+                    Err(e) => format!("freeze failed: {e}"),
+                }
+            } else {
+                match t.split_whitespace().nth(1) {
+                    None => {
+                        let ids = entheai_memory_pp::EntropyState::list(&dir);
+                        if ids.is_empty() {
+                            format!("no checkpoints under {}", dir.display())
+                        } else {
+                            format!("checkpoints (newest first):\n  {}", ids.join("\n  "))
+                        }
+                    }
+                    Some(id) => match entheai_memory_pp::EntropyState::load(&dir, id) {
+                        Ok(state) => match pp.thaw(&state).await {
+                            Ok(brief) => {
+                                // Inject as a labelled user turn so the model
+                                // sees the rehydrated context next turn.
+                                let header =
+                                    brief.lines().next().unwrap_or_default().to_string();
+                                app.messages.push(Msg {
+                                    role: Role::User,
+                                    text: format!("[thawed context — for reference]\n{brief}"),
+                                });
+                                format!("♨️ {header}")
+                            }
+                            Err(e) => format!("thaw failed: {e}"),
+                        },
+                        Err(e) => format!("thaw failed: {e}"),
+                    },
+                }
+            }
+        }
     };
     app.messages.push(Msg {
         role: Role::Tool,
@@ -2721,6 +2822,14 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
         "ambient loop (Standing-Onde) — pause · next · stop  (Ctrl-P / Ctrl-N)",
     ),
     ("/speak", "read assistant responses aloud — on · off · stop"),
+    (
+        "/freeze",
+        "snapshot the entropy field to .entheai/checkpoints/<id>.json",
+    ),
+    (
+        "/thaw",
+        "list checkpoints · /thaw <id> restores + injects the brief",
+    ),
     ("/workers", "fan-out swarm — list · stop <id> · debug <id>"),
     ("/fleet", "show the remote worker fleet (read-only)"),
     ("/viz", "toggle the full-screen swarm view  (Ctrl-V)"),

@@ -25,4 +25,7 @@ pub enum PpError {
     Mesh(String),
     #[error("marqant: {0}")]
     Marqant(String),
+    /// Checkpoint freeze/thaw failure (schema mismatch, malformed file).
+    #[error("checkpoint: {0}")]
+    Checkpoint(String),
 }
