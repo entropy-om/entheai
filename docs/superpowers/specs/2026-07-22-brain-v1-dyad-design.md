@@ -12,10 +12,15 @@ BRAIN v1 closes that gap, then adds the one genuinely new capability this
 session's brainstorm converged on: the brain proactively surfacing relevant
 context, not just serving retrieval on request.
 
-This work supersedes (for now) the in-flight adk-rust core-loop migration,
-which is paused at Task 2/10 (committed to `main`, safe to resume later) per
-explicit decision — BRAIN v1 is built against today's `Agent<P>::run_task`,
-not the future adk-rust wrapper.
+This work initially superseded the in-flight adk-rust core-loop migration
+(paused at Task 2/10 when this spec was written) — BRAIN v1 was built against
+`Agent<P>::run_task`, not the future adk-rust wrapper. **Erratum (2026-07-23):**
+the adk-rust migration has since completed (`docs/superpowers/plans/2026-07-22-adk-rust-core-migration.md`,
+Tasks 1-9); `Agent<P>`/`run_task`/`run_task_with_memory` are deleted, and every
+BRAIN v1 mechanism described below now runs through `entheai_core::EntheaiAgent`
+(`new_with_memory`/`build_auto`) and `crates/core/src/event_bridge.rs` instead —
+same behavior, different plumbing. References to `run_task_with_memory` in
+this document describe history, not current code.
 
 ## 2. Current state — what's built vs. what's wired
 
@@ -133,7 +138,7 @@ event-driven proactive layer (Slice 2), visual surfacing via the existing
 brain-ring footer pattern.
 
 **Non-goals:**
-- The adk-rust migration (paused separately, resumes independently later).
+- The adk-rust migration (paused separately when this spec was written; completed 2026-07-23, see erratum above).
 - Chat-injected surfacing (explicitly declined — visual-only per
   brainstorm decision).
 - A human-facing memory review/edit/curation UI (a real "dyad" need
