@@ -106,7 +106,9 @@ token_env = "NATS_TOKEN"
 # materialize the repo from a git bundle, run the coder in isolation, and bundle
 # the result back; a dispatcher runs `entheai-worker --dispatch --task "…"`.
 # NOTE: a worker executes model-generated code with full tools on that node —
-# only run --serve on nodes you trust (tailnet-only; securefs hardening is F2.3).
+# only run --serve on nodes you trust (tailnet-only). F2.3 sandbox confinement
+# (Landlock + seccomp on Linux, `sandbox` knob below) narrows but does not close
+# this gate — no egress allow-list or resource caps yet.
 [federation]
 enabled = false
 role = "auto"              # "auto" | "worker" | "dispatch"

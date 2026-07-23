@@ -215,7 +215,9 @@ Roadmap crates (per the design spec): `dogfeed`, `compaction`, `honcho`, `sonar`
 |---|---|
 | **v0.1** | Router · fan-out · tools + permission · MCP · skills · streaming · memory · companion. **Released ✅** |
 | **v0.2** | Live swarm **visualization** + shader **native app**; **Obsidian wiki-sync**; **NATS federation** — event bus (F1) + distributed swarm (F2.1); `--skills add <url>`; `--memory` inspection; portable headless build. **Released ✅** |
-| **v0.3** | Federation **F2.2** (dispatch inside `run_fanout` + worker hardening) & **F3** shared state; `Sonar` health UI; durable sessions; `dogfeed` flywheel → HF. |
+| **v0.2.1** | Federation **F2.2** — fan-out offload to the fleet. **Released ✅** |
+| *unreleased (`main`)* | Federation **F2.3** (sandboxed workers, `/fleet`) + **F2.4 Slice 1** (shared-base coder caching) — code-complete, awaiting a version tag. |
+| **v0.3** | **F3** shared state (JetStream KV, gated on a `crates/memory` co-design); `Sonar` health UI; durable sessions; `dogfeed` flywheel → HF. |
 | **v0.4+** | Honcho personalization; pluggable topologies; more providers. |
 | **v1.0** | Config freeze, perf passes, docs. |
 
