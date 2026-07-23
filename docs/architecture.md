@@ -39,7 +39,7 @@ graph TD
     subgraph Execution ["Execution & Federation Fleet"]
         GW["Git Worktrees\n(Isolated Coder Tasks)"]
         NATS["NATS Federation Bus & JetStream\n(crates/bus & federation)"]
-        WORKER["Sandboxed Linux Workers\n(Landlock + Seccomp + rustybox.io)"]
+        WORKER["Sandboxed Linux Workers\n(Landlock + Seccomp)"]
     end
 
     TUI --> AG
@@ -211,7 +211,7 @@ flowchart LR
 1. **F1 (Event Bus Streaming)**: Publishes fan-out step updates to `entheai.fanout.<session>.*` over NATS.
 2. **F2.1 (Distributed Work-Queue)**: JetStream queues dispatch sub-agent tasks to remote worker nodes across the tailnet using git-bundle object transport.
 3. **F2.2 (Fan-Out Offloading)**: Automatically offloads heavy coder sub-tasks to remote fleet nodes (`entheai-worker --serve`).
-4. **F2.3 (Sandboxed Worker Runtime)**: Remote execution runs in isolated Linux userland powered by **[rustybox.io](https://rustybox.io)** (100% Rust BusyBox parity, zero C code), protected by **Landlock** filesystem jails, **seccomp** syscall filters, and root privilege dropping.
+4. **F2.3 (Sandboxed Worker Runtime, not yet tagged)**: Remote execution is confined by **Landlock** filesystem jails, **seccomp** syscall filters, and root privilege dropping on Linux.
 
 ---
 
