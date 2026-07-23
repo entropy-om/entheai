@@ -17,8 +17,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY rust-toolchain.toml ./
 RUN rustup show
 COPY . .
-# Build just the primary binary in release.
-RUN cargo build --release --locked -p entheai
+# Build just the primary binary in release, headless (drops GUI/companion and
+# radio/alsa deps — this container has no display and no audio hardware).
+RUN cargo build --release --locked --no-default-features -p entheai
 
 # ---- runtime stage -------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
