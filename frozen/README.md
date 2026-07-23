@@ -32,6 +32,7 @@ melts into the prompt.
 `nixos` · `terraform` · `docker` · `postgres` · `observability` · `rust` · `go-parallelism`
 · `python-jit` · `github` · `ngrok` · `valyu` · `verification` · `coordinates-as-interface`
 · `epistemic-reduction` · `memory-as-salience-not-fidelity` · `prediction-error-learning`
+· `voting-ensemble-paradox` · `slop-vs-hallucination`
 
 Seeded from the author's stated preferences, grounded where useful in Valyu deep-research
 (e.g. NixOS remote-deploy patterns, Rust lint/test practice). Add more by dropping a new
