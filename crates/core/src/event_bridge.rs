@@ -59,7 +59,9 @@ pub async fn run_with_events(
 
     while let Some(ev) = stream.next().await {
         let ev = ev?;
-        let Some(content) = ev.content() else { continue };
+        let Some(content) = ev.content() else {
+            continue;
+        };
 
         if ev.llm_response.partial {
             for part in &content.parts {
@@ -71,8 +73,14 @@ pub async fn run_with_events(
         }
 
         let text: String = content.parts.iter().filter_map(|p| p.text()).collect();
-        let has_calls = content.parts.iter().any(|p| matches!(p, Part::FunctionCall { .. }));
-        let has_results = content.parts.iter().any(|p| matches!(p, Part::FunctionResponse { .. }));
+        let has_calls = content
+            .parts
+            .iter()
+            .any(|p| matches!(p, Part::FunctionCall { .. }));
+        let has_results = content
+            .parts
+            .iter()
+            .any(|p| matches!(p, Part::FunctionResponse { .. }));
 
         // A non-partial, pure-text turn (no calls, no results) is a candidate
         // final answer — overwritten by any later such turn, matching
@@ -89,17 +97,24 @@ pub async fn run_with_events(
                     if let Some(id) = id {
                         pending_calls.insert(id.clone(), (name.clone(), args_str.clone()));
                     }
-                    let _ =
-                        event_tx.send(AgentEvent::ToolStarted { name: name.clone(), args: args_str });
+                    let _ = event_tx.send(AgentEvent::ToolStarted {
+                        name: name.clone(),
+                        args: args_str,
+                    });
                 }
-                Part::FunctionResponse { function_response, id } => {
+                Part::FunctionResponse {
+                    function_response,
+                    id,
+                } => {
                     let result_str = function_response.response.to_string();
                     let args_str = id
                         .as_ref()
                         .and_then(|i| pending_calls.remove(i))
                         .map(|(_, args)| args)
                         .unwrap_or_default();
-                    let call_id = id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                    let call_id = id
+                        .clone()
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                     let allowed = function_response.response.get("error").is_none();
 
                     tool_evidence.push(ToolEvidence {
@@ -124,7 +139,10 @@ pub async fn run_with_events(
 
     if let Some(mem) = &memory {
         let preview = truncate_preview(&answer, 500);
-        if let Err(e) = mem.record_final_answer(&scope, model, &preview, &tool_evidence).await {
+        if let Err(e) = mem
+            .record_final_answer(&scope, model, &preview, &tool_evidence)
+            .await
+        {
             log::warn!("event_bridge record_final_answer failed (continuing): {e}");
         }
     }
@@ -220,7 +238,10 @@ mod tests {
         let mut providers = HashMap::new();
         providers.insert(
             "test".to_string(),
-            ProviderConfig { base_url: server.uri(), api_key_env: None },
+            ProviderConfig {
+                base_url: server.uri(),
+                api_key_env: None,
+            },
         );
         let mut registry = entheai_tools::ToolRegistry::new();
         registry.register(Box::new(EchoTool));
@@ -242,10 +263,18 @@ mod tests {
         let agent = build_agent(&server).await;
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let answer =
-            run_with_events(&agent, &[], "please echo hi", "test/model", tx, None, None, scope())
-                .await
-                .expect("run succeeds");
+        let answer = run_with_events(
+            &agent,
+            &[],
+            "please echo hi",
+            "test/model",
+            tx,
+            None,
+            None,
+            scope(),
+        )
+        .await
+        .expect("run succeeds");
         assert_eq!(answer, "final answer");
 
         let mut events = Vec::new();
@@ -253,7 +282,9 @@ mod tests {
             events.push(ev);
         }
         assert!(
-            events.iter().any(|e| matches!(e, AgentEvent::ToolStarted { name, .. } if name == "echo")),
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ToolStarted { name, .. } if name == "echo")),
             "expected a ToolStarted(echo) event, got {events:?}"
         );
         assert!(
@@ -276,7 +307,10 @@ mod tests {
             Arc::new(SqliteStore::open_memory(None).unwrap());
         let memory = Arc::new(MemoryRuntime::new(
             Arc::clone(&store),
-            MemoryRuntimeConfig { enabled: true, ..Default::default() },
+            MemoryRuntimeConfig {
+                enabled: true,
+                ..Default::default()
+            },
         ));
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -319,15 +353,26 @@ mod tests {
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let prior = vec![
-            ("user".to_string(), "EARLIER_MARKER_TEXT from a prior turn".to_string()),
+            (
+                "user".to_string(),
+                "EARLIER_MARKER_TEXT from a prior turn".to_string(),
+            ),
             ("assistant".to_string(), "acknowledged".to_string()),
         ];
         // Fails with a wiremock "no matching mock" error unless the seeded
         // prior turn's marker text reached this outbound request.
-        let answer =
-            run_with_events(&agent, &prior, "what did I say earlier?", "test/model", tx, None, None, scope())
-                .await
-                .expect("run succeeds, proving prior_turns reached the outbound request");
+        let answer = run_with_events(
+            &agent,
+            &prior,
+            "what did I say earlier?",
+            "test/model",
+            tx,
+            None,
+            None,
+            scope(),
+        )
+        .await
+        .expect("run succeeds, proving prior_turns reached the outbound request");
         assert_eq!(answer, "ok");
     }
 }

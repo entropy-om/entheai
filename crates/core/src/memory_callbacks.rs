@@ -34,7 +34,12 @@ use crate::AgentEvent;
 const FROZEN_ACTIVATE_DEADLINE: std::time::Duration = std::time::Duration::from_millis(500);
 
 fn user_text(content: &Content) -> String {
-    content.parts.iter().filter_map(|p| p.text()).collect::<Vec<_>>().join(" ")
+    content
+        .parts
+        .iter()
+        .filter_map(|p| p.text())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Injects pre-task retrieval context and frozen-node briefs, mirroring
@@ -47,71 +52,74 @@ pub fn before_model_retrieval_callback(
     injected_sessions: Arc<Mutex<HashSet<String>>>,
     event_tx: Option<UnboundedSender<AgentEvent>>,
 ) -> BeforeModelCallback {
-    Box::new(move |ctx: Arc<dyn CallbackContext>, mut request: LlmRequest| {
-        let memory = Arc::clone(&memory);
-        let pp = pp.clone();
-        let injected_sessions = Arc::clone(&injected_sessions);
-        let event_tx = event_tx.clone();
-        Box::pin(async move {
-            {
-                let mut seen = injected_sessions.lock().await;
-                if !seen.insert(ctx.session_id().to_string()) {
-                    return Ok(BeforeModelResult::Continue(request));
+    Box::new(
+        move |ctx: Arc<dyn CallbackContext>, mut request: LlmRequest| {
+            let memory = Arc::clone(&memory);
+            let pp = pp.clone();
+            let injected_sessions = Arc::clone(&injected_sessions);
+            let event_tx = event_tx.clone();
+            Box::pin(async move {
+                {
+                    let mut seen = injected_sessions.lock().await;
+                    if !seen.insert(ctx.session_id().to_string()) {
+                        return Ok(BeforeModelResult::Continue(request));
+                    }
                 }
-            }
 
-            // Retrieval injection (fresh `rposition` — mirrors run_task_with_memory
-            // recomputing the user-message index per block, not reusing a stale one).
-            if let Some(user_idx) = request.contents.iter().rposition(|c| c.role == "user") {
-                let user_msg = user_text(&request.contents[user_idx]);
-                if !user_msg.trim().is_empty() {
-                    let retrieved = match &pp {
-                        Some(p) => match p.retrieve(&user_msg).await {
-                            Ok(Some(brief)) => Ok(Some(brief)),
-                            Ok(None) | Err(_) => memory.retrieve_before(&user_msg).await,
-                        },
-                        None => memory.retrieve_before(&user_msg).await,
-                    };
-                    match retrieved {
-                        Ok(Some(ctx_text)) => {
-                            request
-                                .contents
-                                .insert(user_idx, Content::new("system").with_text(ctx_text));
-                        }
-                        Ok(None) => {}
-                        Err(e) => {
-                            if memory.config().strict {
-                                return Err(AdkError::memory(e.to_string()));
+                // Retrieval injection (fresh `rposition` — mirrors run_task_with_memory
+                // recomputing the user-message index per block, not reusing a stale one).
+                if let Some(user_idx) = request.contents.iter().rposition(|c| c.role == "user") {
+                    let user_msg = user_text(&request.contents[user_idx]);
+                    if !user_msg.trim().is_empty() {
+                        let retrieved = match &pp {
+                            Some(p) => match p.retrieve(&user_msg).await {
+                                Ok(Some(brief)) => Ok(Some(brief)),
+                                Ok(None) | Err(_) => memory.retrieve_before(&user_msg).await,
+                            },
+                            None => memory.retrieve_before(&user_msg).await,
+                        };
+                        match retrieved {
+                            Ok(Some(ctx_text)) => {
+                                request
+                                    .contents
+                                    .insert(user_idx, Content::new("system").with_text(ctx_text));
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                if memory.config().strict {
+                                    return Err(AdkError::memory(e.to_string()));
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            // Frozen-node wake injection — separate fresh `rposition` since the
-            // retrieval insert above may have shifted the user message's index.
-            if let Some(p) = &pp {
-                if let Some(user_idx) = request.contents.iter().rposition(|c| c.role == "user") {
-                    let user_msg = user_text(&request.contents[user_idx]);
-                    for node in p.wake_frozen(&user_msg, 1) {
-                        let brief = p.activate_frozen(&node, FROZEN_ACTIVATE_DEADLINE).await;
-                        if let Some(tx) = &event_tx {
-                            let preview: String = brief.chars().take(120).collect();
-                            let _ = tx.send(AgentEvent::FrozenWoke {
-                                name: node.name.clone(),
-                                brief_preview: preview,
-                            });
+                // Frozen-node wake injection — separate fresh `rposition` since the
+                // retrieval insert above may have shifted the user message's index.
+                if let Some(p) = &pp {
+                    if let Some(user_idx) = request.contents.iter().rposition(|c| c.role == "user")
+                    {
+                        let user_msg = user_text(&request.contents[user_idx]);
+                        for node in p.wake_frozen(&user_msg, 1) {
+                            let brief = p.activate_frozen(&node, FROZEN_ACTIVATE_DEADLINE).await;
+                            if let Some(tx) = &event_tx {
+                                let preview: String = brief.chars().take(120).collect();
+                                let _ = tx.send(AgentEvent::FrozenWoke {
+                                    name: node.name.clone(),
+                                    brief_preview: preview,
+                                });
+                            }
+                            request
+                                .contents
+                                .insert(user_idx, Content::new("system").with_text(brief));
                         }
-                        request
-                            .contents
-                            .insert(user_idx, Content::new("system").with_text(brief));
                     }
                 }
-            }
 
-            Ok(BeforeModelResult::Continue(request))
-        })
-    })
+                Ok(BeforeModelResult::Continue(request))
+            })
+        },
+    )
 }
 
 /// Records tool evidence for spillover/trajectory, mirroring
@@ -238,12 +246,17 @@ mod tests {
         let store = SqliteStore::open_memory(None).unwrap();
         let memory = Arc::new(MemoryRuntime::new(
             Arc::new(store),
-            MemoryRuntimeConfig { enabled: true, tool_spill_chars: 5, ..Default::default() },
+            MemoryRuntimeConfig {
+                enabled: true,
+                tool_spill_chars: 5,
+                ..Default::default()
+            },
         ));
         let callback = after_tool_evidence_callback(scope(), Arc::clone(&memory), None);
 
-        let ctx: Arc<dyn CallbackContext> =
-            Arc::new(FakeCtx { content: Content::new("user").with_text("hi") });
+        let ctx: Arc<dyn CallbackContext> = Arc::new(FakeCtx {
+            content: Content::new("user").with_text("hi"),
+        });
         let tool: Arc<dyn adk_rust::Tool> = Arc::new(FakeTool);
         let response = json!("a very long tool output exceeding five chars easily");
 
@@ -262,16 +275,23 @@ mod tests {
         let store = SqliteStore::open_memory(None).unwrap();
         let memory = Arc::new(MemoryRuntime::new(
             Arc::new(store),
-            MemoryRuntimeConfig { enabled: true, tool_spill_chars: 10_000, ..Default::default() },
+            MemoryRuntimeConfig {
+                enabled: true,
+                tool_spill_chars: 10_000,
+                ..Default::default()
+            },
         ));
         let callback = after_tool_evidence_callback(scope(), Arc::clone(&memory), None);
 
-        let ctx: Arc<dyn CallbackContext> =
-            Arc::new(FakeCtx { content: Content::new("user").with_text("hi") });
+        let ctx: Arc<dyn CallbackContext> = Arc::new(FakeCtx {
+            content: Content::new("user").with_text("hi"),
+        });
         let tool: Arc<dyn adk_rust::Tool> = Arc::new(FakeTool);
         let response = json!("short");
 
-        let result = callback(ctx, tool, json!({}), response).await.expect("callback succeeds");
+        let result = callback(ctx, tool, json!({}), response)
+            .await
+            .expect("callback succeeds");
         assert!(result.is_none(), "small output should not be overridden");
     }
 
@@ -301,16 +321,15 @@ mod tests {
 
         let store = SqliteStore::open_memory(None).unwrap();
         // Disabled: isolates this test to frozen-wake, no retrieval interference.
-        let memory = Arc::new(MemoryRuntime::new(Arc::new(store), MemoryRuntimeConfig::default()));
+        let memory = Arc::new(MemoryRuntime::new(
+            Arc::new(store),
+            MemoryRuntimeConfig::default(),
+        ));
 
         let injected_sessions = Arc::new(Mutex::new(std::collections::HashSet::new()));
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        let callback = before_model_retrieval_callback(
-            memory,
-            Some(pp),
-            injected_sessions,
-            Some(event_tx),
-        );
+        let callback =
+            before_model_retrieval_callback(memory, Some(pp), injected_sessions, Some(event_tx));
 
         let ctx: Arc<dyn CallbackContext> = Arc::new(FakeCtx {
             content: Content::new("user").with_text("please deploy to hetzner"),

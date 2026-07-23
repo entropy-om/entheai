@@ -2214,7 +2214,9 @@ fn render_status_bar(frame: &mut Frame, app: &App, env_line: &str, status_area: 
     // pattern the brain-panel footer already uses for a similar one-row readout.
     let ctx_line = context_line(app);
     let ctx_width = ctx_line.width() as u16;
-    let left_max = status_area.width.saturating_sub(ctx_width.saturating_add(1));
+    let left_max = status_area
+        .width
+        .saturating_sub(ctx_width.saturating_add(1));
     let left_line = clip_line_to_width(status_line(app), left_max);
     frame
         .buffer_mut()
@@ -2966,7 +2968,7 @@ mod tests {
             spinner_frame: 0,
             current_action: String::new(),
             now_playing: None,
-        speak_enabled: false,
+            speak_enabled: false,
             fanout: false,
             worker_pool: None,
             system_prompt: None,
@@ -3393,7 +3395,10 @@ mod tests {
         assert!(app.speak_enabled);
 
         handle_speak_command(&mut app, &mut voice, "/speak bogus");
-        assert!(app.messages.iter().any(|m| m.text.contains("usage: /speak")));
+        assert!(app
+            .messages
+            .iter()
+            .any(|m| m.text.contains("usage: /speak")));
     }
 
     #[test]
@@ -3419,7 +3424,7 @@ mod tests {
             spinner_frame: 0,
             current_action: String::new(),
             now_playing: None,
-        speak_enabled: false,
+            speak_enabled: false,
             fanout: true,
             worker_pool: None,
             system_prompt: None,
@@ -3466,7 +3471,7 @@ mod tests {
             spinner_frame: 0,
             current_action: String::new(),
             now_playing: None,
-        speak_enabled: false,
+            speak_enabled: false,
             fanout: false,
             worker_pool: None,
             system_prompt: None,
@@ -3511,7 +3516,7 @@ mod tests {
             spinner_frame: 0,
             current_action: String::new(),
             now_playing: None,
-        speak_enabled: false,
+            speak_enabled: false,
             fanout: true,
             worker_pool: None,
             system_prompt: None,
@@ -3611,7 +3616,7 @@ mod tests {
             spinner_frame: 0,
             current_action: String::new(),
             now_playing: None,
-        speak_enabled: false,
+            speak_enabled: false,
             fanout: true,
             worker_pool: None,
             system_prompt: None,
@@ -3659,7 +3664,7 @@ mod tests {
             spinner_frame: 0,
             current_action: String::new(),
             now_playing: None,
-        speak_enabled: false,
+            speak_enabled: false,
             fanout: false,
             worker_pool: None,
             system_prompt: None,

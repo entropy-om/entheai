@@ -585,7 +585,10 @@ mod tests {
         }
         // At 0.15x speed, 20 ticks accumulate 3.0 of frame_carry -> frame == 3.
         assert_eq!(b.frame, 3);
-        assert!(b.frame > 0, "rotation must still advance, never freeze solid");
+        assert!(
+            b.frame > 0,
+            "rotation must still advance, never freeze solid"
+        );
     }
 
     #[test]

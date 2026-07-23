@@ -182,7 +182,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_brain_judge_wakes_on_direct_relevance() {
-        let llm = Arc::new(FakeLlm { response: "nixos".to_string() });
+        let llm = Arc::new(FakeLlm {
+            response: "nixos".to_string(),
+        });
         let (judge, mut rx) =
             BrainJudge::new(llm, "test/model", test_store(), Duration::from_millis(1));
 
@@ -197,7 +199,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_brain_judge_suppresses_on_none() {
-        let llm = Arc::new(FakeLlm { response: "none".to_string() });
+        let llm = Arc::new(FakeLlm {
+            response: "none".to_string(),
+        });
         let (judge, mut rx) =
             BrainJudge::new(llm, "test/model", test_store(), Duration::from_millis(1));
 
@@ -212,7 +216,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_brain_judge_cooldown_suppresses() {
-        let llm = Arc::new(FakeLlm { response: "nixos".to_string() });
+        let llm = Arc::new(FakeLlm {
+            response: "nixos".to_string(),
+        });
         let (judge, mut rx) =
             BrainJudge::new(llm, "test/model", test_store(), Duration::from_secs(60));
 

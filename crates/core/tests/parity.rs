@@ -68,7 +68,13 @@ impl entheai_tools::Tool for EchoTool {
 
 fn providers(base_url: String) -> HashMap<String, ProviderConfig> {
     let mut m = HashMap::new();
-    m.insert("test".to_string(), ProviderConfig { base_url, api_key_env: None });
+    m.insert(
+        "test".to_string(),
+        ProviderConfig {
+            base_url,
+            api_key_env: None,
+        },
+    );
     m
 }
 
@@ -108,7 +114,9 @@ fn final_answer_sse(answer: &str) -> String {
 }
 
 fn sse_template(body: String) -> ResponseTemplate {
-    ResponseTemplate::new(200).set_body_string(body).insert_header("Content-Type", "text/event-stream")
+    ResponseTemplate::new(200)
+        .set_body_string(body)
+        .insert_header("Content-Type", "text/event-stream")
 }
 
 #[tokio::test]
@@ -116,7 +124,11 @@ async fn run_task_dispatches_tool_then_returns_final_answer() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .respond_with(sse_template(tool_call_sse("call_1", "echo", "\"{\\\"text\\\":\\\"hi\\\"}\"")))
+        .respond_with(sse_template(tool_call_sse(
+            "call_1",
+            "echo",
+            "\"{\\\"text\\\":\\\"hi\\\"}\"",
+        )))
         .up_to_n_times(1)
         .mount(&server)
         .await;
@@ -172,7 +184,11 @@ async fn run_task_emits_thinking_and_tool_events() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .respond_with(sse_template(tool_call_sse("call_1", "echo", "\"{\\\"text\\\":\\\"hi\\\"}\"")))
+        .respond_with(sse_template(tool_call_sse(
+            "call_1",
+            "echo",
+            "\"{\\\"text\\\":\\\"hi\\\"}\"",
+        )))
         .up_to_n_times(1)
         .mount(&server)
         .await;
@@ -193,9 +209,18 @@ async fn run_task_emits_thinking_and_tool_events() {
     );
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let answer = run_with_events(&agent, &[], "do it", "test/model", tx, None, None, test_scope())
-        .await
-        .unwrap();
+    let answer = run_with_events(
+        &agent,
+        &[],
+        "do it",
+        "test/model",
+        tx,
+        None,
+        None,
+        test_scope(),
+    )
+    .await
+    .unwrap();
     assert_eq!(answer, "final answer");
 
     let mut received = Vec::new();
@@ -213,7 +238,11 @@ async fn run_task_feeds_back_permission_denied_tool_result() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .respond_with(sse_template(tool_call_sse("call_1", "echo", "\"{\\\"text\\\":\\\"hi\\\"}\"")))
+        .respond_with(sse_template(tool_call_sse(
+            "call_1",
+            "echo",
+            "\"{\\\"text\\\":\\\"hi\\\"}\"",
+        )))
         .up_to_n_times(1)
         .mount(&server)
         .await;
@@ -249,7 +278,11 @@ async fn run_task_feeds_back_unknown_tool_error() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .respond_with(sse_template(tool_call_sse("call_1", "does_not_exist", "\"{}\"")))
+        .respond_with(sse_template(tool_call_sse(
+            "call_1",
+            "does_not_exist",
+            "\"{}\"",
+        )))
         .up_to_n_times(1)
         .mount(&server)
         .await;
@@ -286,7 +319,11 @@ async fn run_task_feeds_back_bad_json_args_error() {
     // Malformed JSON in the tool-call arguments.
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .respond_with(sse_template(tool_call_sse("call_1", "echo", "\"{not json\"")))
+        .respond_with(sse_template(tool_call_sse(
+            "call_1",
+            "echo",
+            "\"{not json\"",
+        )))
         .up_to_n_times(1)
         .mount(&server)
         .await;

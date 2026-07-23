@@ -61,7 +61,11 @@ mod tests {
         let pruner = Pruner::new();
         let units = vec![unit("child process exited with code 127", 0.0)];
         let pruned = pruner.prune(units).unwrap();
-        assert_eq!(pruned.len(), 1, "Mechanism B must force-keep despite score=0.0");
+        assert_eq!(
+            pruned.len(),
+            1,
+            "Mechanism B must force-keep despite score=0.0"
+        );
     }
 
     #[test]

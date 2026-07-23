@@ -87,7 +87,11 @@ fn is_cli_flag(w: &str) -> bool {
 
 fn is_dotted_filename(w: &str) -> bool {
     match w.rsplit_once('.') {
-        Some((stem, ext)) => !stem.is_empty() && (1..=4).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphabetic()),
+        Some((stem, ext)) => {
+            !stem.is_empty()
+                && (1..=4).contains(&ext.len())
+                && ext.chars().all(|c| c.is_ascii_alphabetic())
+        }
         None => false,
     }
 }
@@ -256,7 +260,9 @@ mod tests {
 
     #[test]
     fn must_keep_false_for_plain_prose() {
-        assert!(!is_must_keep("this is basically just a very simple sentence"));
+        assert!(!is_must_keep(
+            "this is basically just a very simple sentence"
+        ));
     }
 
     #[test]

@@ -19,8 +19,9 @@ pub fn resolve_model(
         .get(provider_name)
         .ok_or_else(|| anyhow!("unknown provider {provider_name:?} in model spec {spec:?}"))?;
     let api_key = match &pc.api_key_env {
-        Some(env_var) => std::env::var(env_var)
-            .with_context(|| format!("env var {env_var:?} not set for provider {provider_name:?}"))?,
+        Some(env_var) => std::env::var(env_var).with_context(|| {
+            format!("env var {env_var:?} not set for provider {provider_name:?}")
+        })?,
         None => "not-needed".to_string(),
     };
     let config = OpenAIConfig::compatible(&api_key, &pc.base_url, model_name);
@@ -44,7 +45,11 @@ mod tests {
             },
         );
         let client = resolve_model("osaurus/qwen3-coder", &providers);
-        assert!(client.is_ok(), "expected a resolved client: {:?}", client.err());
+        assert!(
+            client.is_ok(),
+            "expected a resolved client: {:?}",
+            client.err()
+        );
     }
 
     #[test]

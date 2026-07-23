@@ -229,7 +229,11 @@ impl EntheaiAgent {
             .session_service(Arc::clone(&sessions))
             .build()?;
 
-        Ok(Self { runner, sessions, app_name })
+        Ok(Self {
+            runner,
+            sessions,
+            app_name,
+        })
     }
 
     /// Streaming entry point. Each call gets a fresh session with no prior
@@ -264,7 +268,11 @@ impl EntheaiAgent {
             .await?;
 
         for (role, text) in prior_turns {
-            let adk_role = if role == "assistant" { "model" } else { role.as_str() };
+            let adk_role = if role == "assistant" {
+                "model"
+            } else {
+                role.as_str()
+            };
             let mut ev = adk_rust::Event::new(&session_id);
             ev.author = adk_role.to_string();
             ev.llm_response.content = Some(Content::new(adk_role).with_text(text.clone()));
@@ -273,7 +281,11 @@ impl EntheaiAgent {
 
         let stream = self
             .runner
-            .run_str("entheai", &session_id, Content::new("user").with_text(user_message))
+            .run_str(
+                "entheai",
+                &session_id,
+                Content::new("user").with_text(user_message),
+            )
             .await?;
         Ok(stream)
     }
@@ -293,10 +305,14 @@ impl EntheaiAgent {
             let ev = ev?;
             if !ev.llm_response.partial {
                 if let Some(content) = ev.content() {
-                    let has_calls =
-                        content.parts.iter().any(|p| matches!(p, Part::FunctionCall { .. }));
-                    let has_results =
-                        content.parts.iter().any(|p| matches!(p, Part::FunctionResponse { .. }));
+                    let has_calls = content
+                        .parts
+                        .iter()
+                        .any(|p| matches!(p, Part::FunctionCall { .. }));
+                    let has_results = content
+                        .parts
+                        .iter()
+                        .any(|p| matches!(p, Part::FunctionResponse { .. }));
                     let joined: String = content.parts.iter().filter_map(|p| p.text()).collect();
                     if !joined.is_empty() && !has_calls && !has_results {
                         text = joined;
@@ -347,7 +363,10 @@ mod tests {
         let mut providers = HashMap::new();
         providers.insert(
             "test".to_string(),
-            ProviderConfig { base_url: server.uri(), api_key_env: None },
+            ProviderConfig {
+                base_url: server.uri(),
+                api_key_env: None,
+            },
         );
 
         let agent = EntheaiAgent::new(
@@ -366,17 +385,27 @@ mod tests {
 
     #[tokio::test]
     async fn before_model_callback_injects_retrieval_brief_into_request() {
-        use entheai_memory::{Memory, MemoryRuntime, MemoryRuntimeConfig, MemoryScope, Namespace, SqliteStore};
+        use entheai_memory::{
+            Memory, MemoryRuntime, MemoryRuntimeConfig, MemoryScope, Namespace, SqliteStore,
+        };
         use wiremock::matchers::body_string_contains;
 
         let store = SqliteStore::open_memory(None).unwrap();
         store
-            .store(Namespace::Codebase, "k1", "the auth module lives in crates/permission", None)
+            .store(
+                Namespace::Codebase,
+                "k1",
+                "the auth module lives in crates/permission",
+                None,
+            )
             .await
             .unwrap();
         let memory = Arc::new(MemoryRuntime::new(
             Arc::new(store),
-            MemoryRuntimeConfig { enabled: true, ..Default::default() },
+            MemoryRuntimeConfig {
+                enabled: true,
+                ..Default::default()
+            },
         ));
 
         let server = MockServer::start().await;
@@ -395,7 +424,10 @@ mod tests {
         let mut providers = HashMap::new();
         providers.insert(
             "test".to_string(),
-            ProviderConfig { base_url: server.uri(), api_key_env: None },
+            ProviderConfig {
+                base_url: server.uri(),
+                api_key_env: None,
+            },
         );
 
         let agent = EntheaiAgent::new_with_memory(

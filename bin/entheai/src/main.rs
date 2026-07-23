@@ -187,7 +187,11 @@ async fn main() -> anyhow::Result<()> {
     let yolo = cli.yolo || cfg.permission.yolo;
     // YOLO lifts the turn cap entirely — a long autonomous run shouldn't be cut
     // off at `[router].max_turns` (default 200).
-    let max_iterations: u32 = if yolo { u32::MAX } else { cfg.router.max_turns as u32 };
+    let max_iterations: u32 = if yolo {
+        u32::MAX
+    } else {
+        cfg.router.max_turns as u32
+    };
     let mut policy = entheai_permission::Policy::new(yolo, cfg.permission.allowlist.clone());
     let mode = if yolo {
         entheai_permission::Mode::Yolo
@@ -369,7 +373,9 @@ async fn main() -> anyhow::Result<()> {
             // markdown files) since PromptProcessor doesn't expose its own.
             let brain_judge = match build_brain_judge_llm(&model_id, &cfg) {
                 Ok((llm, judge_model)) => {
-                    let frozen = entheai_memory_pp::frozen::FrozenStore::load(std::path::Path::new("frozen"));
+                    let frozen = entheai_memory_pp::frozen::FrozenStore::load(
+                        std::path::Path::new("frozen"),
+                    );
                     Some(entheai_memory_pp::BrainJudge::new(
                         llm,
                         judge_model,

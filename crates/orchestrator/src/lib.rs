@@ -288,7 +288,13 @@ async fn orchestrate_once(
 /// but overrides `task_id` (uniqued by `prefix`+`index`, so concurrently
 /// running leaves never collide in retrieval/trajectory recording), `cwd`
 /// (the leaf's own worktree/root, not the caller's), and `role`.
-fn leaf_scope(base: &MemoryScope, prefix: &str, index: usize, cwd: &Path, role: &str) -> MemoryScope {
+fn leaf_scope(
+    base: &MemoryScope,
+    prefix: &str,
+    index: usize,
+    cwd: &Path,
+    role: &str,
+) -> MemoryScope {
     MemoryScope {
         task_id: format!("{prefix}-{index}"),
         cwd: cwd.to_path_buf(),
@@ -365,8 +371,13 @@ async fn run_fanout_readonly(
     // 1. Map + decompose.
     let mapped = entheai_mapper::Mapper::map(root, task, &[]).await;
     let (decompose_system, decompose_user) = decompose_messages(&mapped.render());
-    let raw =
-        orchestrate_once(config, &orch_model, Some(&decompose_system), &decompose_user).await?;
+    let raw = orchestrate_once(
+        config,
+        &orch_model,
+        Some(&decompose_system),
+        &decompose_user,
+    )
+    .await?;
     let max_par = config.router.max_parallel.max(1);
     let subtasks = parse_decomposition(&raw, max_par);
 
@@ -525,8 +536,21 @@ async fn run_coder_inner(
 ) -> CoderRun {
     let output = match &memory {
         Some(mem) => {
-            let leaf = leaf_scope(&scope, &format!("fanout-{session}"), wt.index, &wt.path, &st.role);
-            run_coder_local(&config, &st.role, &st.task, &wt.path, Some((Arc::clone(mem), leaf))).await
+            let leaf = leaf_scope(
+                &scope,
+                &format!("fanout-{session}"),
+                wt.index,
+                &wt.path,
+                &st.role,
+            );
+            run_coder_local(
+                &config,
+                &st.role,
+                &st.task,
+                &wt.path,
+                Some((Arc::clone(mem), leaf)),
+            )
+            .await
         }
         None => run_coder_once(&config, &st.role, &st.task, &wt.path).await,
     };
@@ -691,8 +715,13 @@ pub async fn run_fanout(
     // 1. Map + decompose.
     let mapped = entheai_mapper::Mapper::map(root, task, &[]).await;
     let (decompose_system, decompose_user) = decompose_messages_coder(&mapped.render());
-    let raw =
-        orchestrate_once(config, &orch_model, Some(&decompose_system), &decompose_user).await?;
+    let raw = orchestrate_once(
+        config,
+        &orch_model,
+        Some(&decompose_system),
+        &decompose_user,
+    )
+    .await?;
     // The v2 coder path exists to CHANGE code, so guarantee at least one `coder`
     // sub-task: a weak orchestrator model sometimes returns an explore-only (or
     // empty) plan, which would analyze the task and integrate nothing. `ensure_coder`

@@ -48,7 +48,10 @@ pub enum Command {
 pub enum Event {
     /// The track (re)started playing; `loop_count` is 1 on first play and
     /// increments every time the loop restarts.
-    NowPlaying { title: String, loop_count: u32 },
+    NowPlaying {
+        title: String,
+        loop_count: u32,
+    },
     Paused,
     Resumed,
     Stopped,
