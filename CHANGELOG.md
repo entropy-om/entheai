@@ -6,6 +6,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+### Added
+- **Mandatory deterministic merge seals for fan-out integration (roadmap Phase 2.1).** Every coder worktree merge now passes an empirical verification gate before integrating: `[fanout].verify` when set, else auto-detected `./scripts/check.sh` at the repo root. A passing run produces a deterministic **SHA-256 `MergeSeal`** — `sha256(diff)`, `sha256(verify log)`, and a combined seal over both — carried on the coder's outcome and printed in the fan-out report (`integrated ✓ — seal <12-hex> (verify: <cmd>)`). Self-reported coder success without empirical verification no longer integrates (enforcing `frozen/verification.md`).
+
+### Changed
+- **`[fanout].verify_required` (default `true`).** When no verify command resolves — neither `[fanout].verify` nor `./scripts/check.sh` — changed branches are now left unmerged for human review (`VerifyStatus::Unverifiable`) instead of integrating unverified. Set `verify_required = false` to restore the legacy integrate-as-is behaviour; such merges are loudly labelled `UNVERIFIED` in the report.
+- **Worker sandbox toolchain grant follows "a verify could run".** `entheai-worker`'s Landlock read-only allow-list now includes `~/.cargo`/`~/.rustup` whenever verification is mandatory (the default) — not only when `[fanout].verify` is explicitly configured — since `./scripts/check.sh` may be auto-detected per-worktree.
+
 ## [0.4.0] - 2026-07-23
 
 Voice output, an idle-aware brain panel, and a fully self-contained radio —

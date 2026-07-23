@@ -621,7 +621,12 @@ fn sandbox_read_only_paths(config: &Config, config_path: Option<&Path>) -> Vec<P
         candidates.push(PathBuf::from(p));
     }
     // A `verify` command (e.g. `cargo test`) needs the Rust toolchain caches.
-    if config.fanout.verify.is_some() {
+    // With verification mandatory by default, `./scripts/check.sh` may be
+    // auto-detected per-worktree even when `[fanout].verify` is unset — so the
+    // grant follows "a verify could run here", not just "one is configured".
+    // Only `verify_required = false` with no explicit command keeps the tighter
+    // sandbox.
+    if config.fanout.verify.is_some() || config.fanout.verify_required {
         if let Some(home) = std::env::var_os("HOME") {
             let home = PathBuf::from(home);
             candidates.push(home.join(".cargo"));
@@ -773,23 +778,36 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_read_only_paths_excludes_toolchain_dirs_without_verify() {
-        // No `[fanout] verify` → the Rust toolchain caches are not requested, even
-        // when they exist on this host.
-        let cfg = Config::from_toml_str("").unwrap();
-        assert!(cfg.fanout.verify.is_none());
-        let paths = sandbox_read_only_paths(&cfg, None);
-        if let Some(home) = std::env::var_os("HOME") {
-            let cargo = PathBuf::from(&home).join(".cargo");
-            let rustup = PathBuf::from(&home).join(".rustup");
+    fn sandbox_read_only_paths_excludes_toolchain_dirs_only_in_lax_mode() {
+        // Verification is mandatory by default and `./scripts/check.sh` may be
+        // auto-detected per-worktree, so a default config grants the toolchain
+        // caches. Only explicit lax mode (`verify_required = false`, no verify
+        // command) keeps the tighter sandbox.
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let cargo = PathBuf::from(&home).join(".cargo");
+        let rustup = PathBuf::from(&home).join(".rustup");
+
+        let strict = Config::from_toml_str("").unwrap();
+        assert!(strict.fanout.verify.is_none() && strict.fanout.verify_required);
+        let paths = sandbox_read_only_paths(&strict, None);
+        if cargo.exists() {
             assert!(
-                !paths.contains(&cargo),
-                ".cargo present without verify: {paths:?}"
-            );
-            assert!(
-                !paths.contains(&rustup),
-                ".rustup present without verify: {paths:?}"
+                paths.contains(&cargo),
+                ".cargo missing under mandatory verification: {paths:?}"
             );
         }
+
+        let lax = Config::from_toml_str("[fanout]\nverify_required = false").unwrap();
+        let paths = sandbox_read_only_paths(&lax, None);
+        assert!(
+            !paths.contains(&cargo),
+            ".cargo present in lax mode without verify: {paths:?}"
+        );
+        assert!(
+            !paths.contains(&rustup),
+            ".rustup present in lax mode without verify: {paths:?}"
+        );
     }
 }

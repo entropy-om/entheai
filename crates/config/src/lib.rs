@@ -106,10 +106,18 @@ pub struct AgentConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct FanoutConfig {
     /// Shell command run inside each coder's worktree to decide whether its
-    /// changes are integrated (e.g. "cargo test"). Unset = integrate all
-    /// changed branches without verifying.
+    /// changes are integrated (e.g. "cargo test"). Unset = auto-detect
+    /// `./scripts/check.sh` at the repo root (see [`FanoutConfig::resolve_verify`]).
     #[serde(default)]
     pub verify: Option<String>,
+    /// Whether a passing verify run is REQUIRED before a coder's branch is
+    /// integrated (frozen/verification.md: never trust self-reported success).
+    /// When `true` (default) and no verify command resolves — neither `verify`
+    /// set nor `./scripts/check.sh` present — changed branches are left
+    /// unmerged for human review instead of being integrated unverified.
+    /// Set `false` to restore the legacy integrate-as-is behaviour.
+    #[serde(default = "default_verify_required")]
+    pub verify_required: bool,
     /// Per-coder timeout in seconds before it's force-aborted — a hung coder
     /// must not block the rest of the fan-out batch. Default: 600 (10 min).
     #[serde(default = "default_coder_timeout_secs")]
@@ -130,12 +138,30 @@ impl Default for FanoutConfig {
     fn default() -> Self {
         Self {
             verify: None,
+            verify_required: default_verify_required(),
             coder_timeout_secs: default_coder_timeout_secs(),
             executor: default_fanout_executor(),
             agy_model: default_agy_model(),
             mode: String::new(),
         }
     }
+}
+
+impl FanoutConfig {
+    /// The effective verify command for a repo rooted at `root`: the configured
+    /// `[fanout].verify` when set, else `./scripts/check.sh` when that script
+    /// exists at the root (the repo's own empirical gate), else `None`.
+    pub fn resolve_verify(&self, root: &std::path::Path) -> Option<String> {
+        if let Some(cmd) = &self.verify {
+            return Some(cmd.clone());
+        }
+        let script = root.join("scripts").join("check.sh");
+        script.is_file().then(|| "./scripts/check.sh".to_string())
+    }
+}
+
+fn default_verify_required() -> bool {
+    true
 }
 
 fn default_fanout_executor() -> String {
@@ -489,6 +515,60 @@ mod tests {
         .unwrap();
 
         assert_eq!(cfg.fanout.verify, None);
+    }
+
+    #[test]
+    fn fanout_verify_required_defaults_to_true_and_parses_false() {
+        let default = Config::from_toml_str(r#"default_model = "osaurus/qwen3-coder""#).unwrap();
+        assert!(default.fanout.verify_required);
+
+        let lax = Config::from_toml_str(
+            r#"
+            default_model = "osaurus/qwen3-coder"
+            [fanout]
+            verify_required = false
+            "#,
+        )
+        .unwrap();
+        assert!(!lax.fanout.verify_required);
+    }
+
+    #[test]
+    fn resolve_verify_prefers_explicit_command_over_autodetect() {
+        let cfg = Config::from_toml_str(
+            r#"
+            default_model = "osaurus/qwen3-coder"
+            [fanout]
+            verify = "cargo test"
+            "#,
+        )
+        .unwrap();
+        // Explicit command wins regardless of what exists on disk.
+        assert_eq!(
+            cfg.fanout
+                .resolve_verify(std::path::Path::new("/nonexistent")),
+            Some("cargo test".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_verify_autodetects_check_sh_else_none() {
+        let cfg = Config::from_toml_str(r#"default_model = "osaurus/qwen3-coder""#).unwrap();
+
+        let root = std::env::temp_dir().join(format!("entheai-cfg-test-{}", std::process::id()));
+        let scripts = root.join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+
+        // No check.sh yet → no resolved command.
+        assert_eq!(cfg.fanout.resolve_verify(&root), None);
+
+        std::fs::write(scripts.join("check.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+        assert_eq!(
+            cfg.fanout.resolve_verify(&root),
+            Some("./scripts/check.sh".to_string())
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

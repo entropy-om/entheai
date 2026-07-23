@@ -44,9 +44,13 @@ orchestrator = "deepseek/deepseek-chat" # DeepSeek V4 Pro via credits: "zen/deep
 max_parallel = 4                         # cap on concurrently-running sub-agents
 # max_turns = 200                        # per-task tool-dispatch round cap (default 200; UNLIMITED under --yolo)
 
-# Optional: verify each coder's worktree before integrating its changes.
+# Verification gate for each coder's worktree before its changes integrate.
+# Mandatory by default: unset `verify` auto-detects ./scripts/check.sh at the
+# repo root; if nothing resolves, changed branches are left unmerged for review.
+# Integrated merges carry a deterministic SHA-256 seal (diff + verify log).
 # [fanout]
-# verify = "cargo test"
+# verify = "cargo test"             # explicit gate (overrides auto-detect)
+# verify_required = true            # false = legacy lax mode (integrate unverified)
 # mode = ""                         # "" = inherit parent ceiling; else override: plan | auto | yolo | ask
 
 # ── Permission posture + per-tool pins ─────────────────────────────────────────

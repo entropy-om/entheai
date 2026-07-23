@@ -24,9 +24,9 @@ To achieve true **Quantum Completeness**, `entheai` must perfectly bridge the fl
 
 ### Phase 2: Singularity Verification & Zero-Drift Checkpoints (Fixed Phase)
 
-- [ ] **2.1 Mandatory Deterministic Merge Seals (`crates/orchestrator`)**
-  - Require every subagent fan-out worktree merge to pass an empirical verification gate (`./scripts/check.sh`).
-  - Generate a cryptographic SHA-256 seal of the merged diff + build output. Reject any self-reported success that lacks verified empirical execution logs (enforcing [`frozen/verification.md`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/verification.md)).
+- [x] **2.1 Mandatory Deterministic Merge Seals (`crates/orchestrator`)** — *shipped in 0.5.0*
+  - ✅ Every subagent fan-out worktree merge passes an empirical verification gate: `[fanout].verify`, else auto-detected `./scripts/check.sh`; `verify_required = true` by default.
+  - ✅ Deterministic SHA-256 `MergeSeal` (`sha256(diff)`, `sha256(verify log)`, combined seal) carried on each integrated outcome and printed in the fan-out report. Self-reported success without empirical logs is rejected (`VerifyStatus::Unverifiable` → left on branch), enforcing [`frozen/verification.md`](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/frozen/verification.md).
 
 - [ ] **2.2 Binary Reproducibility & Target CPU Anchoring**
   - Ensure Apple Silicon native compilation (`aarch64-apple-darwin`, `mimalloc`, `LTO=fat`) yields byte-reproducible releases across environments.

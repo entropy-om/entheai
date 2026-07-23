@@ -9,10 +9,12 @@
 //! v2 (`run_fanout`, the public entrypoint): each decomposed sub-task gets its
 //! own coder sub-agent with a FULL (read/write/shell) tool set, running in an
 //! ISOLATED `git worktree` (see [`worktree`]) so parallel writers never step on
-//! each other. Each coder's worktree is committed, optionally verified (
-//! `[fanout].verify`), and — if it committed and verified clean — integrated
-//! onto a fresh integration branch. Returns a structured report instead of an
-//! extra synthesis LLM call.
+//! each other. Each coder's worktree is committed, verified against the
+//! resolved gate (`[fanout].verify`, else `./scripts/check.sh` — mandatory
+//! unless `[fanout].verify_required = false`), and — if it committed and
+//! verified clean — integrated onto a fresh integration branch carrying a
+//! deterministic SHA-256 [`MergeSeal`] over its diff + verify log. Returns a
+//! structured report instead of an extra synthesis LLM call.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -610,15 +612,64 @@ async fn run_coder_maybe_remote(
     run_coder_inner(config, wt, st, memory, scope, session).await
 }
 
-/// Outcome of running an optional `[fanout].verify` command in a coder's worktree.
+/// Cryptographic seal binding a coder's committed diff to the empirical verify
+/// log that earned it integration (human_todo.md Phase 2.1 / frozen/verification.md:
+/// self-reported success is worthless without verified execution evidence).
+///
+/// Deterministic: same diff + same verify output ⇒ same seal, no timestamps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeSeal {
+    /// SHA-256 (hex) of `git diff <base>..HEAD` in the coder's worktree.
+    pub diff_sha256: String,
+    /// SHA-256 (hex) of the verify command's combined stderr+stdout.
+    pub log_sha256: String,
+    /// SHA-256 (hex) over `"<diff_sha256>:<log_sha256>"` — the seal itself.
+    pub seal: String,
+    /// The verify command that produced the log (empirical provenance).
+    pub verify_cmd: String,
+}
+
+impl MergeSeal {
+    /// Build a seal from raw diff bytes and raw verify-log bytes.
+    pub fn compute(diff: &[u8], log: &[u8], verify_cmd: &str) -> Self {
+        let diff_sha256 = sha256_hex(diff);
+        let log_sha256 = sha256_hex(log);
+        let seal = sha256_hex(format!("{diff_sha256}:{log_sha256}").as_bytes());
+        Self {
+            diff_sha256,
+            log_sha256,
+            seal,
+            verify_cmd: verify_cmd.to_string(),
+        }
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    let out = h.finalize();
+    let mut s = String::with_capacity(64);
+    for b in out {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// Outcome of running the resolved verify command in a coder's worktree.
 #[derive(Debug, Clone)]
 pub enum VerifyStatus {
     /// The coder made no commit — nothing to verify.
     NoChanges,
-    /// No `[fanout].verify` command configured.
+    /// No verify command resolved and `[fanout].verify_required = false` —
+    /// integrated as-is (legacy lax mode).
     Skipped,
-    /// The verify command exited successfully.
-    Passed,
+    /// No verify command resolved (neither `[fanout].verify` nor
+    /// `./scripts/check.sh`) while verification is required — NOT integrated.
+    Unverifiable,
+    /// The verify command exited successfully; carries the deterministic
+    /// SHA-256 seal over the committed diff + empirical verify log.
+    Passed(MergeSeal),
     /// The verify command failed; carries the tail of its combined stderr+stdout.
     Failed(String),
 }
@@ -634,11 +685,26 @@ fn tail_chars(s: &str, n: usize) -> String {
     }
 }
 
-/// Run `cmd` (if any) in `path` to decide whether a coder's changes are safe to
-/// integrate. `None` skips verification entirely (changes are integrated as-is).
-async fn verify_worktree(path: &Path, cmd: Option<&str>) -> VerifyStatus {
+/// Run the resolved verify command (if any) in `path` to decide whether a
+/// coder's changes are safe to integrate.
+///
+/// `cmd = None` means no command resolved (neither `[fanout].verify` nor
+/// `./scripts/check.sh`): `required` then decides between [`VerifyStatus::Unverifiable`]
+/// (mandatory gate — not integrated) and [`VerifyStatus::Skipped`] (legacy lax mode).
+/// On success the committed diff against `base` and the raw verify log are
+/// hashed into a deterministic [`MergeSeal`].
+async fn verify_worktree(
+    path: &Path,
+    base: &str,
+    cmd: Option<&str>,
+    required: bool,
+) -> VerifyStatus {
     let Some(cmd) = cmd else {
-        return VerifyStatus::Skipped;
+        return if required {
+            VerifyStatus::Unverifiable
+        } else {
+            VerifyStatus::Skipped
+        };
     };
     match tokio::process::Command::new("sh")
         .arg("-c")
@@ -647,7 +713,18 @@ async fn verify_worktree(path: &Path, cmd: Option<&str>) -> VerifyStatus {
         .output()
         .await
     {
-        Ok(output) if output.status.success() => VerifyStatus::Passed,
+        Ok(output) if output.status.success() => {
+            let mut log = output.stderr;
+            log.extend_from_slice(&output.stdout);
+            let diff = tokio::process::Command::new("git")
+                .args(["diff", base, "HEAD"])
+                .current_dir(path)
+                .output()
+                .await
+                .map(|o| o.stdout)
+                .unwrap_or_default();
+            VerifyStatus::Passed(MergeSeal::compute(&diff, &log, cmd))
+        }
         Ok(output) => {
             let mut combined = String::from_utf8_lossy(&output.stderr).into_owned();
             combined.push_str(&String::from_utf8_lossy(&output.stdout));
@@ -865,7 +942,14 @@ pub async fn run_fanout(
         .await
         .unwrap_or(false);
         let verify = if committed {
-            verify_worktree(&run.path, config.fanout.verify.as_deref()).await
+            let cmd = config.fanout.resolve_verify(root);
+            verify_worktree(
+                &run.path,
+                &base,
+                cmd.as_deref(),
+                config.fanout.verify_required,
+            )
+            .await
         } else {
             VerifyStatus::NoChanges
         };
@@ -875,8 +959,9 @@ pub async fn run_fanout(
             } else {
                 match &verify {
                     VerifyStatus::Failed(_) => "verify failed",
-                    VerifyStatus::Passed => "verified",
+                    VerifyStatus::Passed(_) => "verified + sealed",
                     VerifyStatus::Skipped => "changes committed (unverified)",
+                    VerifyStatus::Unverifiable => "unverifiable — not integrated",
                     VerifyStatus::NoChanges => "no changes",
                 }
             };
@@ -887,7 +972,7 @@ pub async fn run_fanout(
             });
         }
         let integrated =
-            committed && matches!(verify, VerifyStatus::Skipped | VerifyStatus::Passed);
+            committed && matches!(verify, VerifyStatus::Skipped | VerifyStatus::Passed(_));
         if integrated {
             eligible_branches.push(run.branch.clone());
         }
@@ -990,10 +1075,24 @@ pub fn format_v2_report(
         } else if !o.committed {
             "no changes".to_string()
         } else if o.integrated {
-            "integrated ✓".to_string()
+            match &o.verify {
+                VerifyStatus::Passed(seal) => format!(
+                    "integrated ✓ — seal {} (verify: {})",
+                    &seal.seal[..12.min(seal.seal.len())],
+                    seal.verify_cmd
+                ),
+                // Skipped (legacy lax mode) is the only other way in — say so
+                // instead of letting an unverified merge look sealed.
+                _ => "integrated ✓ (UNVERIFIED — [fanout].verify_required = false)".to_string(),
+            }
         } else if let VerifyStatus::Failed(msg) = &o.verify {
             format!(
                 "changes not integrated (verify failed: {msg}) — left on branch {}",
+                o.branch
+            )
+        } else if matches!(o.verify, VerifyStatus::Unverifiable) {
+            format!(
+                "changes not integrated (no verify command — set [fanout].verify or add scripts/check.sh) — left on branch {}",
                 o.branch
             )
         } else {
@@ -1280,7 +1379,7 @@ mod tests {
                 "add a feature",
                 "entheai/sess/coder-0",
                 true,
-                VerifyStatus::Passed,
+                VerifyStatus::Passed(MergeSeal::compute(b"diff", b"log", "./scripts/check.sh")),
                 true,
             ),
             coder_outcome(
@@ -1313,8 +1412,82 @@ mod tests {
         assert!(report.contains("test"));
         assert!(report.contains("entheai/sess/integration"));
         assert!(report.contains("integrated"));
+        // The integrated coder's line must carry its 12-hex seal prefix + provenance.
+        let expected_seal = MergeSeal::compute(b"diff", b"log", "./scripts/check.sh");
+        assert!(report.contains(&format!("seal {}", &expected_seal.seal[..12])));
+        assert!(report.contains("verify: ./scripts/check.sh"));
         assert!(report.contains("verify failed: assertion failed at line 42"));
         assert!(report.contains("git switch entheai/sess/integration"));
+    }
+
+    #[test]
+    fn merge_seal_is_deterministic_and_input_sensitive() {
+        let a = MergeSeal::compute(b"diff-bytes", b"log-bytes", "cmd");
+        let b = MergeSeal::compute(b"diff-bytes", b"log-bytes", "cmd");
+        assert_eq!(a, b, "same inputs must yield the same seal");
+        assert_eq!(a.seal.len(), 64);
+        assert_eq!(a.diff_sha256.len(), 64);
+        assert_eq!(a.log_sha256.len(), 64);
+
+        let c = MergeSeal::compute(b"diff-bytes2", b"log-bytes", "cmd");
+        assert_ne!(a.seal, c.seal, "a different diff must change the seal");
+        let d = MergeSeal::compute(b"diff-bytes", b"log-bytes2", "cmd");
+        assert_ne!(
+            a.seal, d.seal,
+            "a different verify log must change the seal"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_worktree_without_cmd_is_unverifiable_when_required_else_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let strict = verify_worktree(dir.path(), "HEAD", None, true).await;
+        assert!(matches!(strict, VerifyStatus::Unverifiable));
+        let lax = verify_worktree(dir.path(), "HEAD", None, false).await;
+        assert!(matches!(lax, VerifyStatus::Skipped));
+    }
+
+    #[tokio::test]
+    async fn verify_worktree_failure_carries_output_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let status = verify_worktree(dir.path(), "HEAD", Some("echo boom >&2; exit 1"), true).await;
+        match status {
+            VerifyStatus::Failed(msg) => assert!(msg.contains("boom")),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn format_v2_report_unverifiable_coder_is_left_on_branch_with_remedy() {
+        let outcomes = vec![coder_outcome(
+            0,
+            "coder",
+            "add a feature",
+            "entheai/sess/coder-0",
+            true,
+            VerifyStatus::Unverifiable,
+            false,
+        )];
+        let report = format_v2_report("Ship it", "0123456789abcdef", "sess", &outcomes, None);
+        assert!(report.contains("no verify command"));
+        assert!(report.contains("left on branch entheai/sess/coder-0"));
+        assert!(report.contains("scripts/check.sh"));
+    }
+
+    #[test]
+    fn format_v2_report_lax_integration_is_loudly_unverified() {
+        let outcomes = vec![coder_outcome(
+            0,
+            "coder",
+            "add a feature",
+            "entheai/sess/coder-0",
+            true,
+            VerifyStatus::Skipped,
+            true,
+        )];
+        let report = format_v2_report("Ship it", "0123456789abcdef", "sess", &outcomes, None);
+        assert!(report.contains("UNVERIFIED"));
+        assert!(report.contains("verify_required = false"));
     }
 
     #[test]

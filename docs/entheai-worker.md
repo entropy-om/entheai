@@ -149,7 +149,9 @@ is irreversible for that process. The posture is set by `[federation] sandbox`
 - **Linux (production backend):** default-**deny** via Landlock. The coder's worktree
   is the single read-write directory; every other path is denied except a read-only
   allow-list — the toolchain (`/usr`, `/lib*`, `/bin`, plus `~/.cargo` and `~/.rustup`
-  when a `[fanout] verify` command is configured), CA certs (`/etc/ssl`,
+  whenever a verify could run: a `[fanout] verify` command is configured, or
+  `verify_required` is on — its default — so `./scripts/check.sh` may be
+  auto-detected per-worktree), CA certs (`/etc/ssl`,
   `/etc/ca-certificates`), `/etc/resolv.conf`, `/etc/hosts`, and `/tmp`.
 - **macOS (shipping today, best-effort):** the `sandbox_init` profile is `allow
   default` with targeted **denies** — it confines **writes** to the worktree (plus
