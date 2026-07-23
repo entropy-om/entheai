@@ -20,3 +20,4 @@ public/llms-full.txt
 .crabcc/
 target-repro-a/
 target-repro-b/
+.entheai/
