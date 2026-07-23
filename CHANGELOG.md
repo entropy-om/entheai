@@ -7,6 +7,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 ## [Unreleased]
 
 ### Added
+- **Dynamic frozen-node re-ranking (roadmap Phase 3.2).** Frozen node priors are now experience-weighted: a fan-out verify **failure** applies `rank −0.05` to every node whose triggers match the task + traceback (failures teach harder), and a **sealed success** applies `rank +0.02` to task-matched nodes via the new `TrajectorySink::ingest_sealed_success` hook (default no-op). Ranks clamp to `[0, 2.0]` and live in a persistent overlay (`frozen-ranks.json`, stored next to the PP raw store) that `FrozenStore::wake` consults in place of the static front-matter prior — so past mistakes reorder node selection across sessions without ever rewriting the frozen `.md` doctrine files.
 - **Failure-trajectory auto-ingestion (roadmap Phase 3.1, first half).** When a fan-out coder's verify run fails (build, clippy, or test), the orchestrator now feeds the **full raw traceback** — not the 500-char display tail — to a new `TrajectorySink` seam, implemented by the prompt-processing memory: `PromptProcessor::ingest_failure_trajectory` stores it as `RawKind::Trajectory` under the `trajectories` namespace, capped and content-addressed (identical failures dedupe to one span). Wired in both the TUI and the one-shot `--fanout` CLI path whenever PP memory is on; best-effort, never blocks the fan-out.
 
 ## [0.5.0] - 2026-07-23

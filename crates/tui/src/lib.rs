@@ -199,6 +199,12 @@ impl entheai_orchestrator::TrajectorySink for PpTrajectorySink {
     async fn ingest_failure(&self, meta: serde_json::Value, trace: &str) {
         self.0.ingest_failure_trajectory(meta, trace).await;
     }
+
+    async fn ingest_sealed_success(&self, meta: serde_json::Value) {
+        if let Some(task) = meta.get("task").and_then(|v| v.as_str()) {
+            self.0.record_verified_success(task);
+        }
+    }
 }
 
 /// All mutable UI state.

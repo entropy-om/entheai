@@ -35,13 +35,13 @@ To achieve true **Quantum Completeness**, `entheai` must perfectly bridge the fl
 
 ### Phase 3: Soil Nourishment & Failure Ingestion (Dyad Learning Loop)
 
-- [ ] **3.1 Failure Trajectory Auto-Ingestion (`crates/memory-pp`)**
-  - "Knowledge grows in the soil. Even the brutal notes of failure. Especially those."
-  - When a build, clippy check, or test fails inside a worktree, automatically ingest the raw failure traceback into `raw_store` under the `trajectories` namespace.
-  - Wire `BrainJudge` to evaluate failure patterns and dynamically update frozen node priors so past mistakes prevent future regressions.
+- [x] **3.1 Failure Trajectory Auto-Ingestion (`crates/memory-pp`)** — *shipped in 0.6.0*
+  - ✅ "Knowledge grows in the soil. Even the brutal notes of failure. Especially those."
+  - ✅ Fan-out verify failures (build / clippy / test) auto-ingest their FULL raw traceback into `raw_store` as `RawKind::Trajectory` under the `trajectories` namespace (content-addressed, capped, deduped) via the orchestrator's `TrajectorySink` seam.
+  - ✅ Failure patterns dynamically update frozen node priors — deterministic trigger-matched reweighting (see 3.2). *Deferred: routing prior updates through the LLM `BrainJudge` (today the judge only wakes nodes; reweighting is deterministic by design — revisit if trigger matching proves too coarse).*
 
-- [ ] **3.2 Dynamic Frozen Node Re-Ranking**
-  - Implement experience-weighted rank updates (`rank += delta`) based on execution outcomes, ensuring optimal frozen node selection over time.
+- [x] **3.2 Dynamic Frozen Node Re-Ranking** — *shipped in 0.6.0*
+  - ✅ Experience-weighted rank updates from execution outcomes: verify failure → `rank −0.05` on task/trace-matched nodes, sealed success → `rank +0.02` on task-matched nodes; clamped to `[0, 2.0]`, persisted in a `frozen-ranks.json` overlay consulted by `FrozenStore::wake` — the doctrine `.md` files are never rewritten.
 
 ---
 

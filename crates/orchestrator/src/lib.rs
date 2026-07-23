@@ -623,6 +623,11 @@ async fn run_coder_maybe_remote(
 pub trait TrajectorySink: Send + Sync {
     /// Ingest one failure: structured metadata + the raw verify traceback.
     async fn ingest_failure(&self, meta: serde_json::Value, trace: &str);
+
+    /// A coder's diff passed the empirical gate and was sealed (roadmap 3.2):
+    /// the positive experience signal. Default: no-op — sinks that only soak
+    /// up failures need not care.
+    async fn ingest_sealed_success(&self, _meta: serde_json::Value) {}
 }
 
 /// Cryptographic seal binding a coder's committed diff to the empirical verify
@@ -969,19 +974,36 @@ pub async fn run_fanout(
         } else {
             VerifyStatus::NoChanges
         };
-        // Roadmap 3.1: an empirical failure (build/clippy/test) is soil, not
-        // noise — feed the raw traceback to the trajectory sink, best-effort.
-        if let (VerifyStatus::Failed(trace), Some(sink)) = (&verify, &trajectories) {
-            let meta = serde_json::json!({
-                "source": "fanout-verify",
-                "session": session,
-                "role": run.role,
-                "task": run.task,
-                "branch": run.branch,
-                "base": base,
-                "verify_cmd": verify_cmd,
-            });
-            sink.ingest_failure(meta, trace).await;
+        // Roadmap 3.1/3.2: execution outcomes are soil, not noise. A failure
+        // feeds its raw traceback to the trajectory sink; a sealed success
+        // feeds the positive experience signal. Both best-effort.
+        if let Some(sink) = &trajectories {
+            match &verify {
+                VerifyStatus::Failed(trace) => {
+                    let meta = serde_json::json!({
+                        "source": "fanout-verify",
+                        "session": session,
+                        "role": run.role,
+                        "task": run.task,
+                        "branch": run.branch,
+                        "base": base,
+                        "verify_cmd": verify_cmd,
+                    });
+                    sink.ingest_failure(meta, trace).await;
+                }
+                VerifyStatus::Passed(seal) => {
+                    let meta = serde_json::json!({
+                        "source": "fanout-verify",
+                        "session": session,
+                        "role": run.role,
+                        "task": run.task,
+                        "branch": run.branch,
+                        "seal": seal.seal,
+                    });
+                    sink.ingest_sealed_success(meta).await;
+                }
+                _ => {}
+            }
         }
         if let Some(tx) = &events {
             let status = if !committed {

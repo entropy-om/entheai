@@ -73,11 +73,107 @@ impl FrozenNode {
 
 pub struct FrozenStore {
     nodes: Vec<FrozenNode>,
+    /// Live experience-weighted rank overlay (roadmap Phase 3.2): node name →
+    /// effective rank, adjusted by execution outcomes (`rank += delta`) and
+    /// consulted by [`FrozenStore::wake`] in place of the static prior.
+    /// Seeded from `overlay_path` (JSON `{name: rank}`) when configured.
+    ranks: std::sync::RwLock<std::collections::HashMap<String, f32>>,
+    /// Best-effort persistence target for the overlay; `None` = in-memory only.
+    overlay_path: Option<std::path::PathBuf>,
 }
+
+/// Ranks live in `[0, RANK_MAX]`: 0 silences a node's prior entirely; the cap
+/// stops a winning-streak node from drowning lexical relevance (wake weights
+/// rank at 0.25, so RANK_MAX contributes at most 0.5 to a score).
+pub const RANK_MAX: f32 = 2.0;
 
 impl FrozenStore {
     pub fn from_nodes(nodes: Vec<FrozenNode>) -> FrozenStore {
-        FrozenStore { nodes }
+        FrozenStore {
+            nodes,
+            ranks: std::sync::RwLock::new(std::collections::HashMap::new()),
+            overlay_path: None,
+        }
+    }
+
+    /// Attach a persistent rank overlay: load `{name: rank}` JSON from `path`
+    /// (ignoring unknown node names and out-of-range values), and write the
+    /// overlay back there, best-effort, on every [`FrozenStore::reweight`].
+    pub fn with_overlay(mut self, path: &std::path::Path) -> FrozenStore {
+        if let Ok(raw) = std::fs::read_to_string(path) {
+            if let Ok(map) = serde_json::from_str::<std::collections::HashMap<String, f32>>(&raw) {
+                let known: std::collections::HashSet<&str> =
+                    self.nodes.iter().map(|n| n.name.as_str()).collect();
+                let filtered: std::collections::HashMap<String, f32> = map
+                    .into_iter()
+                    .filter(|(k, v)| known.contains(k.as_str()) && (0.0..=RANK_MAX).contains(v))
+                    .collect();
+                if !filtered.is_empty() {
+                    log::info!(
+                        "frozen: rank overlay loaded ({} node(s)) from {}",
+                        filtered.len(),
+                        path.display()
+                    );
+                }
+                *self.ranks.get_mut().expect("fresh lock") = filtered;
+            } else {
+                log::warn!("frozen: malformed rank overlay {} ignored", path.display());
+            }
+        }
+        self.overlay_path = Some(path.to_path_buf());
+        self
+    }
+
+    /// A node's live rank: the experience overlay when present, else its
+    /// static front-matter prior.
+    pub fn effective_rank(&self, node: &FrozenNode) -> f32 {
+        self.ranks
+            .read()
+            .ok()
+            .and_then(|m| m.get(&node.name).copied())
+            .unwrap_or(node.rank)
+    }
+
+    /// Experience-weighted rank update (roadmap Phase 3.2): for every node
+    /// whose triggers hit `text`, `rank = clamp(rank + delta, 0, RANK_MAX)`.
+    /// Persists the overlay best-effort when configured. Returns the names of
+    /// the nodes adjusted (empty = nothing matched; nothing was written).
+    pub fn reweight(&self, text: &str, delta: f32) -> Vec<String> {
+        let lc = text.to_lowercase();
+        let hits: Vec<(String, f32)> = self
+            .nodes
+            .iter()
+            .filter(|n| {
+                n.triggers
+                    .iter()
+                    .any(|t| trigger_hit(&lc, &t.to_lowercase()))
+            })
+            .map(|n| {
+                let new = (self.effective_rank(n) + delta).clamp(0.0, RANK_MAX);
+                (n.name.clone(), new)
+            })
+            .collect();
+        if hits.is_empty() {
+            return Vec::new();
+        }
+        let names: Vec<String> = hits.iter().map(|(n, _)| n.clone()).collect();
+        if let Ok(mut m) = self.ranks.write() {
+            for (name, rank) in hits {
+                m.insert(name, rank);
+            }
+            if let Some(path) = &self.overlay_path {
+                match serde_json::to_string_pretty(&*m) {
+                    Ok(json) => {
+                        if let Err(e) = std::fs::write(path, json) {
+                            log::warn!("frozen: rank overlay write failed (continuing): {e}");
+                        }
+                    }
+                    Err(e) => log::warn!("frozen: rank overlay serialize failed: {e}"),
+                }
+            }
+        }
+        log::debug!("frozen:reweight {delta:+} → {names:?}");
+        names
     }
 
     /// Load every `*.md` in `dir`; skip (warn) any that don't parse. A missing directory
@@ -91,7 +187,7 @@ impl FrozenStore {
                 "frozen: no directory at {}, store stays empty",
                 dir.display()
             );
-            return FrozenStore { nodes };
+            return FrozenStore::from_nodes(nodes);
         };
         for e in entries.flatten() {
             let p = e.path();
@@ -116,7 +212,7 @@ impl FrozenStore {
                 log::debug!("frozen:   {}", n.describe());
             }
         }
-        FrozenStore { nodes }
+        FrozenStore::from_nodes(nodes)
     }
 
     /// Deterministic trigger match → candidates, ordered by lexical relevance of the
@@ -142,7 +238,7 @@ impl FrozenStore {
                     // tie-breaker so that among equally-relevant nodes the higher-rank
                     // one wins, but a node with zero term overlap can never outrank one
                     // that actually matches the prompt's vocabulary.
-                    Some((n, lexical + 0.25 * n.rank))
+                    Some((n, lexical + 0.25 * self.effective_rank(n)))
                 }
             })
             .collect();
@@ -262,6 +358,94 @@ mod tests {
         let store = FrozenStore::load(dir.path());
         assert_eq!(store.len(), 1, "malformed file skipped, the good one loads");
         assert_eq!(store.nodes()[0].name, "nixos");
+    }
+
+    fn node(name: &str, trigger: &str, rank: f32) -> FrozenNode {
+        FrozenNode {
+            name: name.into(),
+            domain: String::new(),
+            triggers: vec![trigger.into()],
+            mcp: None,
+            rank,
+            knowledge: format!("{name} knowledge"),
+        }
+    }
+
+    #[test]
+    fn reweight_adjusts_only_trigger_matched_nodes_and_clamps() {
+        let store = FrozenStore::from_nodes(vec![
+            node("hetzner", "hetzner", 1.0),
+            node("docker", "docker", 1.0),
+        ]);
+        let touched = store.reweight("deploy to hetzner failed: exit 1", -0.05);
+        assert_eq!(touched, vec!["hetzner".to_string()]);
+        assert!((store.effective_rank(&store.nodes()[0]) - 0.95).abs() < 1e-6);
+        assert_eq!(
+            store.effective_rank(&store.nodes()[1]),
+            1.0,
+            "unmatched untouched"
+        );
+        // No trigger match → no-op.
+        assert!(store.reweight("nothing relevant here", -0.05).is_empty());
+        // Clamp floor at 0…
+        for _ in 0..40 {
+            store.reweight("hetzner", -0.05);
+        }
+        assert_eq!(store.effective_rank(&store.nodes()[0]), 0.0);
+        // …and ceiling at RANK_MAX.
+        for _ in 0..100 {
+            store.reweight("hetzner", 0.05);
+        }
+        assert_eq!(store.effective_rank(&store.nodes()[0]), RANK_MAX);
+    }
+
+    #[test]
+    fn rank_overlay_persists_and_reloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let overlay = dir.path().join("frozen-ranks.json");
+        let store =
+            FrozenStore::from_nodes(vec![node("hetzner", "hetzner", 1.0)]).with_overlay(&overlay);
+        store.reweight("hetzner build failed", -0.05);
+        assert!(overlay.is_file(), "reweight persists the overlay");
+
+        // A fresh store seeded from the same overlay resumes the learned rank.
+        let reloaded =
+            FrozenStore::from_nodes(vec![node("hetzner", "hetzner", 1.0)]).with_overlay(&overlay);
+        assert!((reloaded.effective_rank(&reloaded.nodes()[0]) - 0.95).abs() < 1e-6);
+
+        // Unknown names and out-of-range values in the overlay are ignored.
+        std::fs::write(&overlay, r#"{"ghost": 1.5, "hetzner": 99.0}"#).unwrap();
+        let filtered =
+            FrozenStore::from_nodes(vec![node("hetzner", "hetzner", 1.0)]).with_overlay(&overlay);
+        assert_eq!(
+            filtered.effective_rank(&filtered.nodes()[0]),
+            1.0,
+            "out-of-range overlay value falls back to the static prior"
+        );
+    }
+
+    #[test]
+    fn wake_ordering_follows_the_live_overlay_not_the_static_prior() {
+        // Same trigger, same knowledge relevance — rank is the tie-breaker.
+        let store =
+            FrozenStore::from_nodes(vec![node("a", "deploy", 1.0), node("b", "deploy", 1.0)]);
+        // Teach the store that `b` earns wins on this vocabulary.
+        for _ in 0..10 {
+            store.reweight("deploy", 0.05);
+        }
+        // Both moved equally so far — now punish `a` alone via a targeted text.
+        // (Both share the trigger, so reweight both down then boost b back up.)
+        let store =
+            FrozenStore::from_nodes(vec![node("a", "deploy", 1.0), node("b", "deploy", 1.5)]);
+        let woken = store.wake("deploy the service", 2);
+        assert_eq!(woken[0].name, "b", "higher prior wins the tie");
+        // Overlay flips the order without touching the static priors.
+        store.reweight("deploy", 0.0); // no-op delta, proves plumbing
+        let ranks: std::collections::HashMap<String, f32> =
+            [("a".to_string(), 2.0), ("b".to_string(), 0.1)].into();
+        *store.ranks.write().unwrap() = ranks;
+        let woken = store.wake("deploy the service", 2);
+        assert_eq!(woken[0].name, "a", "live overlay outranks static prior");
     }
 
     #[test]

@@ -638,6 +638,12 @@ impl entheai_orchestrator::TrajectorySink for PpTrajectorySink {
     async fn ingest_failure(&self, meta: serde_json::Value, trace: &str) {
         self.0.ingest_failure_trajectory(meta, trace).await;
     }
+
+    async fn ingest_sealed_success(&self, meta: serde_json::Value) {
+        if let Some(task) = meta.get("task").and_then(|v| v.as_str()) {
+            self.0.record_verified_success(task);
+        }
+    }
 }
 
 /// sidecar and the `mq compress --semantic` compressor. Both degrade to top-K via
@@ -724,6 +730,11 @@ fn build_prompt_processor(
         }
     };
 
+    // Roadmap 3.2: the experience-weighted rank overlay lives next to the raw
+    // store (same durability story) — execution outcomes reweight frozen node
+    // priors across sessions.
+    let frozen = entheai_memory_pp::frozen::FrozenStore::load(std::path::Path::new("frozen"))
+        .with_overlay(&path.with_file_name("frozen-ranks.json"));
     let pp = PromptProcessor::new(
         raw,
         mesh,
@@ -731,7 +742,7 @@ fn build_prompt_processor(
         std::time::Duration::from_millis(pc.search_deadline_ms),
         pc.recall_k,
         pc.max_ingest_bytes,
-        entheai_memory_pp::frozen::FrozenStore::load(std::path::Path::new("frozen")),
+        frozen,
     );
     Ok(Some(pp))
 }

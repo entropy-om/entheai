@@ -27,6 +27,13 @@ use crate::marqant::Marqant;
 use crate::mesh::MeshSearch;
 use crate::raw_store::{RawKind, RawStore};
 
+/// Roadmap 3.2 experience deltas. Failures teach harder than successes
+/// reassure (|fail| > success), so a prior that keeps presiding over failures
+/// decays even against a background of wins; both clamp to
+/// `[0, frozen::RANK_MAX]` inside [`crate::frozen::FrozenStore::reweight`].
+const FAIL_RANK_DELTA: f32 = -0.05;
+const SUCCESS_RANK_DELTA: f32 = 0.02;
+
 pub struct PromptProcessor {
     raw: RawStore,
     mesh: Box<dyn MeshSearch>,
@@ -184,7 +191,16 @@ impl PromptProcessor {
     /// Stored under the `trajectories` namespace (stamped into `meta`), capped
     /// and content-addressed like every raw ingest: repeated identical failures
     /// dedupe to one span. Best-effort — never fails the caller.
+    ///
+    /// Roadmap 3.2 learning loop: frozen nodes whose triggers match the task +
+    /// traceback take a negative rank delta — a prior that presided over a
+    /// failure argues a little less loudly next time.
     pub async fn ingest_failure_trajectory(&self, mut meta: serde_json::Value, trace: &str) {
+        let task = meta
+            .get("task")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
         if let Some(obj) = meta.as_object_mut() {
             obj.insert("namespace".into(), json!("trajectories"));
         }
@@ -192,6 +208,23 @@ impl PromptProcessor {
         if let Err(e) = self.raw.ingest(RawKind::Trajectory, body, Some(meta)).await {
             warn!("pp ingest_failure_trajectory failed (continuing): {e}");
         }
+        let touched = self
+            .frozen
+            .reweight(&format!("{task}\n{body}"), FAIL_RANK_DELTA);
+        if !touched.is_empty() {
+            log::info!("pp frozen reweight {FAIL_RANK_DELTA:+} (failure) → {touched:?}");
+        }
+    }
+
+    /// A sealed, verified integration succeeded (roadmap Phase 3.2): frozen
+    /// nodes whose triggers match the task take a positive rank delta —
+    /// experience-weighted `rank += delta`, persisted via the store's overlay.
+    pub fn record_verified_success(&self, task_text: &str) -> Vec<String> {
+        let touched = self.frozen.reweight(task_text, SUCCESS_RANK_DELTA);
+        if !touched.is_empty() {
+            log::info!("pp frozen reweight {SUCCESS_RANK_DELTA:+} (sealed success) → {touched:?}");
+        }
+        touched
     }
 
     /// Full session transcript (every turn + the final answer), captured RAW —
@@ -454,6 +487,45 @@ mod tests {
         )
         .await;
         assert_eq!(probe.count().await.unwrap(), 1, "dedupe by content id");
+    }
+
+    #[tokio::test]
+    async fn execution_outcomes_reweight_matching_frozen_nodes() {
+        use crate::frozen::{FrozenNode, FrozenStore};
+        let node = FrozenNode {
+            name: "docker".into(),
+            domain: "infra".into(),
+            triggers: vec!["docker".into()],
+            mcp: None,
+            rank: 1.0,
+            knowledge: "prefer multi-stage builds".into(),
+        };
+        let pp = PromptProcessor::new(
+            RawStore::open_memory().unwrap(),
+            Box::new(StubMesh),
+            Box::new(StubMarqant),
+            Duration::from_millis(50),
+            16,
+            1 << 20,
+            FrozenStore::from_nodes(vec![node]),
+        );
+
+        // 3.2: a failure on a matching task drags the prior down…
+        pp.ingest_failure_trajectory(
+            serde_json::json!({"task": "fix the docker build", "source": "fanout-verify"}),
+            "error: builder step 3/7 failed",
+        )
+        .await;
+        let n = &pp.frozen.nodes()[0];
+        assert!((pp.frozen.effective_rank(n) - 0.95).abs() < 1e-6);
+
+        // …and a sealed success on a matching task lifts it.
+        let touched = pp.record_verified_success("harden the docker entrypoint");
+        assert_eq!(touched, vec!["docker".to_string()]);
+        assert!((pp.frozen.effective_rank(n) - 0.97).abs() < 1e-6);
+
+        // Non-matching outcomes leave the prior alone.
+        assert!(pp.record_verified_success("write the changelog").is_empty());
     }
 
     #[tokio::test]
