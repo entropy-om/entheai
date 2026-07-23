@@ -44,23 +44,18 @@ Execute a shell command. 120s timeout, 100 KB output cap. Process is killed on d
 
 ## Radio
 
-In-TUI music player powered by `yt-dlp` (download) and `rodio` (playback). Runs on a dedicated OS thread so audio never blocks the UI.
-
-### Install
-
-```bash
-brew install yt-dlp
-```
+An in-TUI ambient loop of one bundled track — "Standing-Onde" by 8bit-Wraith
+— embedded in the binary at compile time and played through `rodio`. No
+network fetch, no external tool, no install step. Runs on a dedicated OS
+thread so audio never blocks the UI.
 
 ### Commands
 
 | Command | Action |
 |---|---|
-| `/radio <url>` | Download and queue a YouTube track |
-| `/radio add <url>` | Same as above |
-| `/radio pause` | Pause/resume current track |
-| `/radio next` | Skip to next track |
-| `/radio stop` | Stop and clear queue |
+| `/radio pause` | Pause/resume playback |
+| `/radio next` | Restart the track from the beginning |
+| `/radio stop` | Stop playback (starts again on `/radio next`) |
 
 ### Shortcuts
 

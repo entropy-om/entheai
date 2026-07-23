@@ -38,8 +38,6 @@ pub struct Config {
     #[serde(default)]
     pub mcp_defaults: McpDefaultsConfig,
     #[serde(default)]
-    pub radio: RadioConfig,
-    #[serde(default)]
     pub telemetry: TelemetryConfig,
     #[serde(default)]
     pub obsidian: ObsidianConfig,
@@ -384,23 +382,6 @@ impl Default for McpDefaultsConfig {
     }
 }
 
-/// Radio (background music) settings.
-#[derive(Debug, Clone, Deserialize)]
-pub struct RadioConfig {
-    #[serde(default = "default_radio_download_timeout_secs")]
-    pub download_timeout_secs: u64,
-}
-fn default_radio_download_timeout_secs() -> u64 {
-    300
-}
-impl Default for RadioConfig {
-    fn default() -> Self {
-        Self {
-            download_timeout_secs: default_radio_download_timeout_secs(),
-        }
-    }
-}
-
 /// Telemetry / crash reporting.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TelemetryConfig {
@@ -714,7 +695,6 @@ mod tests {
         assert_eq!(cfg.viz.swarm_rows_cap, 8);
         assert_eq!(cfg.companion.port, 9876);
         assert_eq!(cfg.companion.fps, 24.0);
-        assert_eq!(cfg.radio.download_timeout_secs, 300);
         assert!(cfg.telemetry.sentry_dsn.is_none());
     }
 

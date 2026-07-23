@@ -525,7 +525,7 @@ async fn event_loop(
              type your instructions below to begin.\n\n\
              useful slash commands:\n\
                /help         list TUI features & key bindings\n\
-               /radio proc   activate procedural psychedelic desert stoner space metal\n\
+               /radio        pause | next | stop the ambient radio\n\
                /clear        clear chat history\n\
                /fanout       toggle parallel fan-out swarms (currently: {})\n\n\
              ad visionem — toward vision.",
@@ -534,15 +534,11 @@ async fn event_loop(
         ),
     });
 
-    // Background music player (yt-dlp + rodio); one per TUI session.
-    // If the player thread fails to start (extremely rare — only on system
-    // resource exhaustion), use a no-op stub and continue without music
-    // rather than crashing the whole TUI.
-    let mut radio = Radio::spawn(
-        Radio::default_cache_dir(),
-        config.radio.download_timeout_secs,
-    )
-    .unwrap_or_else(|e| {
+    // Background music player (rodio); one per TUI session. If the player
+    // thread fails to start (extremely rare — only on system resource
+    // exhaustion), use a no-op stub and continue without music rather than
+    // crashing the whole TUI.
+    let mut radio = Radio::spawn().unwrap_or_else(|e| {
         eprintln!("[tui] warning: radio thread failed to start ({e}) — continuing without music");
         Radio::noop()
     });
@@ -1495,8 +1491,8 @@ fn is_radio_command(text: &str) -> bool {
 
 /// Parse and dispatch a `/radio` command, echoing feedback into the history.
 ///
-/// Forms: `/radio <url>` · `/radio add <url>` · `/radio pause` · `/radio next`
-/// · `/radio stop` · `/radio` (help).
+/// Forms: `/radio pause` · `/radio next` (restart the loop) · `/radio stop`
+/// · `/radio` (usage). There is exactly one track — see `entheai_radio`.
 fn handle_radio_command(app: &mut App, radio: &Radio, text: &str) {
     app.messages.push(Msg {
         role: Role::User,
@@ -1504,37 +1500,19 @@ fn handle_radio_command(app: &mut App, radio: &Radio, text: &str) {
     });
     let mut parts = text.split_whitespace().skip(1); // skip "/radio"
     let feedback = match (parts.next(), parts.next()) {
-        (Some("add"), Some(url_or_path)) => {
-            radio.send(RadioCommand::Add(url_or_path.to_string()));
-            format!("♪ fetching/loading {url_or_path}")
-        }
-        (Some("seed"), pattern) => {
-            let pat = pattern.unwrap_or("~/Downloads/Mesa*");
-            radio.send(RadioCommand::Seed(pat.to_string()));
-            format!("♪ loading procedural ambient seeds from {pat}")
-        }
-        (Some("procedural"), _) => {
-            radio.send(RadioCommand::Seed("~/Downloads/Mesa*".to_string()));
-            "♪ procedural ambient radio activated (~/Downloads/Mesa* seed)".to_string()
-        }
-        (Some(arg), None) if arg.starts_with("http") || arg.contains('/') || arg.contains('*') => {
-            radio.send(RadioCommand::Add(arg.to_string()));
-            format!("♪ fetching/loading {arg}")
-        }
         (Some("pause"), None) | (Some("resume"), None) => {
             radio.send(RadioCommand::TogglePause);
             "♪ toggled pause (Ctrl-P)".to_string()
         }
         (Some("next"), None) | (Some("skip"), None) => {
             radio.send(RadioCommand::Next);
-            "♪ skipping (Ctrl-N)".to_string()
+            "♪ restarting Standing-Onde (Ctrl-N)".to_string()
         }
         (Some("stop"), None) => {
             radio.send(RadioCommand::Stop);
             "♪ stopping".to_string()
         }
-        _ => "usage: /radio <url_or_file> | seed [pattern] | procedural | pause | next | stop"
-            .to_string(),
+        _ => "usage: /radio pause | next | stop — entheai radio always plays Standing-Onde by 8bit-Wraith".to_string(),
     };
     app.messages.push(Msg {
         role: Role::Tool,
@@ -1854,16 +1832,13 @@ fn is_quit_command(text: &str) -> bool {
 /// Fold a player event into UI state, echoing noteworthy ones into history.
 fn handle_radio_event(app: &mut App, ev: RadioEvent) {
     match ev {
-        RadioEvent::Fetching { .. } => {} // already echoed on submit
-        RadioEvent::Queued { title } => app.messages.push(Msg {
-            role: Role::Tool,
-            text: format!("♪ queued: {title}"),
-        }),
-        RadioEvent::NowPlaying { title } => {
-            app.messages.push(Msg {
-                role: Role::Tool,
-                text: format!("♪ now playing: {title}"),
-            });
+        RadioEvent::NowPlaying { title, loop_count } => {
+            if loop_count <= 1 {
+                app.messages.push(Msg {
+                    role: Role::Tool,
+                    text: format!("♪ now playing: {title}"),
+                });
+            }
             app.now_playing = Some(title);
         }
         RadioEvent::Paused => {
@@ -1876,7 +1851,7 @@ fn handle_radio_event(app: &mut App, ev: RadioEvent) {
                 app.now_playing = Some(t.trim_end_matches(" (paused)").to_string());
             }
         }
-        RadioEvent::Stopped | RadioEvent::QueueEmpty => app.now_playing = None,
+        RadioEvent::Stopped => app.now_playing = None,
         RadioEvent::Error(e) => app.messages.push(Msg {
             role: Role::Error,
             text: format!("radio: {e}"),
@@ -3586,6 +3561,7 @@ mod tests {
             &mut app,
             RadioEvent::NowPlaying {
                 title: "Song".into(),
+                loop_count: 1,
             },
         );
         assert_eq!(app.now_playing.as_deref(), Some("Song"));

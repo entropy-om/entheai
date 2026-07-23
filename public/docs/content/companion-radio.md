@@ -28,22 +28,17 @@ entheai --no-companion
 
 ## Radio
 
-An in-TUI music player. Give it a YouTube URL and it downloads the audio in the background (via `yt-dlp`) and plays it through your speakers (via `rodio`) — on a dedicated thread, so audio never blocks the UI.
-
-> [!NOTE]
-> Requires `yt-dlp` on your `$PATH`: `brew install yt-dlp`.
+An in-TUI ambient loop of one bundled track — "Standing-Onde" by 8bit-Wraith — embedded in the binary at compile time and played through your speakers (via `rodio`) on a dedicated thread, so audio never blocks the UI. No network fetch, no external tool, nothing to install.
 
 | Command | Action |
 |---|---|
-| `/radio <url>` | Download and queue a YouTube track |
-| `/radio add <url>` | Same as above |
-| `/radio pause` | Pause/resume the current track |
-| `/radio next` | Skip to the next track |
-| `/radio stop` | Stop and clear the queue |
+| `/radio pause` | Pause/resume playback |
+| `/radio next` | Restart the track from the beginning |
+| `/radio stop` | Stop playback (starts again on `/radio next`) |
 
 | Key | Action |
 |---|---|
 | `Ctrl-P` | Toggle pause/resume |
-| `Ctrl-N` | Skip to next track |
+| `Ctrl-N` | Restart the track |
 
-Downloads are cached at `~/.cache/entheai/radio`, keyed by video ID — repeat plays are instant. The now-playing status appears in the status bar (`♪ Song Name`) and clears on stop or when the queue empties.
+The now-playing status appears in the status bar (`♪ Standing-Onde — 8bit-Wraith`) and clears on stop.

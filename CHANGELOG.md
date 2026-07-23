@@ -6,6 +6,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+### Removed
+- **`yt-dlp` dependency and arbitrary-URL/local-file radio playback.** `/radio add <url>`, `/radio <url_or_path>`, `/radio seed [pattern]`, and the `~/Downloads/Mesa*`-style genre-glob seed discovery are gone, along with the `[radio] download_timeout_secs` config key. `entheai-radio` no longer shells out to anything or touches the filesystem for content.
+
+### Changed
+- **Radio plays one bundled track, always.** "Standing-Onde" by 8bit-Wraith (<https://soundcloud.com/8bit-wraith/standing-onde>) is embedded in the binary at compile time (`include_bytes!`) and loops indefinitely — no network fetch, no cache directory, no install step (`yt-dlp` is no longer a dependency at all). `/radio` now only supports `pause`, `next` (restart the loop from the beginning), and `stop`.
+
 ## [0.3.0] - 2026-07-23
 
 The BRAIN v1 slice: prompt-processing memory, frozen nodes, and a proactive

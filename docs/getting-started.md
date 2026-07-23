@@ -71,20 +71,17 @@ In the TUI:
 
 ## Music
 
+An ambient loop plays automatically — one bundled track, embedded in the
+binary, no setup required.
+
 ```bash
 # In the TUI input, type:
-/radio https://www.youtube.com/watch?v=...
 /radio pause
-/radio next
+/radio next   # restart the track from the beginning
+/radio stop
 ```
 
-Or use shortcuts: `Ctrl-P` (pause), `Ctrl-N` (next track).
-
-Requires `yt-dlp`:
-
-```bash
-brew install yt-dlp
-```
+Or use shortcuts: `Ctrl-P` (pause), `Ctrl-N` (restart).
 
 ## Run tests
 

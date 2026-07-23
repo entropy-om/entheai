@@ -215,14 +215,14 @@ flowchart LR
 
 ---
 
-## 7. Procedural Ambient Radio (`crates/radio`)
+## 7. Ambient Radio (`crates/radio`)
 
-`entheai-radio` provides background procedural audio generation directly inside the TUI without blocking the main event loop:
+`entheai-radio` loops one bundled track directly inside the TUI without blocking the main event loop:
 
-* **Audio Engine**: Powered by `rodio` on a dedicated OS thread + `yt-dlp` for web extraction.
-* **Procedural Seed Discovery**: Scans local audio files matching `~/Downloads/Mesa*`, `~/Downloads/*Desert*`, `~/Downloads/*Psychedelic*`, `~/Downloads/*Stoner*`, `~/Downloads/*Space*`, `~/Downloads/*Metal*`, or `~/.cache/entheai/radio/*`.
-* **Non-Stop Infinite Playback**: Pseudo-randomly rotates through seed tracks, generating procedural variations (`♪ Procedural Psychedelic Metal: Track Title (Variation #N)`).
-* **Slash Commands**: `/radio procedural`, `/radio seed [pattern]`, `/radio <url_or_path>`, `/radio pause`, `/radio next`, `/radio stop`.
+* **Audio Engine**: `rodio` on a dedicated OS thread, decoding an `include_bytes!`-embedded mp3 — no network fetch, no external tool, no cache directory.
+* **The track**: "Standing-Onde" by 8bit-Wraith (<https://soundcloud.com/8bit-wraith/standing-onde>).
+* **Non-Stop Playback**: loops the track indefinitely, emitting a loop counter (`NowPlaying { loop_count }`) each time it restarts.
+* **Slash Commands**: `/radio pause`, `/radio next` (restart from the beginning), `/radio stop`.
 
 ---
 
