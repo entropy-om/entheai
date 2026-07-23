@@ -6,6 +6,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-23
+
+The fluid phase gets its freeze: session entropy state serializes to rigid,
+content-addressed checkpoints and thaws back without token loss.
+
 ### Added
 - **QuantumCheckpoint state engine — `/freeze` and `/thaw` (roadmap Phase 1.1).** The fluid entropy field now freezes into rigid singularity checkpoints: `EntropyState` (`entheai.checkpoint.v1` schema) captures the live frozen-node activations **with their experience-weighted ranks**, the most recent raw span anchors (ids only — bytes stay in the never-rewritten raw store), the last Marqant compression ratio, and the audio seed. 2-way serialization to `.entheai/checkpoints/<id>.json` with deterministic blake3 content ids (re-freezing identical state is idempotent) and schema-validated loads. `PromptProcessor::freeze` snapshots; `::thaw` restores each saved activation's rank into the live overlay and rehydrates surviving spans into a context brief (pruned spans are skipped and counted honestly). In the TUI: `/freeze` snapshots, `/thaw` lists checkpoints newest-first, `/thaw <id>` restores and injects the brief as a labelled user turn. New `RawStore::recent(k)` provides the deterministic newest-first anchor query.
 
