@@ -19,6 +19,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use entheai_config::Config;
+use entheai_core::EntheaiAgent;
+use entheai_memory::{MemoryRuntime, MemoryScope};
 use futures::stream::{self, StreamExt};
 use serde::Deserialize;
 
@@ -281,20 +283,60 @@ async fn orchestrate_once(
     agent.run_to_text(user).await
 }
 
+/// A per-leaf `MemoryScope` for a fan-out coder/sub-agent: keeps `base`'s
+/// `session_id` (ties every leaf back to the caller's conversation session)
+/// but overrides `task_id` (uniqued by `prefix`+`index`, so concurrently
+/// running leaves never collide in retrieval/trajectory recording), `cwd`
+/// (the leaf's own worktree/root, not the caller's), and `role`.
+fn leaf_scope(base: &MemoryScope, prefix: &str, index: usize, cwd: &Path, role: &str) -> MemoryScope {
+    MemoryScope {
+        task_id: format!("{prefix}-{index}"),
+        cwd: cwd.to_path_buf(),
+        role: Some(role.to_string()),
+        ..base.clone()
+    }
+}
+
 /// Run one sub-agent to completion. Never returns Err — a failure is captured as
 /// the sub-result's `output` so one bad sub-agent doesn't sink the whole batch.
-async fn run_subagent(config: &Config, root: &Path, st: SubTask) -> SubResult {
+/// When `memory` is `Some`, the agent is built directly via
+/// `EntheaiAgent::new_with_memory` (bypassing the router, which has no
+/// memory-aware variant) under a per-leaf [`leaf_scope`].
+async fn run_subagent(
+    config: &Config,
+    root: &Path,
+    st: SubTask,
+    index: usize,
+    memory: Option<Arc<MemoryRuntime>>,
+    scope: &MemoryScope,
+) -> SubResult {
     let output = async {
         let model_id = entheai_router::model_for_role(config, &st.role)?;
         let (system, user) = subagent_messages(&st.role, &st.task);
-        let agent = entheai_router::build_agent(
-            &model_id,
-            config,
-            Some(&system),
-            &read_only_registry(root),
-            Arc::new(fanout_policy(config)),
-            auto_allow_prompter(),
-        )?;
+        let agent = match memory {
+            Some(mem) => EntheaiAgent::new_with_memory(
+                &model_id,
+                Some(&system),
+                &config.inference,
+                &config.providers,
+                &read_only_registry(root),
+                Arc::new(fanout_policy(config)),
+                auto_allow_prompter(),
+                config.router.max_turns as u32,
+                mem,
+                None,
+                leaf_scope(scope, "fanout-readonly", index, root, &st.role),
+                None,
+            )?,
+            None => entheai_router::build_agent(
+                &model_id,
+                config,
+                Some(&system),
+                &read_only_registry(root),
+                Arc::new(fanout_policy(config)),
+                auto_allow_prompter(),
+            )?,
+        };
         agent.run_to_text(&user).await
     }
     .await
@@ -309,7 +351,15 @@ async fn run_subagent(config: &Config, root: &Path, st: SubTask) -> SubResult {
 /// Read-only fan-out (v1): decompose → parallel read-only sub-agents (≤ router.max_parallel)
 /// → synthesize. Falls back to a single orchestrator run if decomposition yields no sub-tasks.
 /// Used directly when `root` isn't a git repo (v2's isolated worktrees need git).
-async fn run_fanout_readonly(config: &Config, root: &Path, task: &str) -> anyhow::Result<String> {
+/// `memory`/`scope` are forwarded to each sub-agent (see [`run_subagent`]); the
+/// decompose/synthesis meta-calls on `orch_model` stay memory-free.
+async fn run_fanout_readonly(
+    config: &Config,
+    root: &Path,
+    task: &str,
+    memory: Option<Arc<MemoryRuntime>>,
+    scope: &MemoryScope,
+) -> anyhow::Result<String> {
     let orch_model = entheai_router::orchestrator_model(config)?;
 
     // 1. Map + decompose.
@@ -328,8 +378,8 @@ async fn run_fanout_readonly(config: &Config, root: &Path, task: &str) -> anyhow
     }
 
     // 2. Fan out, bounded by max_parallel.
-    let results: Vec<SubResult> = stream::iter(subtasks)
-        .map(|st| run_subagent(config, root, st))
+    let results: Vec<SubResult> = stream::iter(subtasks.into_iter().enumerate())
+        .map(|(i, st)| run_subagent(config, root, st, i, memory.clone(), scope))
         .buffer_unordered(max_par)
         .collect()
         .await;
@@ -412,12 +462,74 @@ pub async fn run_coder_once(
     .unwrap_or_else(|e| format!("error: coder failed: {e}"))
 }
 
+/// Like [`run_coder_once`], but for the in-process fan-out path: when `memory`
+/// is `Some`, builds the coder agent directly via `EntheaiAgent::new_with_memory`
+/// (bypassing the router, which has no memory-aware variant) under the given
+/// per-leaf scope. `run_coder_once` itself stays memory-free — it also backs
+/// the standalone `entheai-worker` binary, a separate process with no access
+/// to the orchestrator's in-process `MemoryRuntime`.
+async fn run_coder_local(
+    config: &Config,
+    role: &str,
+    task: &str,
+    worktree_path: &Path,
+    memory: Option<(Arc<MemoryRuntime>, MemoryScope)>,
+) -> String {
+    async {
+        let model_id = entheai_router::model_for_role(config, role)?;
+        let (system, user) = coder_messages(role, task);
+        let agent = match memory {
+            Some((mem, scope)) => EntheaiAgent::new_with_memory(
+                &model_id,
+                Some(&system),
+                &config.inference,
+                &config.providers,
+                &write_registry(worktree_path),
+                Arc::new(fanout_policy(config)),
+                auto_allow_prompter(),
+                config.router.max_turns as u32,
+                mem,
+                None,
+                scope,
+                None,
+            )?,
+            None => entheai_router::build_agent(
+                &model_id,
+                config,
+                Some(&system),
+                &write_registry(worktree_path),
+                Arc::new(fanout_policy(config)),
+                auto_allow_prompter(),
+            )?,
+        };
+        agent.run_to_text(&user).await
+    }
+    .await
+    .unwrap_or_else(|e| format!("error: coder failed: {e}"))
+}
+
 /// Run one coder sub-agent to completion inside its own worktree. Never returns
 /// Err — a failure is captured as the run's `output`, mirroring [`run_subagent`],
 /// so one bad coder doesn't sink the whole fan-out. Emits no events (its caller
-/// [`run_coder_maybe_remote`] owns the `CoderStarted` event).
-async fn run_coder_inner(config: Arc<Config>, wt: worktree::Worktree, st: SubTask) -> CoderRun {
-    let output = run_coder_once(&config, &st.role, &st.task, &wt.path).await;
+/// [`run_coder_maybe_remote`] owns the `CoderStarted` event). When `memory` is
+/// `Some`, runs via [`run_coder_local`] under a [`leaf_scope`]; otherwise falls
+/// back to the memory-free [`run_coder_once`] (identical to before this param
+/// existed).
+async fn run_coder_inner(
+    config: Arc<Config>,
+    wt: worktree::Worktree,
+    st: SubTask,
+    memory: Option<Arc<MemoryRuntime>>,
+    scope: MemoryScope,
+    session: String,
+) -> CoderRun {
+    let output = match &memory {
+        Some(mem) => {
+            let leaf = leaf_scope(&scope, &format!("fanout-{session}"), wt.index, &wt.path, &st.role);
+            run_coder_local(&config, &st.role, &st.task, &wt.path, Some((Arc::clone(mem), leaf))).await
+        }
+        None => run_coder_once(&config, &st.role, &st.task, &wt.path).await,
+    };
     CoderRun {
         index: wt.index,
         role: st.role,
@@ -432,7 +544,10 @@ async fn run_coder_inner(config: Arc<Config>, wt: worktree::Worktree, st: SubTas
 /// applies the delta into the worktree) or locally. On any remote miss — no
 /// executor, no worker, no result, no change, or an error — falls back to a
 /// local [`run_coder_inner`], so a coder is never silently dropped. Owns the
-/// `CoderStarted` event for both paths.
+/// `CoderStarted` event for both paths. `memory`/`scope` are forwarded to the
+/// local fallback only — a remote worker runs out-of-process and can't share
+/// the caller's in-process `MemoryRuntime`.
+#[allow(clippy::too_many_arguments)]
 async fn run_coder_maybe_remote(
     config: Arc<Config>,
     wt: worktree::Worktree,
@@ -440,6 +555,8 @@ async fn run_coder_maybe_remote(
     events: Option<tokio::sync::mpsc::UnboundedSender<FanoutEvent>>,
     remote: Option<(Arc<dyn CoderExecutor>, String)>,
     session: String,
+    memory: Option<Arc<MemoryRuntime>>,
+    scope: MemoryScope,
 ) -> CoderRun {
     if let Some(tx) = &events {
         let _ = tx.send(FanoutEvent::CoderStarted {
@@ -466,7 +583,7 @@ async fn run_coder_maybe_remote(
         }
         log::info!("federation: coder {} fell back to local", wt.index);
     }
-    run_coder_inner(config, wt, st).await
+    run_coder_inner(config, wt, st, memory, scope, session).await
 }
 
 /// Outcome of running an optional `[fanout].verify` command in a coder's worktree.
@@ -544,14 +661,12 @@ pub struct CoderOutcome {
 ///
 /// Falls back to the read-only v1 fan-out ([`run_fanout_readonly`]) when `root`
 /// isn't a git repo (isolated worktrees require one).
-// TODO: give fan-out leaves the shared memory (still not done post-adk-rust-
-// migration). Add a trailing `memory: Option<Arc<entheai_memory::MemoryRuntime>>`
-// param to `run_fanout`, `run_fanout_readonly`, `run_subagent`, and `run_coder`,
-// add `entheai-memory = { path = "../memory" }` to crates/orchestrator/Cargo.toml,
-// build a per-leaf `MemoryRuntime` + `MemoryScope`, and swap each leaf's
-// `entheai_router::build_agent(...)` for `EntheaiAgent::new_with_memory(...)`
-// directly (bypassing router, which has no memory-aware variant). The
-// orchestrate_once decompose/synthesis meta-calls stay memory-free.
+///
+/// `memory`/`scope`, when `memory` is `Some`, give every fan-out leaf
+/// (sub-agent or coder) pre-task retrieval/frozen-node injection and
+/// post-task trajectory recording under a per-leaf [`leaf_scope`] — the
+/// `orchestrate_once` decompose/synthesis meta-calls stay memory-free.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_fanout(
     config: &Config,
     root: &Path,
@@ -559,12 +674,14 @@ pub async fn run_fanout(
     events: Option<tokio::sync::mpsc::UnboundedSender<FanoutEvent>>,
     pool: Arc<WorkerPool>,
     executor: Option<Arc<dyn CoderExecutor>>,
+    memory: Option<Arc<MemoryRuntime>>,
+    scope: MemoryScope,
 ) -> anyhow::Result<String> {
     if !worktree::is_git_repo(root).await {
         if let Some(tx) = &events {
             let _ = tx.send(FanoutEvent::Fallback);
         }
-        let out = run_fanout_readonly(config, root, task).await?;
+        let out = run_fanout_readonly(config, root, task, memory, &scope).await?;
         return Ok(format!("(not a git repo — read-only fan-out)\n\n{out}"));
     }
 
@@ -638,6 +755,8 @@ pub async fn run_fanout(
                 events.clone(),
                 remote.clone(),
                 session.clone(),
+                memory.clone(),
+                scope.clone(),
             ),
         );
         worker_ids.push((id, wt, st));
@@ -1001,6 +1120,21 @@ mod tests {
             role: role.to_string(),
             task: task.to_string(),
         }
+    }
+
+    #[test]
+    fn leaf_scope_keeps_session_overrides_task_id_cwd_role() {
+        let base = MemoryScope {
+            session_id: "sess-1".to_string(),
+            task_id: "oneshot".to_string(),
+            cwd: PathBuf::from("/root"),
+            role: None,
+        };
+        let leaf = leaf_scope(&base, "fanout-abc", 2, Path::new("/root/.wt/2"), "coder");
+        assert_eq!(leaf.session_id, "sess-1");
+        assert_eq!(leaf.task_id, "fanout-abc-2");
+        assert_eq!(leaf.cwd, PathBuf::from("/root/.wt/2"));
+        assert_eq!(leaf.role.as_deref(), Some("coder"));
     }
 
     #[test]

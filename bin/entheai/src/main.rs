@@ -263,9 +263,22 @@ async fn main() -> anyhow::Result<()> {
                     } else {
                         None
                     };
-                let answer =
-                    entheai_orchestrator::run_fanout(&cfg, &root, &prompt, events, pool, fed_exec)
-                        .await?;
+                let runtime = shared_memory.clone().map(|m| {
+                    std::sync::Arc::new(entheai_memory::MemoryRuntime::new(
+                        m,
+                        memory_runtime_config(&cfg.memory),
+                    ))
+                });
+                let scope = entheai_memory::MemoryScope {
+                    session_id: session_id.clone(),
+                    task_id: "fanout".to_string(),
+                    cwd: root.clone(),
+                    role: None,
+                };
+                let answer = entheai_orchestrator::run_fanout(
+                    &cfg, &root, &prompt, events, pool, fed_exec, runtime, scope,
+                )
+                .await?;
                 // Drain + flush the tee before teardown so the final events
                 // (e.g. `done`) actually reach subscribers. No-op when NATS off.
                 bus_session.finish().await;

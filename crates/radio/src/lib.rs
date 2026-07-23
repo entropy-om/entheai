@@ -14,15 +14,19 @@
 //! is free and headless environments (CI, tests) only error when they actually
 //! try to make sound.
 
+#[cfg(feature = "audio")]
 use std::io::Cursor;
 use std::sync::mpsc as std_mpsc;
+#[cfg(feature = "audio")]
 use std::time::Duration;
 
 use tokio::sync::mpsc as tokio_mpsc;
 
 /// The one track this radio ever plays, embedded at compile time so playback
 /// needs no network access, no cache directory, and no external tool.
+#[cfg(feature = "audio")]
 const TRACK_BYTES: &[u8] = include_bytes!("../assets/standing-onde.mp3");
+#[cfg(feature = "audio")]
 const TRACK_TITLE: &str = "Standing-Onde — 8bit-Wraith";
 
 /// Control messages from the UI to the player thread.
@@ -253,6 +257,7 @@ fn player_thread(rx: std_mpsc::Receiver<Command>, events: tokio_mpsc::UnboundedS
 mod tests {
     use super::*;
 
+    #[cfg(feature = "audio")]
     #[test]
     fn track_bytes_embedded_and_nonempty() {
         assert!(!TRACK_BYTES.is_empty());

@@ -780,10 +780,16 @@ async fn event_loop(
                                     entheai_bus::new_session_id(),
                                     Some(ftx),
                                 );
+                                let mem = memory.clone();
+                                let sc = entheai_memory::MemoryScope {
+                                    task_id: format!("fanout-{}", uuid::Uuid::new_v4()),
+                                    ..scope.clone()
+                                };
                                 run_handle = Some(tokio::spawn(async move {
-                                    let res =
-                                        entheai_orchestrator::run_fanout(&config, &root, &text, events, pool, fed_exec)
-                                            .await;
+                                    let res = entheai_orchestrator::run_fanout(
+                                        &config, &root, &text, events, pool, fed_exec, mem, sc,
+                                    )
+                                    .await;
                                     // Drain + flush the tee before dropping it so
                                     // the final events (e.g. `done`) reach
                                     // subscribers. No-op when NATS is off.

@@ -7,6 +7,8 @@ rust-version.workspace = true
 [dependencies]
 entheai-config = { path = "../config" }
 entheai-router = { path = "../router" }
+entheai-core = { path = "../core" }
+entheai-memory = { path = "../memory" }
 entheai-tools = { path = "../tools" }
 entheai-permission = { path = "../permission" }
 entheai-mapper = { path = "../mapper" }
