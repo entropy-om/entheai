@@ -68,6 +68,12 @@ impl PulseReport {
     }
 }
 
+/// Today's UTC civil date as "YYYY-MM-DD" — shared by the budget ledger and
+/// anything naming context folders (karmapa-chenno).
+pub fn utc_today() -> String {
+    utc_date_days_ago(0)
+}
+
 /// UTC civil date `n` days ago as "YYYY-MM-DD" — no chrono dep. UTC is a
 /// stable, honest boundary for budget resets and event windows.
 /// Civil-from-days per Howard Hinnant's algorithm, pure integer math.

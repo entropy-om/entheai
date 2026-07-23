@@ -58,10 +58,10 @@ max_parallel = 4                         # cap on concurrently-running sub-agent
 # (WorldMonitor clamps to ≤ 50/day regardless of config — operator's mandate).
 # Requires [memory] mode = "prompt-processing". Keys come from the env
 # (~/.entheai/current.env): VALYU_API_KEY, WORLDMONITOR_API_KEY.
-# [current]
-# enabled = true
-# topics = ["your standing Valyu news queries"]  # one request per topic per pulse
-# refresh_minutes = 120               # auto-pulse cadence in the TUI (36 WM req/day)
+[current]
+enabled = true
+topics = ["AI coding agents and LLM security this week"]  # one Valyu request per topic per pulse
+refresh_minutes = 120               # auto-pulse cadence in the TUI (36 WM req/day)
 # valyu_daily_cap = 50                # requests/day
 # worldmonitor_daily_cap = 50         # requests/day, hard-clamped ≤ 50
 # valyu_max_results = 5               # results per query (1–20)
@@ -84,8 +84,24 @@ mode = "ask"                      # startup default: plan | auto | yolo | ask
 # today's top-K). It ingests raw experience and always falls back to top-K when
 # off/empty/slow. The Stage-2 mesh re-rank runs IN-PROCESS by default (native,
 # via entheai-ultragraph) — no Python. Stage-3 compression (`mq`) stays optional.
-# [memory]
-# mode = "prompt-processing"        # default: "topk" (today's behaviour)
+# ── Output fidelity: never truncate, never compress what the human sees ──────
+# shell_output_cap default is 100 KB; 100 MB is effectively "never" while still
+# bounding a runaway process. search_max_results default is 200.
+# [inference] max_tokens stays unset = unlimited model responses.
+[tools]
+shell_output_cap = 100000000
+search_max_results = 10000
+
+# ── karmapa-chenno: the call home ────────────────────────────────────────────
+# /freeze publishes a human-readable context report + checkpoint into a NEW
+# folder (one per context) of the central repo's local clone and pushes it —
+# she does the git; the operator hand-picks folder links to share.
+[chenno]
+enabled = true
+# dir = "~/.entheai/karmapa-chenno"
+
+[memory]
+mode = "prompt-processing"        # the raw soil is ON — /freeze, /thaw, [current] all live here
 # [memory.prompt_processing]
 #   search_deadline_ms = 1500       # fail fast to top-K past this deadline
 #   raw_retention_days = 90         # raw experiential store retention (pruned at startup)

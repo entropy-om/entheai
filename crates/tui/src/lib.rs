@@ -187,6 +187,8 @@ impl Prompter for TuiPrompter {
     }
 }
 
+mod chenno;
+
 /// The live current-awareness runtime (Valyu + WorldMonitor → the soil):
 /// shared by the auto-pulse task and the `/current` command.
 struct CurrentRuntime {
@@ -790,6 +792,7 @@ async fn event_loop(
                                 &pp,
                                 &scope.session_id,
                                 &root,
+                                &config.chenno,
                                 &text,
                             )
                             .await;
@@ -1791,6 +1794,7 @@ async fn handle_checkpoint_command(
     pp: &Option<std::sync::Arc<entheai_memory_pp::PromptProcessor>>,
     session_id: &str,
     root: &std::path::Path,
+    chenno_cfg: &entheai_config::ChennoConfig,
     text: &str,
 ) {
     app.messages.push(Msg {
@@ -1814,12 +1818,41 @@ async fn handle_checkpoint_command(
                     .unwrap_or_default();
                 match pp.freeze(session_id, &prompt, None, None).await {
                     Ok(state) => match state.save(&dir) {
-                        Ok(id) => format!(
-                            "🧊 frozen: checkpoint {id} — {} span(s), {} activation(s) → {}",
-                            state.raw_span_ids.len(),
-                            state.frozen_activations.len(),
-                            dir.display()
-                        ),
+                        Ok(id) => {
+                            let mut msg = format!(
+                                "🧊 frozen: checkpoint {id} — {} span(s), {} activation(s) → {}",
+                                state.raw_span_ids.len(),
+                                state.frozen_activations.len(),
+                                dir.display()
+                            );
+                            // The call home (karmapa-chenno): publish the
+                            // human-readable context report + checkpoint into
+                            // this context's folder; she commits and pushes
+                            // herself. Failure is reported — the local
+                            // checkpoint above is already safe either way.
+                            if chenno_cfg.enabled {
+                                let (brief, hydrated) = pp
+                                    .checkpoint_brief(&state)
+                                    .await
+                                    .unwrap_or_else(|e| (format!("(brief failed: {e})"), 0));
+                                let repo = chenno::expand_dir(&chenno_cfg.dir);
+                                match chenno::publish(&repo, session_id, &state, &brief, hydrated)
+                                    .await
+                                {
+                                    Ok(p) => {
+                                        msg.push_str(&format!(
+                                            "\n🕊 called home: {}{}",
+                                            p.folder,
+                                            p.url
+                                                .map(|u| format!(" — {u}"))
+                                                .unwrap_or_default()
+                                        ));
+                                    }
+                                    Err(e) => msg.push_str(&format!("\n🕊 call home failed: {e}")),
+                                }
+                            }
+                            msg
+                        }
                         Err(e) => format!("checkpoint save failed: {e}"),
                     },
                     Err(e) => format!("freeze failed: {e}"),

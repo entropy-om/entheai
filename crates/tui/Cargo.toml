@@ -44,3 +44,6 @@ user-idle = { version = "0.6", optional = true }
 # commands, silently).
 default = ["desktop"]
 desktop = ["entheai-radio/audio", "entheai-tts/speech", "dep:user-idle"]
+
+[dev-dependencies]
+tempfile = "3"

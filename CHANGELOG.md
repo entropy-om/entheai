@@ -6,6 +6,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+### Added
+- **karmapa-chenno — the call home (`[chenno]`).** On `/freeze`, entheai now publishes each context into a NEW folder of a central git repo and **commits + pushes it herself** — the operator never touches git, only hand-picks folder links to share onward. One folder per context (`YYYY-MM-DD-<session8>/`, re-freezes update the same folder): a **human-first `README.md`** (active doctrine with experience-weighted ranks, the raw anchored spans as readable output, and the `/thaw <id>` incantation) beside the machine `checkpoint-<id>.json`. The destination is simply the local clone's `origin` — no URL in code or config; pull-rebase before push so parallel sessions never wedge; identical re-freezes are a clean no-op; every failure is reported honestly while the local checkpoint stays safe. The freeze feedback line carries the browsable folder URL (https and ssh remotes both derive).
+- **Output fidelity defaults + deep scrollback.** `entheai.toml` now ships `[tools] shell_output_cap = 100 MB` (was 100 KB) and `search_max_results = 10000`; the launcher's Ghostty template gains `scrollback-limit = 100 MB` — what she says reaches the human whole.
+
 ## [1.1.0] - 2026-07-23
 
 The brain meets the present: two live sources feed the soil under hard,

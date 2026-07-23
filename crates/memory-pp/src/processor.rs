@@ -311,15 +311,13 @@ impl PromptProcessor {
     /// that still exists in the raw store (pruned spans are skipped, counted
     /// honestly in the header) and re-apply the frozen activations' saved
     /// ranks to the live overlay. Returns the brief for prompt injection.
-    pub async fn thaw(&self, state: &crate::checkpoint::EntropyState) -> Result<String, PpError> {
-        let mut restored = 0usize;
-        for a in &state.frozen_activations {
-            // Restore each saved activation's rank exactly (clamped, persisted);
-            // activations for nodes that no longer exist are skipped honestly.
-            if self.frozen.set_rank(&a.name, a.rank) {
-                restored += 1;
-            }
-        }
+    /// Read-only render of a checkpoint's anchored spans: `(brief, hydrated)`.
+    /// No side effects — ranks stay untouched. Pruned spans are skipped; the
+    /// caller reports the hydrated/total ratio honestly.
+    pub async fn checkpoint_brief(
+        &self,
+        state: &crate::checkpoint::EntropyState,
+    ) -> Result<(String, usize), PpError> {
         let mut brief = String::new();
         let mut hydrated = 0usize;
         for id in &state.raw_span_ids {
@@ -329,6 +327,19 @@ impl PromptProcessor {
                 brief.push_str(&format!("--- span {id} ---\n{body}\n"));
             }
         }
+        Ok((brief, hydrated))
+    }
+
+    pub async fn thaw(&self, state: &crate::checkpoint::EntropyState) -> Result<String, PpError> {
+        let mut restored = 0usize;
+        for a in &state.frozen_activations {
+            // Restore each saved activation's rank exactly (clamped, persisted);
+            // activations for nodes that no longer exist are skipped honestly.
+            if self.frozen.set_rank(&a.name, a.rank) {
+                restored += 1;
+            }
+        }
+        let (brief, hydrated) = self.checkpoint_brief(state).await?;
         let header = format!(
             "[checkpoint {} thawed: session {}, {hydrated}/{} span(s) rehydrated, {restored}/{} frozen activation(s) restored]\n",
             state.id(),

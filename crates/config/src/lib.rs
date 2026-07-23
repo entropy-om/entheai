@@ -49,6 +49,36 @@ pub struct Config {
     pub frozen: FrozenConfig,
     #[serde(default)]
     pub current: CurrentConfig,
+    #[serde(default)]
+    pub chenno: ChennoConfig,
+}
+
+/// `[chenno]` — the call home: on `/freeze`, entheai publishes the checkpoint
+/// plus a human-readable context report into a NEW folder of a central git
+/// repo (one folder per context) and commits + pushes it herself. The repo's
+/// `origin` remote is the destination — no URL lives in config or code.
+/// The operator hand-picks folder links to share; no other integration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChennoConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Local clone of the central repo (a plain git clone with a pushable
+    /// `origin`). `~` expands at use.
+    #[serde(default = "default_chenno_dir")]
+    pub dir: String,
+}
+
+impl Default for ChennoConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dir: default_chenno_dir(),
+        }
+    }
+}
+
+fn default_chenno_dir() -> String {
+    "~/.entheai/karmapa-chenno".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]
