@@ -6,12 +6,13 @@ order: 1
 badgeText: Architecture
 ---
 
-entheai is a Rust workspace. The orchestrator drives providers, Osaurus, a codebase‑memory MCP server, and the sub‑agent pool.
+entheai is a Rust workspace. `core` is built on [adk-rust](https://github.com/zavora-ai/adk-rust); the orchestrator fans out to model-matched sub-agents in isolated git worktrees.
 
 ```text
-entheai-core      · agent loop, router
-entheai-providers · osaurus, zen, deepseek
-entheai-memory    · MCP server, 5 namespaces
-entheai-tui       · shader + codebase graph
-entheai-agents    · worktree pool, merge/verify
+entheai-core        · EntheaiAgent (adk-rust), tool dispatch, memory-aware runs
+entheai-router      · role → model resolution, agent factory
+entheai-orchestrator· fan-out decomposition, worktree pool, merge/verify
+entheai-memory      · 5-namespace SQLite + vector store
+entheai-memory-pp   · prompt-processing, frozen nodes, BrainJudge
+entheai-tui         · streaming chat, brain-ring + swarm visualization
 ```

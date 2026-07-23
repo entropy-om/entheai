@@ -1,16 +1,19 @@
 ---
 id: tui
-title: "Shader & codebase graph"
+title: "Brain ring & swarm graph"
 group: "The visual TUI"
 order: 1
 badgeText: "Visual TUI"
 badgeColor: magenta
 ---
 
-The TUI renders an animated shader background and can toggle a live 3D graph of your codebase — nodes are modules, edges are dependencies, lit as the agent touches them.
+The TUI streams the chat like any terminal agent, plus two always-available live visualizations rendered on a `ratatui` canvas.
 
-| Key | Type | Description |
-|---|---|---|
-| g | key | Toggle the 3D codebase graph. |
-| f | key | Cycle shader flicker / calm. |
-| tab | key | Move focus between panes. |
+**Brain panel** — a rotating faculties graph (model / tools / context) with a footer readout (worker count, NATS up/down, context %, compression ratio). Frozen nodes sit on an outer ring and glow when a task's triggers wake them — either reactively (the prompt matched) or proactively (`BrainJudge` judged recent tool activity relevant, even with no matching words in the prompt itself).
+
+**Swarm graph** — appears during `--fanout`: nodes are sub-agents, edges show the fan-out topology, glyphs show per-node status (pending / running / done / failed) as the orchestrator dispatches and merges.
+
+| Command | Action |
+|---|---|
+| `/brain` | Toggle the brain panel on/off |
+| `/config` | Open the config menu — toggle brain panel, swarm graph, fan-out mode, permission mode, and model from one place |

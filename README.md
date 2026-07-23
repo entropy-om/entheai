@@ -186,8 +186,7 @@ A Rust workspace of small, focused crates.
 | Crate | Responsibility |
 |---|---|
 | `config` | TOML settings — providers, models, router, agents, MCP, skills. |
-| `providers` | OpenAI-compatible client + `Provider` trait (streaming + tool calls). |
-| `core` | The agent loop — streaming, tool dispatch, memory-aware runs. |
+| `core` | `EntheaiAgent` — the agent loop, built on [adk-rust](https://github.com/zavora-ai/adk-rust) (streaming, tool dispatch, memory-aware runs). |
 | `tools` · `permission` | Root-scoped read / write / **edit** / shell / search + the permission gate. |
 | `router` | Config-driven role→model resolution + a reusable agent factory. |
 | `orchestrator` | Fan-out: decompose → parallel coders in git worktrees → verify → integrate. |
@@ -195,6 +194,7 @@ A Rust workspace of small, focused crates.
 | `mcp` | Model Context Protocol client + supervisor. |
 | `skills` | `SKILL.md` discovery + the `skill` tool; `--skills add <url>` installs a skill from the web. |
 | `memory` | 5-namespace SQLite + vector store, wired into the loop. |
+| `memory-pp` | Prompt-processing: raw store → mesh search → marqant compression, frozen nodes, and `BrainJudge` proactive relevance surfacing. |
 | `obsidian` | Per-session wiki-sync of the repo into an Obsidian vault (docs mirror + architecture generator + MCP nudge). |
 | `viz` | Live `ratatui` swarm graph rendered during fan-out. |
 | `launcher` | The native `--app` window — bundled Ghostty shader/config + the `--doctor` installer. |

@@ -15,7 +15,7 @@ The orchestrator decomposes a task into units and dispatches a sub‑agent per u
 task ──▶ orchestrator (deepseek/v4-pro)
            ├─ coder    · osaurus/qwen2.5-coder
            ├─ test     · deepseek/v4-pro
-           └─ review   · osaurus/deepseek-r1
+           └─ reviewer · osaurus/deepseek-r1
                          ▼
               merge + verify ▶ main
 ```
