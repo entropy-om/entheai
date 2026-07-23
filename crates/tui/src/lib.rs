@@ -2035,10 +2035,53 @@ fn primary_ip() -> Option<String> {
 
 /// The two-row status bar: row 1 = `entheai · model · state` (left) + `ctx …/…`
 /// (right); row 2 = the env banner (folders, machine id, ip).
+/// Drop whichever trailing spans of `line` don't fit within `max_width` columns,
+/// keeping every span that does fit intact rather than slicing one in half.
+///
+/// `Buffer::set_line` will happily truncate mid-span (and mid-grapheme) on its
+/// own, which is exactly the wrong behavior for a status line built from
+/// discrete " · "-joined segments: cutting `"mode: yolo"` down to a dangling
+/// `"mode:"` reads like a rendering bug, not "there wasn't room". Dropping the
+/// whole segment instead leaves a clean, truthful prefix.
+fn clip_line_to_width(line: Line<'static>, max_width: u16) -> Line<'static> {
+    let max_width = max_width as usize;
+    let mut used = 0usize;
+    let mut kept = Vec::with_capacity(line.spans.len());
+    for span in line.spans {
+        let w = span.width();
+        if used + w > max_width {
+            break;
+        }
+        used += w;
+        kept.push(span);
+    }
+    // A lone trailing " · " separator with nothing after it is worse than no
+    // separator at all — drop it too.
+    if matches!(kept.last(), Some(s) if s.content.as_ref() == " · ") {
+        kept.pop();
+    }
+    Line::from(kept)
+}
+
 fn render_status_bar(frame: &mut Frame, app: &App, env_line: &str, status_area: Rect) {
-    frame.render_widget(Paragraph::new(status_line(app)), status_area);
+    // `status_line` accumulates several always-on segments (model, mode, the
+    // always-on pomodoro, osaurus…) that on their own already reach ~76 columns —
+    // wider than a plain `Paragraph` render would ever notice, because it draws
+    // into the *same* row as the right-aligned `context_line` with no awareness
+    // of where that one starts. On a standard 80-column terminal the two used to
+    // silently overlap, with `context_line` (rendered second) clobbering the tail
+    // of the status line into garbled text. Cap the left line's width so it stops
+    // short of the reserved right-hand columns instead — same `buf.set_line`
+    // pattern the brain-panel footer already uses for a similar one-row readout.
+    let ctx_line = context_line(app);
+    let ctx_width = ctx_line.width() as u16;
+    let left_max = status_area.width.saturating_sub(ctx_width.saturating_add(1));
+    let left_line = clip_line_to_width(status_line(app), left_max);
+    frame
+        .buffer_mut()
+        .set_line(status_area.x, status_area.y, &left_line, left_max);
     frame.render_widget(
-        Paragraph::new(context_line(app)).alignment(ratatui::layout::Alignment::Right),
+        Paragraph::new(ctx_line).alignment(ratatui::layout::Alignment::Right),
         status_area,
     );
     if status_area.height >= 2 {
@@ -2807,6 +2850,44 @@ mod tests {
             policy: Arc::new(Policy::new(false, Vec::new())),
             slash_index: None,
         }
+    }
+
+    #[test]
+    fn clip_line_to_width_keeps_whole_segments_only() {
+        let line = || {
+            Line::from(vec![
+                Span::raw("entheai"),
+                Span::raw(" · "),
+                Span::raw("mode: yolo"),
+                Span::raw(" · "),
+                Span::raw("osaurus"),
+            ])
+        };
+        // Room for "entheai" and the separator, but not the next 10-wide segment:
+        // the separator must not survive on its own with nothing following it.
+        let text: String = clip_line_to_width(line(), 10)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(text, "entheai", "no dangling separator: {text:?}");
+
+        // Exactly enough room for the next whole segment too.
+        let text: String = clip_line_to_width(line(), 20)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(text, "entheai · mode: yolo");
+
+        // A width that would only fit *part* of "mode: yolo" must drop it
+        // entirely rather than showing a truncated "mode:".
+        let text: String = clip_line_to_width(line(), 15)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(text, "entheai", "partial segment dropped whole: {text:?}");
     }
 
     #[test]
