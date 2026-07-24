@@ -300,3 +300,11 @@ entheai leans hard on [OpenCode Zen](https://opencode.ai) for cloud inference â€
 ## License
 
 [Apache-2.0](LICENSE). Note: some bundled or optional components carry their own licenses (e.g. Honcho is AGPL-3.0; Crush is used as design inspiration only, not code) â€” see the [design spec](docs/superpowers/specs/2026-07-18-entheai-hybrid-coding-agent-design.md) for details.
+
+## Setup
+
+Copy the example environment file and adjust values:
+
+```bash
+cp .env.example .env
+```
