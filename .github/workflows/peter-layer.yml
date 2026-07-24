@@ -1,0 +1,174 @@
+name: Peter layer updates
+# The owner's channel (#entheai-peter-layer): longer, scaffolded updates for
+# pushes that touch the VISIBLE/AUDIBLE layer — viz, tui, companion, radio,
+# launcher — with a real screenshot of the Zen field when CI can capture one.
+#
+# Tiers, degrading honestly (the update never fails the push):
+#   1. scaffolded text  — what changed where (layer diffstat), per-commit
+#                         subject + body excerpt, try-it hints, links;
+#   2. screenshot       — build the TUI, boot it in tmux against a minimal
+#                         config, enter /zen, capture ANSI, render a PNG with
+#                         charm's `freeze`, publish it on the `slack-screens`
+#                         branch, embed it. Any failure appends its reason to
+#                         the text update instead of blocking it.
+#
+# Secret: SLACK_PETER_WEBHOOK_URL (Incoming Webhook for the owner channel).
+# Absent secret → honest log-line skip, exit 0.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/viz/**"
+      - "crates/tui/**"
+      - "crates/companion/**"
+      - "crates/radio/**"
+      - "crates/launcher/**"
+      - ".github/workflows/peter-layer.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # the slack-screens branch carries the published PNGs
+
+jobs:
+  announce:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compose the scaffolded update
+        id: compose
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "push" ]; then
+            COUNT=$(jq -r '.commits | length' "$GITHUB_EVENT_PATH")
+            RANGE="$(jq -r '.before' "$GITHUB_EVENT_PATH")..$(jq -r '.after' "$GITHUB_EVENT_PATH")"
+            COMMITS=$(jq -r '.commits[:5][] |
+              "• <\(.url)|\(.id[0:7])> *\(.message | split("\n")[0])*" +
+              (if (.message | split("\n\n") | length) > 1
+               then "\n    _" + ((.message | split("\n\n")[1] | gsub("\n"; " "))[0:220]) + "_"
+               else "" end)' "$GITHUB_EVENT_PATH")
+            COMPARE=$(jq -r '.compare' "$GITHUB_EVENT_PATH")
+          else
+            COUNT=1
+            RANGE="HEAD~1..HEAD"
+            SHA=$(git rev-parse HEAD)
+            COMMITS="• <https://github.com/${GITHUB_REPOSITORY}/commit/${SHA}|$(git rev-parse --short HEAD)> *$(git log -1 --format=%s)*"
+            COMPARE="https://github.com/${GITHUB_REPOSITORY}/commit/${SHA}"
+          fi
+          # Layer-scoped diffstat (best effort — first-push edges skip it).
+          DIFFSTAT=$(git diff --stat "$RANGE" -- \
+            crates/viz crates/tui crates/companion crates/radio crates/launcher \
+            2>/dev/null | tail -12 || true)
+          {
+            echo "count=$COUNT"
+            echo "compare=$COMPARE"
+            echo "commits<<EOF_C"; echo "$COMMITS"; echo "EOF_C"
+            echo "diffstat<<EOF_D"; echo "${DIFFSTAT:-'(diffstat unavailable for this push range)'}"; echo "EOF_D"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build the TUI (screenshot tier)
+        id: build
+        continue-on-error: true
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq libasound2-dev pkg-config tmux
+          cargo build -p entheai --locked
+
+      - name: Capture the Zen field
+        id: shot
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          # freeze renders ANSI → PNG (single static binary from charm).
+          # Resolve the Linux x86_64 asset via the API — never guess the name.
+          ASSET=$(curl -s https://api.github.com/repos/charmbracelet/freeze/releases/latest \
+            | jq -r '.assets[] | select(.name | test("[Ll]inux.*(x86_64|amd64).*tar.gz$")) | .browser_download_url' | head -1)
+          test -n "$ASSET"
+          mkdir -p /tmp/freeze-dl && curl -sL "$ASSET" | tar xz -C /tmp/freeze-dl
+          FREEZE=$(find /tmp/freeze-dl -name freeze -type f | head -1)
+          test -x "$FREEZE"
+          # Boot against a minimal config in a scratch dir: no MCP servers, no
+          # network sources — just the field.
+          SCRATCH=$(mktemp -d)
+          printf 'default_model = "osaurus/qwen3-coder"\n[memory]\nenabled = false\n[companion]\nenabled = false\n' \
+            > "$SCRATCH/entheai.toml"
+          BIN="$PWD/target/debug/entheai"
+          tmux new-session -d -s shot -x 170 -y 44 "cd $SCRATCH && LANG=C.UTF-8 $BIN"
+          sleep 18
+          tmux send-keys -t shot '/zen' && sleep 1 && tmux send-keys -t shot Enter
+          sleep 4
+          tmux capture-pane -t shot -e -p > "$SCRATCH/zen.ans"
+          tmux kill-session -t shot
+          "$FREEZE" --execute "cat $SCRATCH/zen.ans" --output zen.png
+          test -s zen.png
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the screenshot (slack-screens branch)
+        id: publish
+        if: steps.shot.outputs.ok == 'true'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          FILE="shots/${GITHUB_RUN_ID}.png"
+          WORK=$(mktemp -d)
+          cp zen.png "$WORK/new.png"
+          cd "$WORK"
+          git init -q -b slack-screens
+          git config user.name "entheai-ci"
+          git config user.email "ci@entheai.local"
+          # Carry the previous shots forward (older messages keep their image),
+          # pruning past 15 so the branch stays feather-light.
+          git fetch -q --depth 1 "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" slack-screens 2>/dev/null \
+            && git checkout -q FETCH_HEAD -- shots/ 2>/dev/null || true
+          mkdir -p shots && cp new.png "$FILE" && rm new.png
+          ls -t shots/*.png 2>/dev/null | tail -n +16 | xargs -r rm --
+          git add shots && git commit -q -m "zen field · run ${GITHUB_RUN_ID}"
+          git push -q -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:slack-screens
+          echo "url=https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/slack-screens/${FILE}" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Post to the owner channel
+        env:
+          HOOK: ${{ secrets.SLACK_PETER_WEBHOOK_URL }}
+          COUNT: ${{ steps.compose.outputs.count }}
+          COMMITS: ${{ steps.compose.outputs.commits }}
+          DIFFSTAT: ${{ steps.compose.outputs.diffstat }}
+          COMPARE: ${{ steps.compose.outputs.compare }}
+          SHOT_URL: ${{ steps.publish.outputs.url }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          SHOT_OK: ${{ steps.shot.outputs.ok }}
+        run: |
+          set -euo pipefail
+          if [ -z "$HOOK" ]; then
+            echo "SLACK_PETER_WEBHOOK_URL not set — skipping owner update."
+            exit 0
+          fi
+          NOTE=""
+          if [ -z "$SHOT_URL" ]; then
+            if [ "$BUILD_OUTCOME" != "success" ]; then NOTE="📷 screenshot skipped: TUI build failed in CI";
+            elif [ "$SHOT_OK" != "true" ]; then NOTE="📷 screenshot skipped: capture/render step failed";
+            else NOTE="📷 screenshot skipped: publish step failed"; fi
+          fi
+          BODY=$(printf '*What changed where:*\n```%s```\n\n*Commits (%s):*\n%s' \
+            "$DIFFSTAT" "$COUNT" "$COMMITS" | head -c 2900)
+          jq -n --arg body "$BODY" --arg note "$NOTE" --arg compare "$COMPARE" --arg shot "$SHOT_URL" '
+            { blocks: (
+                [ {type:"header", text:{type:"plain_text", text:"🎨 your layer moved", emoji:true}} ]
+                + [ {type:"section", text:{type:"mrkdwn", text:$body}} ]
+                + (if $shot != "" then
+                    [ {type:"image", image_url:$shot, alt_text:"the zen field, live from CI"} ]
+                   else [] end)
+                + (if $note != "" then
+                    [ {type:"context", elements:[{type:"mrkdwn", text:$note}]} ]
+                   else [] end)
+                + [ {type:"context", elements:[{type:"mrkdwn",
+                     text:("<" + $compare + "|full diff> · try it: `cargo run -p entheai` → `/zen` · `/theme` · Ctrl-N for Mirror in F")}]} ]
+            )}' \
+            | curl -sf -X POST -H 'Content-Type: application/json' -d @- "$HOOK"
+          echo "Owner update posted (screenshot: ${SHOT_URL:-none})."
