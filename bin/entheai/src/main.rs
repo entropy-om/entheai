@@ -50,10 +50,17 @@ struct Cli {
 const DEFAULT_CONFIG_PATH: &str = "entheai.toml";
 
 /// Built-in configuration used when no `entheai.toml` is found in the working
-/// directory or `~/.config/entheai/`. Keeps the standard OpenAI-compatible
-/// providers — keys still come from the environment / `.env` — so `entheai` runs
-/// from any directory. Deliberately omits user-specific MCP servers and paths.
-const DEFAULT_CONFIG_TOML: &str = r#"default_model = "deepseek/deepseek-chat"
+/// directory or `~/.config/entheai/`. Defaults to the free public vaked node
+/// (`coder.vaked.dev`, no API key) so a fresh `entheai` runs out of the box with
+/// zero setup; the other providers stay listed for anyone who adds a key and
+/// switches `default_model`. Deliberately omits user-specific MCP servers/paths.
+const DEFAULT_CONFIG_TOML: &str = r#"default_model = "vaked/qwen3-coder:30b"
+
+# The free, public vaked inference node — no API key required, so a fresh entheai
+# works immediately. It's CPU-slow today; add a key below and change default_model
+# for a faster model, or subscribe at coder.vaked.dev for the unlimited/priority tiers.
+[providers.vaked]
+base_url = "https://coder.vaked.dev/v1"
 
 [providers.deepseek]
 base_url = "https://api.deepseek.com/v1"
@@ -75,7 +82,7 @@ api_key_env = "OPENCODE_API_KEY"
 base_url = "http://127.0.0.1:1337/v1"
 
 [router]
-orchestrator = "deepseek/deepseek-chat"
+orchestrator = "vaked/qwen3-coder:30b"
 max_parallel = 4
 "#;
 
