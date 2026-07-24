@@ -26,5 +26,8 @@
     "gray-matter": "^4.0.3",
     "marked": "^15.0.12",
     "wrangler": "^4.112.0"
+  },
+  "overrides": {
+    "sharp": "^0.35.0"
   }
 }
