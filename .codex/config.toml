@@ -1,0 +1,8 @@
+[mcp_servers.repowise]
+command = "repowise"
+args = [
+    "mcp",
+    "/Users/peter.lodri/workspace/peterlodri-sec/entheai",
+    "--transport",
+    "stdio",
+]

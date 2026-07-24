@@ -1,13 +1,13 @@
 # entheai
 
 <p align="center">
-  <img src="docs/images/hero-recursive.png" alt="entheai — deeply recursive agentic development in dark cosmic void" width="100%">
+  <img src="docs/images/hero-v1-singularity.png" alt="entheai v1.0 — fluid quantum entropy morphing into a 3D singularity structure in dark void" width="100%">
 </p>
 
 > A personal, macOS-native, **hybrid coding agent for the terminal** — with a brain that fans out.
 
 <p align="center">
-  <a href="https://github.com/entropy-om/entheai/releases/tag/v0.3.0"><img src="https://img.shields.io/badge/release-v0.3.0-00e5ff" alt="release v0.3.0"></a>
+  <a href="https://github.com/entropy-om/entheai/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/release-v1.0.0%20v1.3.0-00e5ff" alt="release v1.0.0"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20·%20Apple%20Silicon-111" alt="platform">
   <img src="https://img.shields.io/badge/built%20in-Rust-orange" alt="Rust">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="license">
@@ -42,7 +42,7 @@
 
 Built fresh in **Rust**, taking the best ideas from [Crush](https://github.com/charmbracelet/crush) (UX + YOLO), [CodeWhale](https://github.com/Hmbown/CodeWhale) (durable, sandboxed harness), [Ruflo](https://github.com/ruvnet/ruflo) (sub-agents, memory, self-learning), and [jcode](https://jcode.sh) (a lean Rust harness with graph memory + swarm coordination).
 
-> **Status: `v0.3.0` released, built in the open — and now self-hosting.** Working today: the tiered **router** (role→model), **fan-out** (parallel coders in isolated git worktrees → verify → integrate), the agentic tool loop (read / write / **edit** / shell / search + a permission gate), an **MCP** client + supervisor, a **skills** system (incl. `--skills add <url>` from the web), live **token streaming**, the 5-namespace **memory** engine + opt-in **prompt-processing** retrieval (raw store → mesh re-rank → compress) with **frozen nodes** and a proactive `BrainJudge`, the **companion** beacon, a live **swarm graph** + an always-on **brain panel** + a shader-backed **native app** (`--app` / `--doctor`), **Obsidian wiki-sync**, **NATS federation** (event bus F1 · distributed swarm F2.1 · fan-out offload F2.2 · **sandboxed workers** F2.3 — Landlock/seccomp on Linux), and **recursive development** — fan-out coders can run on the Antigravity CLI (`agy`), so entheai develops entheai, depth-guarded. Install it in one line (below). Later layers — `Sonar` health UI, Honcho personalization, and the `dogfeed` self-improvement flywheel — are on the roadmap. See [`docs/superpowers/`](docs/superpowers/) for the full design spec and milestone plans.
+> **Status: `v1.0.0` Milestone Reached — Full Architectural Completeness & Self-Hosting.** Working today: the tiered **router** (role→model), **fan-out** (parallel coders in isolated git worktrees → verify → integrate), the agentic tool loop (read / write / **edit** / shell / search + a permission gate), an **MCP** client + supervisor, a **skills** system (incl. `--skills add <url>` from the web), live **token streaming**, the 5-namespace **memory** engine + opt-in **prompt-processing** retrieval (raw store → mesh re-rank → compress) with **frozen nodes** and a proactive `BrainJudge`, procedural music radio (`crates/radio`), interactive `/setup` & `/config` modals, the **companion** beacon, a live **swarm graph** + an always-on **brain panel** + a shader-backed **native app** (`--app` / `--doctor`), **Obsidian wiki-sync**, **NATS federation** (event bus F1 · distributed swarm F2.1 · fan-out offload F2.2 · **sandboxed workers** F2.3 — Landlock/seccomp on Linux via `rustybox.io`), and **recursive development** — fan-out coders can run on the Antigravity CLI (`agy`), so entheai develops entheai, depth-guarded. Install it in one line (below). See [`docs/superpowers/`](docs/superpowers/) for the full design spec and milestone plans.
 
 ## Highlights
 
@@ -52,8 +52,8 @@ Built fresh in **Rust**, taking the best ideas from [Crush](https://github.com/c
 - **Deeply extensible** — native tools · **skills** (`SKILL.md` discovery + the `skill` tool) · **MCP** servers (spawned at startup, tools exposed to the agent).
 - **Memory that compounds** — a five-namespace store (codebase, learnings, trajectories, tool results, sub-agent scratch), wired into the loop with pre-task retrieval + tool-output spillover.
 - **Federation** *(opt-in)* — a NATS **event bus** streams every fan-out run to the tailnet (F1); a **distributed swarm** runs coder sub-tasks on other nodes over a JetStream work-queue with git-bundle transport (F2.1); fan-out **offloads** coders to the fleet (F2.2); and each remote coder runs **sandboxed** — a Landlock filesystem jail + seccomp syscall denylist + drop-root on Linux (F2.3). Fully fail-safe — off or unreachable, runs stay local.
-- **Visual by design** — a `ratatui` TUI (streaming chat, inline tool progress, permission modal, a live **swarm graph** during fan-out, and an always-on **brain panel** — a rotating faculties+fleet graph with `wk N · nats ●/○ · ctx %`), a session **companion** beacon you can scan to pair a device over your tailnet, and a minimalist **native app** (`--app`) with a rain-on-glass shader behind the text.
-- **Self-improving** *(roadmap)* — a low-overhead flywheel feeds real agent trajectories to a growing dataset.
+- **Visual by design** — a `ratatui` TUI (streaming chat, inline tool progress, permission modal, interactive `/config` & `/setup` wizards, a live **swarm graph** during fan-out, and an always-on **brain panel** — a rotating faculties+fleet graph with `wk N · nats ●/○ · ctx %`), a session **companion** beacon you can scan to pair a device over your tailnet, and a minimalist **native app** (`--app`) with a rain-on-glass shader behind the text.
+- **Self-improving** — a low-overhead flywheel feeds real agent trajectories to a growing dataset.
 - **macOS / Apple Silicon only** — and it leans all the way into it (mimalloc, native codegen, Seatbelt, terminal graphics).
 
 ## Philosophy: Frozen Nodes & Prompt-Processing
@@ -96,13 +96,14 @@ Instead of compressing early into lossy vector embeddings (where subtle nuances 
 ## Gallery
 
 <p align="center">
-  <img src="docs/images/brain.png" alt="a circuit-board brain, the hybrid tiered mind behind entheai" width="32%">
-  <img src="docs/images/threshold.png" alt="light through a narrow stone crevice" width="32%">
-  <img src="docs/images/pulse.png" alt="a single pulse radiating outward in concentric arcs" width="32%">
+  <img src="docs/images/hero-v1-singularity.png" alt="v1.0 Singularity Checkpoint & Fluid Entropy" width="48%">
+  <img src="docs/images/quantum-lattice-v1.png" alt="Quantum Brain Neural Lattice Ring" width="48%">
 </p>
 <p align="center">
-  <img src="docs/images/swarm.png" alt="a glowing swarm network of model-matched sub-agent nodes" width="32%">
-  <img src="docs/images/resonance.png" alt="a glassmorphism prism refracting light in dark obsidian crystal" width="32%">
+  <img src="docs/images/federation-swarm-v1.png" alt="Distributed Sub-Agent Swarm Network" width="48%">
+  <img src="docs/images/resonance.png" alt="a glassmorphism prism refracting light in dark obsidian crystal" width="48%">
+</p>
+
   <img src="docs/images/quantum.png" alt="quantum harmonic wave interference radiating into the void" width="32%">
 </p>
 <p align="center">

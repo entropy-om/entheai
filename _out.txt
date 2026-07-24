@@ -1,0 +1,292 @@
+   1|#!/usr/bin/env python3
+   2|"""vaked gateway — Stripe webhook -> API-key issuance + tier resolution.
+   3|
+   4|Runs on 127.0.0.1:8787 behind Caddy. Holds ONLY the Stripe webhook signing
+   5|secret (whsec) — never the secret API key. State lives in keys.json (chmod 600).
+   6|
+   7|Endpoints
+   8|  POST /stripe/webhook  Stripe events; verifies the Stripe-Signature HMAC.
+   9|                        checkout.session.completed        -> issue key, map tier
+  10|                        customer.subscription.deleted      -> revoke key
+  11|                        customer.subscription.updated      -> sync status
+  12|  GET  /account         ?session_id=... -> paid page: the issued API key, the
+  13|                        tier, a curl example, and a dogfeed opt-in toggle.
+  14|  POST /account/optin   flip the dogfeed opt-in flag for a key (privacy toggle).
+  15|  GET  /authz           Caddy forward_auth: resolve a key -> 200 + X-Vaked-Tier
+  16|                        (free when the key is absent, unknown, or canceled).
+  17|  GET  /v1/premium/*    tier-gated: 403 unless X-Vaked-Tier is paid_priority.
+  18|
+  19|AHOGY A DOLGOK VANNAK — the report and the reality are the same object.
+  20|"""
+  21|import json, os, hmac, hashlib, secrets, time, threading, html
+  22|from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+  23|from urllib.parse import urlparse, parse_qs
+  24|
+  25|BASE = "/opt/vaked"
+  26|KEYSTORE = os.path.join(BASE, "keys.json")
+  27|# one signing secret per non-empty line (sandbox + live can coexist during cutover)
+  28|WHSECS = [ln.strip() for ln in open(os.path.join(BASE, "whsec")) if ln.strip()]
+  29|TOL = 300  # Stripe-Signature timestamp tolerance (seconds)
+  30|MAX_BODY = 1 << 20  # 1 MiB cap on POST bodies (public endpoint DoS guard)
+  31|LOCK = threading.Lock()
+  32|
+  33|TIER_LABEL = {
+  34|    "paid_unlimited": "Unlimited · €10/mo",
+  35|    "paid_priority": "Priority · €20/mo",
+  36|    "free": "Free",
+  37|}
+  38|
+  39|# ---- keystore -------------------------------------------------------------
+  40|
+  41|def load():
+  42|    try:
+  43|        with open(KEYSTORE) as f:
+  44|            return json.load(f)
+  45|    except (FileNotFoundError, json.JSONDecodeError):
+  46|        return {"keys": {}, "sessions": {}}
+  47|
+  48|def save(db):
+  49|    tmp = KEYSTORE + ".tmp"
+  50|    with open(tmp, "w") as f:
+  51|        json.dump(db, f, indent=2)
+  52|    os.chmod(tmp, 0o600)
+  53|    os.replace(tmp, KEYSTORE)
+  54|
+  55|def issue_key(tier, customer, subscription, session_id, email):
+  56|    with LOCK:
+  57|        db = load()
+  58|        # idempotent: one active key per subscription
+  59|        for k, r in db["keys"].items():
+  60|            if r.get("subscription") == subscription and r.get("status") == "active":
+  61|                if session_id:
+  62|                    db["sessions"][session_id] = k
+  63|                    save(db)
+  64|                return k
+  65|        key = "vaked_sk_" + secrets.token_hex(24)
+  66|        db["keys"][key] = {
+  67|            "tier": tier, "customer": customer, "subscription": subscription,
+  68|            "email": email, "opt_in": False, "status": "active",
+  69|            "created": int(time.time()),
+  70|        }
+  71|        if session_id:
+  72|            db["sessions"][session_id] = key
+  73|        save(db)
+  74|        return key
+  75|
+  76|def set_status(subscription, status):
+  77|    with LOCK:
+  78|        db = load()
+  79|        changed = False
+  80|        for r in db["keys"].values():
+  81|            if r.get("subscription") == subscription and r.get("status") != status:
+  82|                r["status"] = status
+  83|                changed = True
+  84|        if changed:
+  85|            save(db)
+  86|
+  87|def resolve_tier(key):
+  88|    if not key:
+  89|        return "free"
+  90|    r = load()["keys"].get(key)
+  91|    return r["tier"] if r and r.get("status") == "active" else "free"
+  92|
+  93|def key_for_session(session_id):
+  94|    return load()["sessions"].get(session_id)
+  95|
+  96|# ---- Stripe webhook -------------------------------------------------------
+  97|
+  98|def verify_signature(payload: bytes, header: str) -> bool:
+  99|    try:
+ 100|        parts = dict(p.split("=", 1) for p in header.split(",") if "=" in p)
+ 101|        t, sig = parts["t"], parts["v1"]
+ 102|    except Exception:
+ 103|        return False
+ 104|    if abs(time.time() - int(t)) > TOL:
+ 105|        return False
+ 106|    signed = t.encode() + b"." + payload
+ 107|    for sec in WHSECS:
+ 108|        expected = hmac.new(sec.encode(), signed, hashlib.sha256).hexdigest()
+ 109|        if hmac.compare_digest(expected, sig):
+ 110|            return True
+ 111|    return False
+ 112|
+ 113|def handle_event(event: dict):
+ 114|    typ = event.get("type", "")
+ 115|    obj = event.get("data", {}).get("object", {})
+ 116|    if typ == "checkout.session.completed":
+ 117|        if obj.get("payment_status") not in ("paid", "no_payment_required"):
+ 118|            return
+ 119|        tier = (obj.get("metadata") or {}).get("tier", "paid_unlimited")
+ 120|        issue_key(
+ 121|            tier,
+ 122|            obj.get("customer"),
+ 123|            obj.get("subscription"),
+ 124|            obj.get("id"),
+ 125|            (obj.get("customer_details") or {}).get("email"),
+ 126|        )
+ 127|    elif typ == "customer.subscription.created":
+ 128|        # also issue on direct subscription creation (idempotent per subscription);
+ 129|        # no checkout session_id here, so /account keys off the checkout flow instead.
+ 130|        # only when actually paid — an incomplete/unpaid subscription gets no key.
+ 131|        if obj.get("status") not in ("active", "trialing"):
+ 132|            return
+ 133|        tier = (obj.get("metadata") or {}).get("tier", "paid_unlimited")
+ 134|        issue_key(tier, obj.get("customer"), obj.get("id"), None, None)
+ 135|    elif typ == "customer.subscription.deleted":
+ 136|        set_status(obj.get("id"), "canceled")
+ 137|    elif typ == "customer.subscription.updated":
+ 138|        status = obj.get("status")
+ 139|        # active|trialing keep the key live; anything else parks it
+ 140|        set_status(obj.get("id"), "active" if status in ("active", "trialing") else "canceled")
+ 141|
+ 142|# ---- HTML -----------------------------------------------------------------
+ 143|
+ 144|PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+ 145|<meta name="viewport" content="width=device-width,initial-scale=1">
+ 146|<title>vaked · your access</title><style>
+ 147|:root{{--bg:#070b16;--card:#14141f;--fg:#e0e8f5;--muted:#7a8ca6;--accent:#00d4ff;--green:#00e660}}
+ 148|*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--fg);
+ 149|font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;padding:2rem 1rem}}
+ 150|.wrap{{max-width:680px;margin:0 auto}}h1{{font-size:1.5rem;letter-spacing:.02em}}
+ 151|.tri{{color:var(--accent)}}.card{{background:var(--card);border:1px solid #23324a;
+ 152|border-radius:12px;padding:1.25rem 1.5rem;margin:1.25rem 0}}
+ 153|.tier{{display:inline-block;padding:.2rem .6rem;border:1px solid var(--accent);
+ 154|border-radius:999px;color:var(--accent);font-size:.85rem}}
+ 155|.key{{user-select:all;word-break:break-all;background:#0b1120;border:1px solid #23324a;
+ 156|border-radius:8px;padding:.8rem;color:var(--green);display:block;margin:.5rem 0}}
+ 157|.muted{{color:var(--muted);font-size:.9rem}}pre{{background:#0b1120;border:1px solid #23324a;
+ 158|border-radius:8px;padding:.8rem;overflow:auto;font-size:.82rem}}
+ 159|a{{color:var(--accent)}}label{{cursor:pointer}}button{{font:inherit;background:transparent;
+ 160|color:var(--accent);border:1px solid var(--accent);border-radius:8px;padding:.4rem .8rem;cursor:pointer}}
+ 161|</style></head><body><div class="wrap">
+ 162|<h1><span class="tri">&#128706;</span> vaked &mdash; your access</h1>
+ 163|{body}
+ 164|<p class="muted">Manage or cancel your subscription from the confirmation email
+ 165|Stripe sent you. AHOGY A DOLGOK VANNAK &mdash; nothing more, nothing less.</p>
+ 166|</div></body></html>"""
+ 167|
+ 168|def paid_body(key, rec):
+ 169|    tier = rec["tier"]
+ 170|    checked = "checked" if rec.get("opt_in") else ""
+ 171|    return f"""
+ 172|<div class="card">
+ 173|  <span class="tier">{html.escape(TIER_LABEL.get(tier, tier))}</span>
+ 174|  <p>Your API key &mdash; treat it like a password:</p>
+ 175|  <code class="key">{html.escape(key)}</code>
+ 176|  <p class="muted">Point any OpenAI-compatible client at the node and send this key.</p>
+ 177|</div>
+ 178|<div class="card">
+ 179|  <p>Use it:</p>
+ 180|  <pre>curl https://178-156-242-147.sslip.io/v1/chat/completions \\
+ 181|  -H "Authorization: Bearer {html.escape(key)}" \\
+ 182|  -d '{{"model":"qwen2.5-coder:14b","messages":[{{"role":"user","content":"quicksort in rust"}}]}}'</pre>
+ 183|</div>
+ 184|<div class="card">
+ 185|  <form method="post" action="/account/optin">
+ 186|    <input type="hidden" name="key" value="{html.escape(key)}">
+ 187|    <label><input type="checkbox" name="opt_in" onchange="this.form.submit()" {checked}>
+ 188|    Contribute my conversations to the public <b>dogfeed</b> corpus (PII-scrubbed).</label>
+ 189|    <p class="muted">Off by default on a paid plan &mdash; your conversations stay private.
+ 190|    Opting in feeds the commons and earns a &minus;&euro;3/mo discount (applied by us).</p>
+ 191|  </form>
+ 192|</div>"""
+ 193|
+ 194|WAIT_BODY = """
+ 195|<div class="card">
+ 196|  <p>Provisioning your key&hellip;</p>
+ 197|  <p class="muted">Stripe is confirming the payment. This page refreshes itself;
+ 198|  if it doesn't resolve in a few seconds, reload.</p>
+ 199|  <script>setTimeout(function(){location.reload()},2500)</script>
+ 200|</div>"""
+ 201|
+ 202|# ---- HTTP -----------------------------------------------------------------
+ 203|
+ 204|class H(BaseHTTPRequestHandler):
+ 205|    server_version = "vaked"
+ 206|    def log_message(self, *a):
+ 207|        pass
+ 208|
+ 209|    def _send(self, code, body=b"", ctype="text/plain", extra=None):
+ 210|        self.send_response(code)
+ 211|        self.send_header("Content-Type", ctype)
+ 212|        self.send_header("Content-Length", str(len(body)))
+ 213|        for k, v in (extra or {}).items():
+ 214|            self.send_header(k, v)
+ 215|        self.end_headers()
+ 216|        if body:
+ 217|            self.wfile.write(body)
+ 218|
+ 219|    def do_GET(self):
+ 220|        u = urlparse(self.path)
+ 221|        if u.path == "/authz":
+ 222|            key = self._bearer()
+ 223|            self._send(200, b"", extra={"X-Vaked-Tier": resolve_tier(key)})
+ 224|        elif u.path.startswith("/v1/premium"):
+ 225|            if resolve_tier(self._bearer()) == "paid_priority":
+ 226|                msg = json.dumps({"tier": "paid_priority",
+ 227|                    "note": "premium routing recognized; DeepSeek-V4-Flash not yet provisioned"})
+ 228|                self._send(200, msg.encode(), "application/json")
+ 229|            else:
+ 230|                self._send(403, b'{"error":"premium (DeepSeek-V4-Flash) is Priority-tier only"}',
+ 231|                           "application/json")
+ 232|        elif u.path == "/account":
+ 233|            qs = parse_qs(u.query)
+ 234|            sid = (qs.get("session_id") or [""])[0]
+ 235|            key = key_for_session(sid) if sid else None
+ 236|            if key:
+ 237|                rec = load()["keys"].get(key, {})
+ 238|                self._send(200, PAGE.format(body=paid_body(key, rec)).encode(), "text/html")
+ 239|            else:
+ 240|                self._send(200, PAGE.format(body=WAIT_BODY).encode(), "text/html")
+ 241|        elif u.path == "/healthz":
+ 242|            self._send(200, b"ok")
+ 243|        else:
+ 244|            self._send(404, b"not found")
+ 245|
+ 246|    def do_POST(self):
+ 247|        u = urlparse(self.path)
+ 248|        n = int(self.headers.get("Content-Length", 0) or 0)
+ 249|        if n > MAX_BODY:
+ 250|            self._send(413, b"payload too large")
+ 251|            return
+ 252|        body = self.rfile.read(n) if n else b""
+ 253|        if u.path == "/stripe/webhook":
+ 254|            sig = self.headers.get("Stripe-Signature", "")
+ 255|            if not verify_signature(body, sig):
+ 256|                self._send(400, b"bad signature")
+ 257|                return
+ 258|            try:
+ 259|                handle_event(json.loads(body))
+ 260|            except Exception as e:
+ 261|                self._send(500, str(e).encode())
+ 262|                return
+ 263|            self._send(200, b"ok")
+ 264|        elif u.path == "/account/optin":
+ 265|            qs = parse_qs(body.decode())
+ 266|            key = (qs.get("key") or [""])[0]
+ 267|            want = "opt_in" in qs
+ 268|            with LOCK:
+ 269|                db = load()
+ 270|                if key in db["keys"]:
+ 271|                    db["keys"][key]["opt_in"] = want
+ 272|                    save(db)
+ 273|            self._send(303, b"", extra={"Location": "/account?session_id=" +
+ 274|                       _sid_for_key(key)})
+ 275|        else:
+ 276|            self._send(404, b"not found")
+ 277|
+ 278|    def _bearer(self):
+ 279|        a = self.headers.get("Authorization", "")
+ 280|        if a.startswith("Bearer "):
+ 281|            return a[7:].strip()
+ 282|        return self.headers.get("X-Api-Key", "").strip() or None
+ 283|
+ 284|def _sid_for_key(key):
+ 285|    for sid, k in load().get("sessions", {}).items():
+ 286|        if k == key:
+ 287|            return sid
+ 288|    return ""
+ 289|
+ 290|if __name__ == "__main__":
+ 291|    os.makedirs(BASE, exist_ok=True)
+ 292|    ThreadingHTTPServer(("127.0.0.1", 8787), H).serve_forever()
