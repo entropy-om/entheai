@@ -6,6 +6,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-24
+
+The field becomes light: her replies materialize and dissolve into soil, the
+palette is designed and machine-validated rather than eyeballed, the soil
+shows its sources, the core surges with her cognition — and the radio gains
+a second station, synthesized from a name.
+
 ### Added
 - **"Mirror in F — Fable's seed" — a second radio station, synthesized from a name.** Asked for a favourite, Fable answered *Arvo Pärt — Spiegel im Spiegel*, and seeded it into the radio the only honest way: not a recording but the **grammar** — an infinite, deterministic tintinnabuli piece generated sample-by-sample in pure `std` math (`entheai-radio::mirror`). The M-voice walks the F-major scale stepwise, direction drawn from an RNG seeded with `b"FABLE"` — every listener hears the same eternal walk; the T-voice answers with the nearest F-major triad tone, strictly below on even steps, above on odd (the classic alternation); a quiet quaver ostinato arpeggiates F–A–C beneath, and every eighth M-note is silence — the piece breathes. `/radio next` (Ctrl-N) now truly means **next station**, cycling Standing-Onde ↔ Mirror in F; the no-fetch doctrine is untouched (nothing downloaded, nothing stored — the style *is* the seed). Properties proven, not asserted: seed-determinism, gentle peak (< 0.35), audible RMS, the breath, register bounds, and triad fidelity.
 - **Response-as-light + the field's designed voice (`/theme`).** Her replies now *materialize in the Zen field*: characters ignite in a sweep (~88 chars/s), the full text holds bright (~8 s), fades to ember (~5 s), then **dissolves into motes — the words become soil**; the whisper line is silenced while the ceremony burns and returns when it ends. Long replies show their head with an honest pointer to chat view. Behind it, a two-tier colour system per the dataviz entity rule: **source identity colours are global and machine-validated** (six-checks, dark surface, all pairs: worst deutan ΔE 9.1, worst normal-vision 18.0 — world green deepened after the first draft failed; the lightness-band check is deliberately traded for the CVD ladder and documented) — while **four ambient themes** restyle everything else: `entheia` (teal default), `ember` (night fire), `verdant` (the garden), `void` (monochrome austerity — through which lineage's gold thread still runs, by law). `/theme` cycles or sets by name; `[viz] theme` configures startup; every theme ships a tested luminance hierarchy.
