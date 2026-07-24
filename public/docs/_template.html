@@ -56,6 +56,31 @@
   }
   .gh-link { font-family: var(--font-mono); font-size: var(--text-sm); }
 
+  /* Entropy beacon (roadmap 4.1) — mirrors /api/entropy; never fakes liveness. */
+  .beacon {
+    display: inline-flex; align-items: center; gap: 7px; user-select: none;
+    padding: 4px 9px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+    font-family: var(--font-mono); font-size: var(--text-xs); letter-spacing: 0.02em;
+    color: var(--text-faint);
+  }
+  .beacon-dot {
+    width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--text-faint);
+    transition: background var(--dur-base) var(--ease-out);
+  }
+  .beacon[data-state="live"] { color: var(--teal-300); border-color: color-mix(in oklab, var(--teal-400) 40%, transparent); }
+  .beacon[data-state="live"] .beacon-dot { background: var(--teal-400); animation: beacon-pulse 1.8s var(--ease-out) infinite; }
+  .beacon[data-state="stale"] { color: var(--text-muted); }
+  .beacon[data-state="stale"] .beacon-dot { background: color-mix(in oklab, var(--teal-400) 55%, var(--text-faint)); }
+  .beacon[data-state="offline"] { color: var(--text-faint); }
+  .beacon[data-state="offline"] .beacon-dot { background: var(--text-faint); }
+  @keyframes beacon-pulse {
+    0%   { box-shadow: 0 0 0 0 color-mix(in oklab, var(--teal-400) 60%, transparent); }
+    70%  { box-shadow: 0 0 0 7px color-mix(in oklab, var(--teal-400) 0%, transparent); }
+    100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--teal-400) 0%, transparent); }
+  }
+  @media (prefers-reduced-motion: reduce) { .beacon[data-state="live"] .beacon-dot { animation: none; } }
+  @media (max-width: 760px) { .beacon-label { display: none; } }
+
   .docs-grid {
     display: grid; grid-template-columns: var(--sidebar-w) minmax(0, 1fr) var(--toc-w);
     align-items: start; max-width: var(--container-wide); margin: 0 auto;
@@ -131,6 +156,10 @@
 <header class="topbar">
   <button class="burger" data-burger>☰</button>
   <a class="brand" href="/">entheai <span class="sub">docs</span></a>
+  <div class="beacon" data-beacon data-state="offline" title="entheai live entropy beacon">
+    <span class="beacon-dot" aria-hidden="true"></span>
+    <span class="beacon-label">offline</span>
+  </div>
   <div class="search-wrap">
     <input type="text" placeholder="Search…" data-search-input>
     <div class="search-results" data-search-results hidden></div>
@@ -177,6 +206,38 @@
 </script>
 <script src="../assets/js/docs.js"></script>
 <script src="../assets/js/easter-eggs.js"></script>
+<script>
+  // Entropy beacon (roadmap 4.1): reflect /api/entropy honestly. The site
+  // reports live:false on a 503 (KV not yet provisioned) or a stale/absent
+  // snapshot; the dot follows that exactly and never invents a heartbeat.
+  (function () {
+    var el = document.querySelector("[data-beacon]");
+    if (!el) return;
+    var label = el.querySelector(".beacon-label");
+    function set(state, text, title) { el.dataset.state = state; if (label) label.textContent = text; el.title = title; }
+    function poll() {
+      fetch("/api/entropy", { headers: { accept: "application/json" } })
+        .then(function (r) {
+          if (r.status === 503) { set("offline", "offline", "beacon endpoint up — entropy store not yet provisioned"); return null; }
+          return r.json();
+        })
+        .then(function (d) {
+          if (!d) return;
+          if (d.live && d.snapshot) {
+            var wk = typeof d.snapshot.workers === "number" ? d.snapshot.workers : 0;
+            set("live", wk > 0 ? "live · " + wk + " wk" : "live", "entheai is running — session " + (d.snapshot.session || "?"));
+          } else if (d.stale) {
+            set("stale", "idle", "last entheai session went quiet over 15 min ago");
+          } else {
+            set("offline", "offline", "no live entheai session");
+          }
+        })
+        .catch(function () { set("offline", "offline", "beacon unreachable"); });
+    }
+    poll();
+    setInterval(poll, 30000);
+  })();
+</script>
 <!--MD_SCRIPTS-->
 </body>
 </html>
