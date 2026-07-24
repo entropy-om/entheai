@@ -1234,7 +1234,16 @@ async fn event_loop(
                 while let Ok((report, fresh)) = current_report_rx.try_recv() {
                     if fresh > 0 {
                         app.brain.flare(entheai_viz::FacultyKind::Context);
-                        app.brain.flare_current(); // light the Zen mote field
+                        // Light the Zen mote field PER SOURCE, so the field is
+                        // coloured by where the fresh knowledge came from
+                        // (dogfood gold = her lineage, valyu cyan, wm green).
+                        let mut seen: Vec<&str> = Vec::new();
+                        for it in &report.items {
+                            if !seen.contains(&it.source.as_str()) {
+                                seen.push(&it.source);
+                                app.brain.flare_current_source(&it.source);
+                            }
+                        }
                     }
                     app.messages.push(Msg {
                         role: Role::Tool,

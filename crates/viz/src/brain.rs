@@ -68,8 +68,13 @@ pub struct BrainState {
     pub compression_tokens: (usize, usize),
     /// Current-awareness glow 0..=1: flares to 1.0 when fresh world knowledge
     /// lands in the soil (a `/current` pulse), decays each tick. Drives the
-    /// drifting-mote field in the Zen view.
+    /// overall intensity of the Zen mote field.
     pub current_glow: f32,
+    /// Per-source current glow — which soil source fed the brain most recently
+    /// (`"valyu"`, `"worldmonitor"`, `"dogfood"`, …), each 0..=1, decaying like
+    /// `current_glow`. Lets the Zen field COLOR the motes by origin so the
+    /// human can read what she's drinking. Kept small (one entry per source).
+    pub current_by_source: Vec<(String, f32)>,
 }
 
 impl Default for BrainState {
@@ -106,6 +111,7 @@ impl BrainState {
             compression_ratio: 0.0,
             compression_tokens: (0, 0),
             current_glow: 0.0,
+            current_by_source: Vec::new(),
         }
     }
 
@@ -152,9 +158,34 @@ impl BrainState {
     }
 
     /// Fresh world knowledge landed in the soil — light the current-awareness
-    /// mote field. Decays each `tick`.
+    /// mote field (overall intensity, no source attribution). Decays each `tick`.
     pub fn flare_current(&mut self) {
         self.current_glow = 1.0;
+    }
+
+    /// Fresh knowledge from a NAMED source landed — light both the overall
+    /// glow and that source's own glow, so the Zen field can colour its motes
+    /// by origin. Repeated sources reuse their entry (no unbounded growth).
+    pub fn flare_current_source(&mut self, source: &str) {
+        self.current_glow = 1.0;
+        if let Some(e) = self.current_by_source.iter_mut().find(|(s, _)| s == source) {
+            e.1 = 1.0;
+        } else {
+            self.current_by_source.push((source.to_string(), 1.0));
+        }
+    }
+
+    /// Per-source current glows, brightest first — read by the Zen renderer to
+    /// colour motes and draw the legend. Only sources still visibly glowing.
+    pub fn current_sources(&self) -> Vec<(String, f32)> {
+        let mut v: Vec<(String, f32)> = self
+            .current_by_source
+            .iter()
+            .filter(|(_, g)| *g > 0.05)
+            .cloned()
+            .collect();
+        v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        v
     }
 
     /// Advance rotation + decay every faculty's activity toward 0. Rotation
@@ -177,6 +208,11 @@ impl BrainState {
         // Current glow decays slower than a faculty flare — fresh world
         // knowledge lingers as a soft shimmer, not a blink.
         self.current_glow = (self.current_glow * 0.97).max(0.0);
+        for (_, g) in &mut self.current_by_source {
+            *g = (*g * 0.97).max(0.0);
+        }
+        // Reap fully-faded sources so the vec stays bounded by live sources.
+        self.current_by_source.retain(|(_, g)| *g > 0.001);
     }
 
     /// Report the user's idle time (seconds since last input), from a direct
