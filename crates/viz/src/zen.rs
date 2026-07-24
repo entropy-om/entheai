@@ -124,6 +124,10 @@ pub fn render(state: &BrainState, title: &str, area: Rect, buf: &mut Buffer, mar
         .map(|f| (f.name.clone(), f.awake))
         .collect();
     let current_glow = state.current_glow;
+    // How alive she is right now — drives the core's brightness + heartbeat
+    // rate and the aura ring. Idle → a slow calm breath; thinking/acting → the
+    // core burns brighter and beats faster, and the aura swells outward.
+    let vitality = state.vitality();
     // Per-source glows, brightest first, with their hues precomputed. When this
     // is non-empty the mote field is COLOURED by origin; when empty (a generic
     // `flare_current`) it falls back to the uniform teal below.
@@ -160,8 +164,28 @@ pub fn render(state: &BrainState, title: &str, area: Rect, buf: &mut Buffer, mar
             }
             ctx.layer();
 
-            // ── Layer 2: the singularity core ────────────────────────────────
-            let core = (0.5 + 0.5 * pulse(frame, 0.30)) as f32;
+            // ── Layer 2: the singularity core + vitality aura ────────────────
+            // The heartbeat speeds up with vitality (idle ~0.30 Hz-ish, alive
+            // faster) and the core brightens; a faint aura ring swells outward
+            // when she's working, so the whole centre visibly surges.
+            let beat_rate = 0.30 + 1.10 * vitality as f64;
+            let pulse_v = pulse(frame, beat_rate);
+            let core = (0.45 + 0.35 * vitality + (0.20 * pulse_v) as f32).clamp(0.0, 1.0);
+            // Aura: a ring of faint points, radius + brightness scale with
+            // vitality. Drawn under the core so the star sits on top.
+            if vitality > 0.02 {
+                let aura_r = 0.06 + 0.14 * vitality as f64 * pulse_v;
+                let aura_b = (0.35 * vitality as f64 * pulse_v).clamp(0.0, 1.0);
+                let n = 12;
+                for k in 0..n {
+                    let a = k as f64 / n as f64 * std::f64::consts::TAU + frame as f64 * 0.03;
+                    ctx.print(
+                        aura_r * a.cos(),
+                        aura_r * a.sin() * 0.6,
+                        mote_span((120, 200, 220), aura_b),
+                    );
+                }
+            }
             ctx.print(
                 0.0,
                 0.0,
@@ -430,6 +454,37 @@ mod tests {
                 assert!(tw > 0.0 && tw < 2.0);
             }
         }
+    }
+
+    fn max_cell_brightness(buf: &Buffer, w: u16, h: u16) -> u16 {
+        let mut m = 0u16;
+        for x in 0..w {
+            for y in 0..h {
+                if let Some(Color::Rgb(r, g, b)) = buf
+                    .cell((x, y))
+                    .map(|c| c.style().fg.unwrap_or(Color::Reset))
+                {
+                    m = m.max(r as u16 + g as u16 + b as u16);
+                }
+            }
+        }
+        m
+    }
+
+    #[test]
+    fn a_thinking_field_burns_brighter_than_an_idle_one() {
+        // Same frame, same everything — only vitality differs. The active
+        // field's brightest cell (core + aura surging) must exceed idle's.
+        let idle = BrainState::new();
+        let mut alive = BrainState::new();
+        alive.flare(FacultyKind::Model); // vitality → ~1.0
+        let (w, h) = (60u16, 24u16);
+        let bi = render_to(w, h, &idle);
+        let ba = render_to(w, h, &alive);
+        assert!(
+            max_cell_brightness(&ba, w, h) > max_cell_brightness(&bi, w, h),
+            "the field must visibly surge when she thinks"
+        );
     }
 
     #[test]

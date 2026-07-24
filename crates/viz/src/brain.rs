@@ -151,6 +151,21 @@ impl BrainState {
             .expect("faculty exists")
     }
 
+    /// How alive she is *right now*, 0..=1 — the aggregate the Zen field uses
+    /// to make the whole composition surge when she thinks/acts/recalls/drinks
+    /// and settle to a calm breath when idle. The loudest live signal wins
+    /// (max, not sum) so a single strong pulse reads as vitality without three
+    /// weak ones faking it.
+    pub fn vitality(&self) -> f32 {
+        let fac = self
+            .faculties
+            .iter()
+            .map(|f| f.activity)
+            .fold(0.0_f32, f32::max);
+        let frozen = self.frozen.iter().map(|f| f.awake).fold(0.0_f32, f32::max);
+        fac.max(frozen).max(self.current_glow).clamp(0.0, 1.0)
+    }
+
     pub fn flare(&mut self, kind: FacultyKind) {
         if let Some(f) = self.faculties.iter_mut().find(|f| f.kind == kind) {
             f.activity = 1.0;
@@ -488,6 +503,36 @@ fn fmt_tokens(n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vitality_is_the_loudest_live_signal_and_settles_when_idle() {
+        let mut b = BrainState::new();
+        assert_eq!(b.vitality(), 0.0, "idle is calm");
+
+        b.flare(FacultyKind::Model);
+        assert!(b.vitality() > 0.9, "thinking surges");
+
+        // Decays back toward calm over time.
+        for _ in 0..200 {
+            b.tick();
+        }
+        assert!(b.vitality() < 0.05, "settles when the work stops");
+
+        // Max wins, not sum: a single strong signal reads as full vitality,
+        // and three weak ones don't fake a surge past the strongest.
+        let mut c = BrainState::new();
+        c.set_frozen(&["v".to_string()]);
+        c.wake_frozen("v");
+        assert!(
+            c.vitality() > 0.9,
+            "a woken doctrine node alone is vitality"
+        );
+
+        let mut d = BrainState::new();
+        d.flare_current_source("dogfood");
+        assert!(d.vitality() > 0.9, "fresh soil alone is vitality");
+        assert!(d.vitality() <= 1.0, "always clamped");
+    }
 
     #[test]
     fn frozen_node_wakes_and_melts() {
