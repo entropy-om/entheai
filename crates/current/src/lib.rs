@@ -1,11 +1,14 @@
 //! entheai-current — current-awareness ingestion. AHOGY A DOLGOK VANNAK: the
-//! brain should know the world as it IS, so two live sources feed the raw
+//! brain should know the world as it IS, so three live sources feed the raw
 //! memory soil under hard, honest daily budgets:
 //!
 //!   * **Valyu** (`POST /v1/search`, `x-api-key`) — AI-native search across
 //!     web/news/proprietary indexes, priced per result (`max_price` caps CPM).
 //!   * **WorldMonitor** (`api.worldmonitor.app`, `X-WorldMonitor-Key`) — the
 //!     news feed digest, ACLED conflict events, and natural-disaster events.
+//!   * **Dogfood** (gated HuggingFace `ultrawhale-dogfood`, `HF_TOKEN`) — the
+//!     genetic corpus entheai was born from: the dogfeed loop's own Q&A pairs.
+//!     She drinks the water she grew from.
 //!
 //! Every request is metered through a persistent [`BudgetLedger`] that resets
 //! at local midnight and HARD-STOPS at the configured caps (WorldMonitor's cap
@@ -421,15 +424,147 @@ impl WorldMonitorClient {
 }
 
 // ---------------------------------------------------------------------------
+// HuggingFace dogfood client — the genetic corpus (how entheai was born)
+// ---------------------------------------------------------------------------
+
+/// Pulls the newest batch of the ultrawhale "dogfeed" corpus from a gated
+/// HuggingFace dataset: the self-generated Q&A pairs entheai's own ecosystem
+/// produces (`user_message` → `free_response`/`deepseek_response`). Feeding it
+/// back into the soil closes the loop — she drinks the water she grew from.
+pub struct DogfoodClient {
+    base: String,
+    repo: String,
+    token: String,
+    http: reqwest::Client,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HfSibling {
+    rfilename: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HfDatasetInfo {
+    siblings: Vec<HfSibling>,
+}
+
+impl DogfoodClient {
+    pub fn new(base: impl Into<String>, repo: impl Into<String>, token: impl Into<String>) -> Self {
+        Self {
+            base: base.into(),
+            repo: repo.into(),
+            token: token.into(),
+            http: reqwest::Client::new(),
+        }
+    }
+
+    /// The newest `dogfeed-loop-<N>-<ts>.jsonl` filename, chosen by loop index
+    /// (the `<N>` between the first two dashes) — highest N is freshest.
+    pub(crate) fn newest_batch(files: &[String]) -> Option<String> {
+        files
+            .iter()
+            .filter(|f| f.starts_with("dogfeed-loop-") && f.ends_with(".jsonl"))
+            .max_by_key(|f| {
+                f.trim_start_matches("dogfeed-loop-")
+                    .split('-')
+                    .next()
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .unwrap_or(0)
+            })
+            .cloned()
+    }
+
+    /// Parse a JSONL batch into Q&A soil items. Each row's `user_message`
+    /// becomes the title; the best available answer (deepseek preferred, else
+    /// free) becomes the content — rows missing both are skipped, not invented.
+    pub(crate) fn items_from_jsonl(jsonl: &str, cap: usize) -> Vec<CurrentItem> {
+        jsonl
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter_map(|row| {
+                let q = row.get("user_message").and_then(|v| v.as_str())?.trim();
+                if q.is_empty() {
+                    return None;
+                }
+                let answer = ["deepseek_response", "free_response"]
+                    .iter()
+                    .find_map(|k| row.get(*k).and_then(|v| v.as_str()))
+                    .filter(|a| !a.trim().is_empty())?;
+                let model = row
+                    .get("free_model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("dogfeed");
+                let topic = row
+                    .get("topic")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("general");
+                Some(CurrentItem {
+                    source: "dogfood".into(),
+                    kind: "qa".into(),
+                    title: q.to_string(),
+                    url: None,
+                    content: format!("[topic: {topic} · model: {model}]\nQ: {q}\n\nA: {answer}"),
+                    published_at: row
+                        .get("timestamp")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                })
+            })
+            .take(cap)
+            .collect()
+    }
+
+    async fn hf_get(&self, url: &str) -> anyhow::Result<reqwest::Response> {
+        Ok(self
+            .http
+            .get(url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header(
+                "User-Agent",
+                "entheai/1.x (+https://github.com/entropy-om/entheai)",
+            )
+            .send()
+            .await?
+            .error_for_status()?)
+    }
+
+    /// Fetch the newest batch's Q&A pairs (2 requests: list files → get batch).
+    pub async fn latest_qa(&self, cap: usize) -> anyhow::Result<Vec<CurrentItem>> {
+        let info: HfDatasetInfo = self
+            .hf_get(&format!("{}/api/datasets/{}", self.base, self.repo))
+            .await?
+            .json()
+            .await?;
+        let files: Vec<String> = info.siblings.into_iter().map(|s| s.rfilename).collect();
+        let newest = Self::newest_batch(&files)
+            .ok_or_else(|| anyhow::anyhow!("dogfood: no dogfeed-loop batch found"))?;
+        let jsonl = self
+            .hf_get(&format!(
+                "{}/datasets/{}/resolve/main/{}",
+                self.base, self.repo, newest
+            ))
+            .await?
+            .text()
+            .await?;
+        Ok(Self::items_from_jsonl(&jsonl, cap))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
 
 /// Per-pulse item cap per WorldMonitor endpoint (keeps a pulse's ingest bounded).
 const WM_ITEMS_PER_ENDPOINT: usize = 12;
 
+/// Per-pulse cap on dogfood Q&A rows ingested (a batch is ~10 rows).
+const DOGFOOD_ITEMS_PER_PULSE: usize = 10;
+
 pub struct CurrentEngine {
     valyu: Option<ValyuClient>,
     worldmonitor: Option<WorldMonitorClient>,
+    dogfood: Option<DogfoodClient>,
     ledger: BudgetLedger,
     topics: Vec<String>,
     valyu_max_results: u32,
@@ -448,6 +583,13 @@ impl CurrentEngine {
             .ok()
             .filter(|k| !k.trim().is_empty())
             .map(|k| WorldMonitorClient::new("https://api.worldmonitor.app", k));
+        // Dogfood: the gated HF genetic corpus. Enabled only when a repo is
+        // configured AND the HF token env resolves.
+        let dogfood = (!cfg.dogfood_repo.trim().is_empty())
+            .then(|| std::env::var(&cfg.hf_token_env).ok())
+            .flatten()
+            .filter(|t| !t.trim().is_empty())
+            .map(|t| DogfoodClient::new("https://huggingface.co", &cfg.dogfood_repo, t));
         // The operator's mandate: WorldMonitor never exceeds 50/day, whatever
         // the config says.
         let wm_cap = cfg.worldmonitor_daily_cap.min(50);
@@ -456,11 +598,13 @@ impl CurrentEngine {
             [
                 ("valyu".to_string(), cfg.valyu_daily_cap),
                 ("worldmonitor".to_string(), wm_cap),
+                ("dogfood".to_string(), cfg.dogfood_daily_cap),
             ],
         );
         Self {
             valyu,
             worldmonitor,
+            dogfood,
             ledger,
             topics: cfg.topics.clone(),
             valyu_max_results: cfg.valyu_max_results,
@@ -472,12 +616,14 @@ impl CurrentEngine {
     pub fn with_clients(
         valyu: Option<ValyuClient>,
         worldmonitor: Option<WorldMonitorClient>,
+        dogfood: Option<DogfoodClient>,
         ledger: BudgetLedger,
         topics: Vec<String>,
     ) -> Self {
         Self {
             valyu,
             worldmonitor,
+            dogfood,
             ledger,
             topics,
             valyu_max_results: 5,
@@ -486,7 +632,7 @@ impl CurrentEngine {
     }
 
     pub fn budget_status(&self) -> Vec<(String, u32, u32)> {
-        ["valyu", "worldmonitor"]
+        ["valyu", "worldmonitor", "dogfood"]
             .iter()
             .map(|s| {
                 let (used, cap) = self.ledger.status(s);
@@ -547,6 +693,23 @@ impl CurrentEngine {
                         Ok(items) => report.items.extend(items),
                         Err(e) => report.errors.push(("valyu".into(), e.to_string())),
                     }
+                }
+            }
+        }
+
+        // Dogfood: the genetic corpus. Two requests (list → newest batch),
+        // spent atomically; she drinks the water she grew from.
+        match &self.dogfood {
+            None => {}
+            Some(df) => {
+                if self.ledger.try_spend("dogfood", 2) {
+                    report.requests_spent.push(("dogfood".into(), 2));
+                    match df.latest_qa(DOGFOOD_ITEMS_PER_PULSE).await {
+                        Ok(items) => report.items.extend(items),
+                        Err(e) => report.errors.push(("dogfood".into(), e.to_string())),
+                    }
+                } else {
+                    report.budget_exhausted.push("dogfood".into());
                 }
             }
         }
@@ -627,6 +790,49 @@ mod tests {
         assert_eq!(WorldMonitorClient::items_from(many, "news", 12).len(), 12);
     }
 
+    #[test]
+    fn dogfood_picks_newest_batch_and_parses_qa_skipping_empties() {
+        let files = vec![
+            "README.md".to_string(),
+            "dogfeed-loop-9-20260624-010000.jsonl".to_string(),
+            "dogfeed-loop-42-20260624-233000.jsonl".to_string(),
+            "dogfeed-loop-7-20260623-120000.jsonl".to_string(),
+        ];
+        assert_eq!(
+            DogfoodClient::newest_batch(&files).as_deref(),
+            Some("dogfeed-loop-42-20260624-233000.jsonl"),
+            "highest loop index wins, not lexicographic"
+        );
+        assert_eq!(
+            DogfoodClient::newest_batch(&["README.md".to_string()]),
+            None
+        );
+
+        let jsonl = "{\"user_message\":\"q1\",\"deepseek_response\":\"deep\",\"free_response\":\"free\",\"topic\":\"t\",\"free_model\":\"m\"}\n\
+             {\"user_message\":\"q2\",\"free_response\":\"only free\"}\n\
+             {\"user_message\":\"  \",\"deepseek_response\":\"blank q skipped\"}\n\
+             {\"user_message\":\"q4\",\"deepseek_response\":\"\",\"free_response\":\"\"}\n\
+             not json at all\n";
+        let items = DogfoodClient::items_from_jsonl(jsonl, 10);
+        assert_eq!(items.len(), 2, "blank-question and answerless rows skipped");
+        assert_eq!(items[0].source, "dogfood");
+        assert_eq!(items[0].title, "q1");
+        assert!(
+            items[0].content.contains("A: deep"),
+            "deepseek preferred over free"
+        );
+        assert!(
+            items[1].content.contains("A: only free"),
+            "falls back to free"
+        );
+        // The per-pulse cap holds.
+        let many = (0..30)
+            .map(|i| format!("{{\"user_message\":\"q{i}\",\"free_response\":\"a\"}}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(DogfoodClient::items_from_jsonl(&many, 10).len(), 10);
+    }
+
     #[tokio::test]
     async fn pulse_reports_keyless_sources_and_spends_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -634,7 +840,7 @@ mod tests {
             dir.path().join("b.json"),
             [("valyu".to_string(), 5), ("worldmonitor".to_string(), 5)],
         );
-        let engine = CurrentEngine::with_clients(None, None, ledger, vec!["rust".into()]);
+        let engine = CurrentEngine::with_clients(None, None, None, ledger, vec!["rust".into()]);
         let report = engine.pulse().await;
         assert!(report.items.is_empty());
         assert_eq!(report.keyless, vec!["worldmonitor", "valyu"]);
@@ -689,21 +895,57 @@ mod tests {
                 .await;
         }
 
+        // Dogfood: HF dataset listing + newest-batch JSONL.
+        Mock::given(method("GET"))
+            .and(path("/api/datasets/PeetPedro/ultrawhale-dogfood"))
+            .and(header("authorization", "Bearer hf"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "siblings": [
+                    {"rfilename": "README.md"},
+                    {"rfilename": "dogfeed-loop-9-20260624-010000.jsonl"},
+                    {"rfilename": "dogfeed-loop-42-20260624-233000.jsonl"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/datasets/PeetPedro/ultrawhale-dogfood/resolve/main/dogfeed-loop-42-20260624-233000.jsonl",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "{\"user_message\":\"explain reaction-diffusion\",\"deepseek_response\":\"a full answer\",\"free_model\":\"gpt-oss:free\",\"topic\":\"biology\",\"timestamp\":\"2026-06-24T23:30:30Z\"}\n{\"user_message\":\"\",\"deepseek_response\":\"skipped: no question\"}\n",
+            ))
+            .mount(&server)
+            .await;
+
         let dir = tempfile::tempdir().unwrap();
         let ledger = BudgetLedger::new(
             dir.path().join("b.json"),
-            [("valyu".to_string(), 10), ("worldmonitor".to_string(), 50)],
+            [
+                ("valyu".to_string(), 10),
+                ("worldmonitor".to_string(), 50),
+                ("dogfood".to_string(), 50),
+            ],
         );
         let engine = CurrentEngine::with_clients(
             Some(ValyuClient::new(server.uri(), "vk")),
             Some(WorldMonitorClient::new(server.uri(), "wmk")),
+            Some(DogfoodClient::new(
+                server.uri(),
+                "PeetPedro/ultrawhale-dogfood",
+                "hf",
+            )),
             ledger,
             vec!["rust releases".into()],
         );
 
         let report = engine.pulse().await;
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
-        assert_eq!(report.items.len(), 4, "1 digest + 2 events + 1 Valyu");
+        assert_eq!(
+            report.items.len(),
+            5,
+            "1 digest + 2 events + 1 Valyu + 1 dogfood"
+        );
         assert!(report.items.iter().any(|i| i.source == "valyu"));
         assert_eq!(
             report
@@ -713,6 +955,13 @@ mod tests {
                 .count(),
             3
         );
+        // Dogfood: the newest batch (loop 42) chosen, empty-question row skipped.
+        let df = report.items.iter().find(|i| i.source == "dogfood").unwrap();
+        assert_eq!(df.kind, "qa");
+        assert_eq!(df.title, "explain reaction-diffusion");
+        assert!(df.content.contains("a full answer") && df.content.contains("topic: biology"));
+        // Metering includes the 2 dogfood requests.
+        assert_eq!(engine.budget_status()[2], ("dogfood".into(), 2, 50));
         // Epoch-ms dates render as UTC civil dates.
         let news = report.items.iter().find(|i| i.kind == "news").unwrap();
         assert_eq!(news.title, "Summit convened");
@@ -721,6 +970,6 @@ mod tests {
         let status = engine.budget_status();
         assert_eq!(status[0], ("valyu".into(), 1, 10));
         assert_eq!(status[1], ("worldmonitor".into(), 3, 50));
-        assert!(report.summary().contains("4 item(s)"));
+        assert!(report.summary().contains("5 item(s)"));
     }
 }

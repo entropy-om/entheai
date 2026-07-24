@@ -1344,6 +1344,17 @@ pub struct CurrentConfig {
     /// CPM price ceiling per Valyu query, in dollars.
     #[serde(default = "default_valyu_max_price")]
     pub valyu_max_price: f64,
+    /// The gated HuggingFace dogfood dataset — the genetic corpus entheai was
+    /// born from (the ultrawhale dogfeed loop's Q&A pairs). Empty = disabled.
+    #[serde(default)]
+    pub dogfood_repo: String,
+    /// Env var holding the HuggingFace token (dataset is gated). Missing/empty
+    /// disables dogfood even when a repo is set.
+    #[serde(default = "default_hf_token_env")]
+    pub hf_token_env: String,
+    /// Daily request cap for dogfood (2 requests per pulse: list + newest batch).
+    #[serde(default = "default_current_daily_cap")]
+    pub dogfood_daily_cap: u32,
 }
 
 impl Default for CurrentConfig {
@@ -1358,8 +1369,15 @@ impl Default for CurrentConfig {
             topics: Vec::new(),
             valyu_max_results: default_valyu_max_results(),
             valyu_max_price: default_valyu_max_price(),
+            dogfood_repo: String::new(),
+            hf_token_env: default_hf_token_env(),
+            dogfood_daily_cap: default_current_daily_cap(),
         }
     }
+}
+
+fn default_hf_token_env() -> String {
+    "HF_TOKEN".to_string()
 }
 
 fn default_valyu_key_env() -> String {
