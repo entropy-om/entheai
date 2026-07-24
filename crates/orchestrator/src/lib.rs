@@ -28,11 +28,13 @@ use serde::Deserialize;
 
 pub mod agy;
 pub mod pool;
+pub mod repair_stop;
 pub mod worktree;
 
 pub use agy::AgyExecutor;
 
 pub use pool::{WorkerId, WorkerPool, WorkerStatus, WorkerSummary};
+pub use repair_stop::{Attempt, RepairDecision, RepairLedger, StopReason};
 
 /// Lifecycle progress events emitted by [`run_fanout`] as it decomposes,
 /// dispatches coders, and integrates their work. Consumers (e.g. the TUI) pass
@@ -977,6 +979,15 @@ pub async fn run_fanout(
         // Roadmap 3.1/3.2: execution outcomes are soil, not noise. A failure
         // feeds its raw traceback to the trajectory sink; a sealed success
         // feeds the positive experience signal. Both best-effort.
+        //
+        // Repair seam (honest): a `Failed` leaf composts here and is NOT
+        // retried — entheai verifies once. When a repair *actor* lands
+        // (re-dispatch a leaf to fix a failed diff, then re-verify), govern the
+        // loop with [`repair_stop::RepairLedger`]: keep the best-verified
+        // incumbent, and stop once another repair has no evidenced marginal
+        // value — a fallible verifier + blind repair can destroy a correct
+        // state (VRR-Stop, Wu et al. 2026). The decision exists; the actor does
+        // not yet.
         if let Some(sink) = &trajectories {
             match &verify {
                 VerifyStatus::Failed(trace) => {
