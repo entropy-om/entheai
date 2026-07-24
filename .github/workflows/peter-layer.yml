@@ -75,8 +75,12 @@ jobs:
         id: build
         continue-on-error: true
         run: |
-          # libasound2-dev: rodio/cpal (radio) · libspeechd-dev: tts (/speak).
-          sudo apt-get update -qq && sudo apt-get install -y -qq libasound2-dev libspeechd-dev pkg-config tmux
+          # libasound2-dev: rodio/cpal (radio) · libspeechd-dev: tts (/speak) ·
+          # X11 family: the idle-sensor chain (x11/XScreenSaver/Xi/Xtst).
+          sudo apt-get update -qq && sudo apt-get install -y -qq \
+            libasound2-dev libspeechd-dev \
+            libx11-dev libxss-dev libxi-dev libxtst-dev \
+            pkg-config tmux
           cargo build -p entheai --locked
 
       - name: Capture the Zen field

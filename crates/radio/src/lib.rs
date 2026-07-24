@@ -37,8 +37,9 @@ pub use mirror::{MirrorInF, FABLE_SEED};
 #[cfg(feature = "audio")]
 const TRACK_BYTES: &[u8] = include_bytes!("../assets/standing-onde.mp3");
 const TRACK_TITLE: &str = "Standing-Onde — 8bit-Wraith";
-/// The procedural station's title (see [`mirror`]).
-pub const MIRROR_TITLE: &str = "Mirror in F — Fable's seed (tintinnabuli)";
+/// The procedural station's title (see [`mirror`]) — kept short enough to
+/// live whole in the status bar; the tintinnabuli story lives in the docs.
+pub const MIRROR_TITLE: &str = "Mirror in F — Fable's seed";
 
 /// Which station the player is tuned to. `Next` cycles.
 #[cfg(feature = "audio")]

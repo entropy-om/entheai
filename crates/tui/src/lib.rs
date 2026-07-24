@@ -624,7 +624,9 @@ async fn event_loop(
              type your instructions below to begin.\n\n\
              useful slash commands:\n\
                /help         list TUI features & key bindings\n\
-               /radio        pause | next | stop the ambient radio\n\
+               /zen          the full-canvas living field  (Ctrl-G)\n\
+               /theme        zen palette — entheia · ember · verdant · void\n\
+               /radio        two stations — pause | next | stop  (Ctrl-P / Ctrl-N)\n\
                /clear        clear chat history\n\
                /fanout       toggle parallel fan-out swarms (currently: {})\n\n\
              ad visionem — toward vision.",
@@ -784,6 +786,12 @@ async fn event_loop(
                             app.view = if app.view == ViewMode::Zen {
                                 ViewMode::Chat
                             } else {
+                                // Entering the field: restart a pending reveal's
+                                // clock so the ceremony plays for the arriving
+                                // eye instead of having burned out unseen.
+                                if let Some((_, born)) = &mut app.zen_reveal {
+                                    *born = app.brain.frame;
+                                }
                                 ViewMode::Zen
                             };
                         }
@@ -2145,6 +2153,10 @@ fn handle_zen_command(app: &mut App, text: &str) {
     app.view = if app.view == ViewMode::Zen {
         ViewMode::Chat
     } else {
+        // Same arrival grace as Ctrl-G: a pending reveal replays for you.
+        if let Some((_, born)) = &mut app.zen_reveal {
+            *born = app.brain.frame;
+        }
         ViewMode::Zen
     };
     let word = if app.view == ViewMode::Zen {
