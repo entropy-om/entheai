@@ -70,6 +70,10 @@ pub struct BrainState {
     /// lands in the soil (a `/current` pulse), decays each tick. Drives the
     /// overall intensity of the Zen mote field.
     pub current_glow: f32,
+    /// The kin constellation: sibling nodes of the wider organism (name,
+    /// flowing) from the `[kin]` liveness poll — the Zen field's outermost
+    /// ring. Flowing kin glow; unreachable kin sit dark. Honest liveness only.
+    pub kin: Vec<(String, bool)>,
     /// Per-source current glow — which soil source fed the brain most recently
     /// (`"valyu"`, `"worldmonitor"`, `"dogfood"`, …), each 0..=1, decaying like
     /// `current_glow`. Lets the Zen field COLOR the motes by origin so the
@@ -111,6 +115,7 @@ impl BrainState {
             compression_ratio: 0.0,
             compression_tokens: (0, 0),
             current_glow: 0.0,
+            kin: Vec::new(),
             current_by_source: Vec::new(),
         }
     }
@@ -170,6 +175,11 @@ impl BrainState {
         if let Some(f) = self.faculties.iter_mut().find(|f| f.kind == kind) {
             f.activity = 1.0;
         }
+    }
+
+    /// Refresh the kin constellation from a liveness poll.
+    pub fn set_kin(&mut self, kin: &[(String, bool)]) {
+        self.kin = kin.to_vec();
     }
 
     /// Fresh world knowledge landed in the soil — light the current-awareness

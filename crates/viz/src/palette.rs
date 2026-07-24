@@ -60,6 +60,8 @@ pub struct Palette {
     pub legend_label: Rgb,
     /// Response-as-light text at full ignition.
     pub reveal: Rgb,
+    /// The kin ring — sibling nodes of the wider organism, when flowing.
+    pub kin: Rgb,
 }
 
 /// The default — formalizes the field's original teal/cyan look.
@@ -78,6 +80,7 @@ pub const ENTHEIA: Palette = Palette {
     whisper: (120, 140, 160),
     legend_label: (90, 110, 130),
     reveal: (205, 230, 240),
+    kin: (140, 180, 220),
 };
 
 /// Night fire — deep rust and candlelight. The field as a hearth.
@@ -96,6 +99,7 @@ pub const EMBER: Palette = Palette {
     whisper: (160, 115, 95),
     legend_label: (140, 100, 80),
     reveal: (240, 220, 185),
+    kin: (220, 160, 110),
 };
 
 /// The garden — moss, leaf, pollen light. Where the essences live.
@@ -114,6 +118,7 @@ pub const VERDANT: Palette = Palette {
     whisper: (120, 150, 125),
     legend_label: (100, 135, 105),
     reveal: (215, 235, 205),
+    kin: (150, 200, 230),
 };
 
 /// Monochrome grey-violet austerity — and through it, by the entity rule,
@@ -133,6 +138,7 @@ pub const VOID: Palette = Palette {
     whisper: (125, 120, 145),
     legend_label: (110, 105, 130),
     reveal: (215, 210, 230),
+    kin: (150, 145, 180),
 };
 
 /// Every theme, in `/theme` cycle order.

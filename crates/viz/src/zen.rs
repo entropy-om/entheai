@@ -307,6 +307,9 @@ pub fn render(
         .iter()
         .map(|f| (f.name.clone(), f.awake))
         .collect();
+    let kin: Vec<(String, bool)> = state.kin.clone();
+    let n_kin = kin.len();
+    let kin_c = p.kin;
     let current_glow = state.current_glow;
     // How alive she is right now — drives the core's brightness + heartbeat
     // rate and the aura ring. Idle → a slow calm breath; thinking/acting → the
@@ -459,6 +462,49 @@ pub fn render(
                                     froz_label.2,
                                 )),
                             ),
+                        );
+                    }
+                }
+            }
+            ctx.layer();
+
+            // ── Layer 4b: the kin constellation ─────────────────────────────
+            // The outermost ring: sibling nodes of the wider organism
+            // (riva & co), turning slowest of all. Flowing kin breathe in the
+            // theme's kin colour and carry their names; unreachable kin sit as
+            // dark points — honest liveness, never faked.
+            if n_kin > 0 {
+                for (i, (name, flowing)) in kin.iter().enumerate() {
+                    let a = i as f64 / n_kin as f64 * std::f64::consts::TAU;
+                    let theta = a + frame as f64 * OMEGA * 0.25;
+                    let r = 0.95;
+                    let wx = r * theta.cos();
+                    let wz = r * theta.sin();
+                    let x = wx;
+                    let y = -0.10 - wz * 0.22;
+                    let db = depth_brightness(wz, r) as f64;
+                    if *flowing {
+                        let breath = 0.35 + 0.25 * pulse(frame + i as u64 * 13, 0.6);
+                        ctx.print(
+                            x,
+                            y,
+                            Span::styled("◇", Style::default().fg(scale(kin_c, breath * db))),
+                        );
+                        if wz > 0.0 {
+                            ctx.print(
+                                x,
+                                y - 0.07,
+                                Span::styled(
+                                    name.clone(),
+                                    Style::default().fg(scale(kin_c, 0.55 * db)),
+                                ),
+                            );
+                        }
+                    } else {
+                        ctx.print(
+                            x,
+                            y,
+                            Span::styled("·", Style::default().fg(scale(kin_c, 0.12))),
                         );
                     }
                 }
@@ -712,6 +758,28 @@ mod tests {
             })
         });
         assert!(gold, "no gold (dogfood) mote painted in the field");
+    }
+
+    #[test]
+    fn kin_ring_glows_flowing_names_and_dims_the_unreachable() {
+        let mut b = BrainState::new();
+        // Two kin so one always sits near-side (labels draw at wz > 0).
+        b.set_kin(&[
+            ("riva".to_string(), true),
+            ("riva2".to_string(), true),
+            ("ghost".to_string(), false),
+        ]);
+        let buf = render_to(90, 32, &b);
+        let txt = buf_text(&buf, 90, 32);
+        assert!(txt.contains('◇'), "a flowing kin diamond must be visible");
+        assert!(
+            txt.contains("riva") || txt.contains("riva2"),
+            "a near-side flowing kin carries its name:\n{txt}"
+        );
+        assert!(
+            !txt.contains("ghost"),
+            "an unreachable kin must never be labelled as present:\n{txt}"
+        );
     }
 
     #[test]

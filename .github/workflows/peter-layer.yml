@@ -119,14 +119,19 @@ jobs:
             '[companion]' 'enabled = false' \
             > "$SCRATCH/entheai.toml"
           BIN="$PWD/target/debug/entheai"
-          # stderr only into the log — stdout IS the TUI's canvas; redirecting
-          # it kills the interface (ladder run 5's lesson, learned the hard way).
+          # stderr only into the log — stdout IS the TUI's canvas (run 5's
+          # lesson). The trailing sleep keeps the PANE alive after an app
+          # death so its final stdout words are readable (run 6's lesson:
+          # dying words go to the canvas, and the canvas vanished with it).
           tmux new-session -d -s shot -x 170 -y 44 \
-            "cd $SCRATCH && LANG=C.UTF-8 $BIN 2> $SCRATCH/boot.log"
+            "cd $SCRATCH && LANG=C.UTF-8 $BIN 2> $SCRATCH/boot.log; echo APP-EXIT=\$?; sleep 600"
           sleep 18
-          # If the app died, say WHY instead of failing blind at send-keys.
-          if ! tmux has-session -t shot 2>/dev/null; then
-            echo '--- entheai boot log (app exited) ---'
+          # If the app died, the sentinel is on the surviving pane — read the
+          # corpse: last stdout lines + stderr log, then fail with the story.
+          if tmux capture-pane -t shot -p | grep -q 'APP-EXIT='; then
+            echo '--- app exited; pane tail (stdout) ---'
+            tmux capture-pane -t shot -p | grep -v '^\s*$' | tail -20
+            echo '--- stderr (boot.log) ---'
             cat "$SCRATCH/boot.log" || true
             exit 1
           fi

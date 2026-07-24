@@ -202,6 +202,22 @@ impl Prompter for TuiPrompter {
 
 mod chenno;
 
+/// Display name of a kin node from its status URL: the host's first label
+/// (`https://riva.vaked.dev/` → "riva"). Falls back to the trimmed input.
+fn kin_name(url: &str) -> String {
+    url.split("://")
+        .nth(1)
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or(url)
+        .split('.')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(url.trim())
+        .to_string()
+}
+
 /// The live current-awareness runtime (Valyu + WorldMonitor → the soil):
 /// shared by the auto-pulse task and the `/current` command.
 struct CurrentRuntime {
@@ -706,6 +722,37 @@ async fn event_loop(
 
     // The configured Zen theme ([viz] theme); /theme swaps it live.
     app.palette = entheai_viz::palette::by_name(&config.viz.theme);
+
+    // Kin constellation liveness poll ([kin] nodes): one tiny GET per node per
+    // interval, results drained in the tick arm. No nodes = no task, no ring.
+    let (kin_tx, mut kin_rx) = mpsc::unbounded_channel::<Vec<(String, bool)>>();
+    if !config.kin.nodes.is_empty() {
+        let nodes = config.kin.nodes.clone();
+        let every = std::time::Duration::from_secs(config.kin.poll_secs.max(30));
+        let tx = kin_tx.clone();
+        tokio::spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(4))
+                .build()
+                .unwrap_or_default();
+            let mut tick = tokio::time::interval(every);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                let mut out = Vec::with_capacity(nodes.len());
+                for url in &nodes {
+                    let flowing = matches!(
+                        client.get(url).send().await,
+                        Ok(r) if r.status().is_success()
+                    );
+                    out.push((kin_name(url), flowing));
+                }
+                if tx.send(out).is_err() {
+                    break; // UI gone — stop polling
+                }
+            }
+        });
+    }
 
     // Seed the NATS indicator from the initial connect results; the live poll below
     // refreshes it whenever the fleet actually responds.
@@ -1260,6 +1307,11 @@ async fn event_loop(
                         app.brain.wake_frozen(&name);
                         dirty = true;
                     }
+                }
+                // Drain kin liveness polls — the field's outermost ring.
+                while let Ok(kin) = kin_rx.try_recv() {
+                    app.brain.set_kin(&kin);
+                    dirty = true;
                 }
                 // Drain current-awareness pulse reports: fresh world knowledge
                 // just landed in the soil — flare Context, tell the human.
@@ -3718,6 +3770,14 @@ mod tests {
         assert!(app.notice.is_some());
         let a2 = handle_key(&mut app, KeyEvent::new(KeyCode::Char('c'), ctrl));
         assert!(matches!(a2, Action::Quit));
+    }
+
+    #[test]
+    fn kin_name_takes_the_hosts_first_label() {
+        assert_eq!(kin_name("https://riva.vaked.dev/"), "riva");
+        assert_eq!(kin_name("http://garden.vaked.dev"), "garden");
+        assert_eq!(kin_name("https://solo/"), "solo");
+        assert_eq!(kin_name("nonsense"), "nonsense", "fallback is honest");
     }
 
     #[test]

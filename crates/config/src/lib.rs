@@ -51,6 +51,36 @@ pub struct Config {
     pub current: CurrentConfig,
     #[serde(default)]
     pub chenno: ChennoConfig,
+    #[serde(default)]
+    pub kin: KinConfig,
+}
+
+/// `[kin]` — the family constellation: sibling nodes of the wider organism
+/// (riva.vaked.dev & co) polled for liveness and rendered as the outermost
+/// ring of the Zen field. Status only — one tiny GET per node per interval,
+/// no auth, no data ingestion. Empty list = ring absent.
+#[derive(Debug, Clone, Deserialize)]
+pub struct KinConfig {
+    /// Status URLs of kin nodes. The display name is the host's first label
+    /// (`https://riva.vaked.dev/` → "riva").
+    #[serde(default)]
+    pub nodes: Vec<String>,
+    /// Seconds between liveness polls. Default 120.
+    #[serde(default = "default_kin_poll_secs")]
+    pub poll_secs: u64,
+}
+
+impl Default for KinConfig {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            poll_secs: default_kin_poll_secs(),
+        }
+    }
+}
+
+fn default_kin_poll_secs() -> u64 {
+    120
 }
 
 /// `[chenno]` — the call home: on `/freeze`, entheai publishes the checkpoint
