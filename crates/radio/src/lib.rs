@@ -1,8 +1,15 @@
-//! In-TUI procedural music: one bundled track — "Standing-Onde" by
-//! 8bit-Wraith (<https://soundcloud.com/8bit-wraith/standing-onde>), embedded
-//! at compile time and looped through the default output device with
-//! `rodio`. No network fetch, no external tool, no user-supplied URL or
-//! local-file seed — this is the entheai radio, nothing else.
+//! In-TUI procedural music: two stations, zero fetches.
+//!
+//!   * **"Standing-Onde" — 8bit-Wraith**
+//!     (<https://soundcloud.com/8bit-wraith/standing-onde>): the bundled
+//!     heartbeat, embedded at compile time and looped.
+//!   * **"Mirror in F — Fable's seed"** ([`mirror`]): an infinite,
+//!     deterministic tintinnabuli piece synthesized sample-by-sample from the
+//!     seed `b"FABLE"` — the style is the seed; nothing is fetched or stored.
+//!
+//! `Next` (Ctrl-N / `/radio next`) switches stations. No network fetch, no
+//! external tool, no user-supplied URL or local-file seed — this is the
+//! entheai radio, nothing else.
 //!
 //! Architecture: [`Radio::spawn`] starts one dedicated OS thread that owns the
 //! audio stack (`rodio::OutputStream` is `!Send`, so it can never live on a
@@ -22,20 +29,42 @@ use std::time::Duration;
 
 use tokio::sync::mpsc as tokio_mpsc;
 
-/// The one track this radio ever plays, embedded at compile time so playback
-/// needs no network access, no cache directory, and no external tool.
+pub mod mirror;
+pub use mirror::{MirrorInF, FABLE_SEED};
+
+/// The bundled track, embedded at compile time so playback needs no network
+/// access, no cache directory, and no external tool.
 #[cfg(feature = "audio")]
 const TRACK_BYTES: &[u8] = include_bytes!("../assets/standing-onde.mp3");
-#[cfg(feature = "audio")]
 const TRACK_TITLE: &str = "Standing-Onde — 8bit-Wraith";
+/// The procedural station's title (see [`mirror`]).
+pub const MIRROR_TITLE: &str = "Mirror in F — Fable's seed (tintinnabuli)";
+
+/// Which station the player is tuned to. `Next` cycles.
+#[cfg(feature = "audio")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Station {
+    StandingOnde,
+    MirrorInF,
+}
+
+#[cfg(feature = "audio")]
+impl Station {
+    fn next(self) -> Station {
+        match self {
+            Station::StandingOnde => Station::MirrorInF,
+            Station::MirrorInF => Station::StandingOnde,
+        }
+    }
+}
 
 /// Control messages from the UI to the player thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     /// Toggle pause/resume of playback.
     TogglePause,
-    /// Restart the track from the beginning; also re-enables the loop if a
-    /// prior `Stop` had disabled it.
+    /// Switch to the next station and start it from the top; also re-enables
+    /// playback if a prior `Stop` had disabled it.
     Next,
     /// Stop playback; the loop won't restart until `Next` is sent again.
     Stop,
@@ -119,6 +148,8 @@ impl Drop for Radio {
 struct Player {
     /// Audio device + sink, opened lazily on first play.
     audio: Option<(rodio::OutputStream, rodio::Sink)>,
+    /// Which station `restart` tunes to.
+    station: Station,
     /// Whether the loop should (re)start when the current playthrough ends.
     enabled: bool,
     /// Whether a playthrough is currently loaded into the sink.
@@ -164,23 +195,36 @@ impl Player {
         self.restart();
     }
 
-    /// Decode the embedded track from scratch and start it playing.
+    /// Start the tuned station from the top: decode the embedded track, or
+    /// spin up the infinite tintinnabuli generator (which never ends, so
+    /// `advance` simply never sees an empty sink on that station).
     fn restart(&mut self) {
-        let source = match rodio::Decoder::new(Cursor::new(TRACK_BYTES)) {
-            Ok(s) => s,
-            Err(e) => {
-                self.emit(Event::Error(format!("decode embedded track: {e}")));
-                return;
-            }
-        };
         self.loop_count += 1;
+        let title = match self.station {
+            Station::StandingOnde => TRACK_TITLE,
+            Station::MirrorInF => MIRROR_TITLE,
+        };
+        // Resolve the source before borrowing the sink (decode can fail).
+        let decoded = match self.station {
+            Station::StandingOnde => match rodio::Decoder::new(Cursor::new(TRACK_BYTES)) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    self.emit(Event::Error(format!("decode embedded track: {e}")));
+                    return;
+                }
+            },
+            Station::MirrorInF => None,
+        };
         if let Some(sink) = self.sink() {
             sink.stop();
-            sink.append(source);
+            match decoded {
+                Some(source) => sink.append(source),
+                None => sink.append(MirrorInF::new(FABLE_SEED)),
+            }
             sink.play();
             self.playing = true;
             self.emit(Event::NowPlaying {
-                title: TRACK_TITLE.to_string(),
+                title: title.to_string(),
                 loop_count: self.loop_count,
             });
         }
@@ -200,6 +244,7 @@ impl Player {
                 }
             }
             Command::Next => {
+                self.station = self.station.next();
                 self.enabled = true;
                 self.playing = false;
                 self.restart();
@@ -222,7 +267,8 @@ impl Player {
 fn player_thread(rx: std_mpsc::Receiver<Command>, events: tokio_mpsc::UnboundedSender<Event>) {
     let mut p = Player {
         audio: None,
-        enabled: true, // Default to procedural playback out-of-the-box
+        station: Station::StandingOnde, // the heartbeat first; Ctrl-N reaches the mirror
+        enabled: true,                  // playback on out-of-the-box
         playing: false,
         loop_count: 0,
         events,

@@ -1779,13 +1779,13 @@ fn handle_radio_command(app: &mut App, radio: &Radio, text: &str) {
         }
         (Some("next"), None) | (Some("skip"), None) => {
             radio.send(RadioCommand::Next);
-            "♪ restarting Standing-Onde (Ctrl-N)".to_string()
+            "♪ next station (Ctrl-N)".to_string()
         }
         (Some("stop"), None) => {
             radio.send(RadioCommand::Stop);
             "♪ stopping".to_string()
         }
-        _ => "usage: /radio pause | next | stop — entheai radio always plays Standing-Onde by 8bit-Wraith".to_string(),
+        _ => "usage: /radio pause | next | stop — stations: Standing-Onde (8bit-Wraith) · Mirror in F (Fable's seed)".to_string(),
     };
     app.messages.push(Msg {
         role: Role::Tool,
@@ -3212,7 +3212,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/setup", "interactive first-time setup / install wizard"),
     (
         "/radio",
-        "ambient loop (Standing-Onde) — pause · next · stop  (Ctrl-P / Ctrl-N)",
+        "radio — Standing-Onde · Mirror in F — pause · next · stop  (Ctrl-P / Ctrl-N)",
     ),
     ("/speak", "read assistant responses aloud — on · off · stop"),
     (
