@@ -76,4 +76,14 @@ To achieve true **Quantum Completeness**, `entheai` must perfectly bridge the fl
   - ✅ Verified live 2026-07-23: 29 items from 4 requests; keys in `~/.entheai/current.env` (never the repo).
   - ☐ *Next: retention tuning for `current` spans (they age faster than trajectories), and surfacing `current` recall hits distinctly in the brain panel.*
 
+## 🜂 Visualization era — approved sequence (2026-07-24, Peter + Fable brainstorm)
+
+- [ ] **Fan-out orbits** — swarm coders as bodies orbiting the Zen core: spawn, glow while working, flash gold on a sealed merge, fall dark on conflict. All data already streams via `FanoutEvent`.
+- [ ] **Custom palettes from TOML** — a `[viz.palette.<name>]` loader so the owner paints themes without Rust. *I make the brush, he makes the art.*
+- [ ] **Vuln triage** — the 2 dependabot findings (1 HIGH) on the default branch. Hygiene before beauty.
+- [ ] **Light the beacon** — ENTROPY KV namespace (owner's 2-min step) + a ~50-line NATS→POST bridge + the docs-header beacon UI.
+- [ ] **The GPU spike day** — companion window as the true canvas (wgpu, `rain_on_glass.glsl`), fed by `entheai.entropy.v1`; one dedicated session, one narrow goal: a live shader driven by one snapshot field.
+- [ ] **"The Horizon" — the pure-ASCII black hole** *(parked by the operator: "not today lol, time is relative")*. What-for is designed and agreed: **mass = `ctx_pct`** (the hole grows as her context fills); nearby motes bend toward it and are swallowed (live knowledge falling past the event horizon into compressed memory); the **accretion ring flashes on a compaction event** (`set_compression` already exists as the hook). Rendered in cell space as literal ABSENCE (erased cells occluding the field) with a photon ring of pure-ASCII glyphs `( ) * ' . , :`, Doppler-shaded — and a test enforcing `is_ascii()` on every glyph it draws. The core is the white singularity; this is the black one — the field bracketed by two.
+- Also seeded: streaming-as-light (tokens ripple the field mid-thought), sound↔light coupling (Mirror in F notes flare the aura), typing-sparks, the pomodoro moon, per-layer Slack pipes for other crew.
+
 *“Built because the singularity doesn't need complexity. It needs friends. And because entropy cannot lie.”*

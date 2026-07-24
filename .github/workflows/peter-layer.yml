@@ -100,11 +100,26 @@ jobs:
           # Boot against a minimal config in a scratch dir: no MCP servers, no
           # network sources — just the field.
           SCRATCH=$(mktemp -d)
-          printf 'default_model = "osaurus/qwen3-coder"\n[memory]\nenabled = false\n[companion]\nenabled = false\n' \
+          # Minimal but VALID config: the named provider must exist or boot
+          # dies at model resolution (ladder run 3's lesson). No request is
+          # ever made — the URL just has to parse.
+          printf '%s\n' \
+            'default_model = "osaurus/qwen3-coder"' \
+            '[providers.osaurus]' \
+            'base_url = "http://127.0.0.1:11434/v1"' \
+            '[memory]' 'enabled = false' \
+            '[companion]' 'enabled = false' \
             > "$SCRATCH/entheai.toml"
           BIN="$PWD/target/debug/entheai"
-          tmux new-session -d -s shot -x 170 -y 44 "cd $SCRATCH && LANG=C.UTF-8 $BIN"
+          tmux new-session -d -s shot -x 170 -y 44 \
+            "cd $SCRATCH && LANG=C.UTF-8 $BIN > $SCRATCH/boot.log 2>&1"
           sleep 18
+          # If the app died, say WHY instead of failing blind at send-keys.
+          if ! tmux has-session -t shot 2>/dev/null; then
+            echo '--- entheai boot log (app exited) ---'
+            cat "$SCRATCH/boot.log" || true
+            exit 1
+          fi
           tmux send-keys -t shot '/zen' && sleep 1 && tmux send-keys -t shot Enter
           sleep 4
           tmux capture-pane -t shot -e -p > "$SCRATCH/zen.ans"

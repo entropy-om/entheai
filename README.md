@@ -179,6 +179,49 @@ brew install --cask entropy-om/entheai/entheai
 
 Launch `entheai.app` (first time: right-click -> Open — it's ad-hoc signed), or from a terminal run `entheai --app`. It opens one minimalist Ghostty window — hidden titlebar, entheai's theme, and an ambient raindrop shader behind the text — running the agent. Your own Ghostty config is untouched.
 
+## Usage guidance — what is a bug, what is an error, what is quantum
+
+`entheai` morphs a fluid entropy field into rigid checkpoints, so not every
+surprise is a defect. Three kinds of surprise, and where each belongs:
+
+### 🐛 A bug — the report and reality disagree
+
+The system claimed something that isn't so, or hid something that is.
+A merge marked `integrated ✓ — seal …` without an empirical verify log; a
+budget ledger spending past its cap; `/thaw` restoring ranks that differ from
+the checkpoint; two runs of the same radio seed walking differently; any
+panic. Bugs violate the root creed (*AHOGY A DOLGOK VANNAK*) — **always file
+an issue**, and paste the honest logs (they exist; that's the point of them).
+
+### ⚠️ An error — the system met a limit and *said so*
+
+`no key: valyu` · `budget exhausted: worldmonitor` · `self-audit skipped
+(<reason>)` · an absent audio device · a missing sidecar degrading cleanly to
+top-K retrieval · the site beacon answering `503` before its KV exists. Errors
+are honest by design: the message names the limit **and the remedy**. An error
+only becomes a bug when it is silent, wrong, or won't recover after the remedy.
+
+### 🜂 Quantum — the fluid phase doing its job
+
+Motes drift and twinkle differently every frame. Model wording varies run to
+run. Frozen-node ranks migrate with experience (`frozen-ranks.json`) — the
+doctrine files never rewritten, the priors alive. Recall shifts as the soil
+grows and prunes. A thawed context holds fewer spans than it froze — pruned,
+and *counted honestly in the header*. The Mirror in F walk is eternal yet
+seeded: deterministic, and still feels alive. None of this is noise; it is
+the design — entropy dancing with structure.
+
+**The dividing line:** where determinism is *promised* — seeds, seals,
+checksums, checkpoints, budgets (see [docs/STABILITY.md](docs/STABILITY.md)) —
+byte-for-byte holds, or it's a bug. Where fluidity is the point, variety with
+honest books is health, not defect.
+
+| you observed | it is | do |
+|---|---|---|
+| a claim that doesn't match reality | **bug** | open an issue with the logs |
+| a loud, named limit | **error** | follow the remedy in the message |
+| fluid variety, honest accounting | **quantum** | enjoy it — `/freeze` it if it was beautiful |
+
 ## Architecture
 
 <p align="center">
