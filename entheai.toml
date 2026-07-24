@@ -28,6 +28,10 @@ api_key_env = "HUGGINGFACE_API_KEY"
 base_url = "https://opencode.ai/zen/v1"
 api_key_env = "OPENCODE_API_KEY"
 
+# Free community node (no API key required) — e.g. --model "vaked/coder"
+[providers.vaked]
+base_url = "https://coder.vaked.dev/v1"
+
 # Local (private) via Osaurus — e.g. --model "osaurus/gemma-4-e2b-it-4bit"
 # See docs/osaurus-setup.md and docs/osaurus-opencode-provider.md.
 [providers.osaurus]

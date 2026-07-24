@@ -95,20 +95,19 @@ Instead of compressing early into lossy vector embeddings (where subtle nuances 
 
 ## Gallery
 
+> Full interactive documentation and capture details available in the [Visualization Gallery](https://entheai.com/docs#gallery).
+
 <p align="center">
   <img src="docs/images/hero-v1-singularity.png" alt="v1.0 Singularity Checkpoint & Fluid Entropy" width="48%">
   <img src="docs/images/quantum-lattice-v1.png" alt="Quantum Brain Neural Lattice Ring" width="48%">
 </p>
 <p align="center">
   <img src="docs/images/federation-swarm-v1.png" alt="Distributed Sub-Agent Swarm Network" width="48%">
-  <img src="docs/images/resonance.png" alt="a glassmorphism prism refracting light in dark obsidian crystal" width="48%">
-</p>
-
-  <img src="docs/images/quantum.png" alt="quantum harmonic wave interference radiating into the void" width="32%">
+  <img src="docs/images/resonance.png" alt="Glassmorphism prism refracting light in dark obsidian crystal" width="48%">
 </p>
 <p align="center">
-  <img src="docs/images/garden.png" alt="a cyber-garden fractal lattice representing digital growth and karma" width="48%">
-  <img src="docs/images/federation.png" alt="a hyper-dimensional distributed node swarm for NATS agent federation" width="48%">
+  <img src="docs/images/garden.png" alt="Cyber-garden fractal lattice representing digital growth and karma" width="48%">
+  <img src="docs/images/federation.png" alt="Hyper-dimensional distributed node swarm for NATS agent federation" width="48%">
 </p>
 
 ## Quick start
@@ -121,33 +120,38 @@ brew trust entropy-om/entheai    # one-time, third-party-tap security gate
 brew install entheai
 ```
 
-Or build from source — requires a recent Rust toolchain and (for local inference) [Osaurus](https://github.com/osaurus-ai/osaurus) on `127.0.0.1:1337`:
+Or build from source — requires a recent Rust toolchain:
 
 ```bash
 git clone https://github.com/entropy-om/entheai.git
 cd entheai && cargo build --release
 ```
 
-Configure a provider + model (`entheai.toml`), then talk to it:
+Configure `entheai.toml` — start out-of-the-box with the free community node on `coder.vaked.dev` (no API key required):
 
 ```bash
 cat > entheai.toml <<'TOML'
+default_model = "vaked/coder"
+
+[providers.vaked]
+base_url = "https://coder.vaked.dev/v1"
+TOML
+
+entheai "Reply with exactly: pong"     # one-shot execution
+entheai                                 # interactive TUI session
+entheai --fanout "add a CONTRIBUTING.md and a .editorconfig"   # parallel fan-out coders
+```
+
+Local models via [Osaurus](https://github.com/osaurus-ai/osaurus) on `127.0.0.1:1337` or cloud gateways like [OpenCode Zen](https://opencode.ai) work seamlessly too:
+
+```toml
+# Local Osaurus node
 default_model = "osaurus/qwen3-coder"
 
 [providers.osaurus]
 base_url = "http://127.0.0.1:1337/v1"
-TOML
 
-entheai "Reply with exactly: pong"     # one-shot
-entheai                                 # interactive TUI
-entheai --fanout "add a CONTRIBUTING.md and a .editorconfig"   # parallel coders
-```
-
-Cloud models work too — point a provider at [OpenCode Zen](https://opencode.ai) (DeepSeek V4 Pro/Flash, Qwen, and more through one key):
-
-```toml
-default_model = "zen/deepseek-v4-pro"
-
+# Cloud gateway (OpenCode Zen)
 [providers.zen]
 base_url = "https://opencode.ai/zen/v1"
 api_key_env = "OPENCODE_API_KEY"
@@ -155,15 +159,31 @@ api_key_env = "OPENCODE_API_KEY"
 
 Run the checks: `./scripts/check.sh` (fmt + clippy `-D warnings` + tests).
 
-### More commands
+### Verification Gate & SHA-256 MergeSeal
+
+`entheai` strictly enforces empirical verification before fan-out branches integrate into main:
+
+- **`verify_required = true` by default**: Sub-agents cannot self-report success. Changed worktrees are subjected to `[fanout].verify` or auto-detected `./scripts/check.sh`.
+- **Unverifiable Protection**: If no test suite or verify script exists, branches remain unmerged on `fed/…` branches for human review (`VerifyStatus::Unverifiable`).
+- **Deterministic `MergeSeal`**: Every merged fan-out branch is sealed with a SHA-256 hash calculated over `sha256(diff)` and `sha256(verify log)`, printed directly in the fan-out summary report.
+
+### More real & runnable commands
 
 ```bash
-entheai --skills add https://docs.stripe.com   # install a skill from the web (.well-known/skills.json -> llms.txt -> page)
+entheai --skills add https://docs.stripe.com   # install skill from web (.well-known/skills.json -> llms.txt)
 entheai --skills list                          # list installed skills
-entheai --skills remove stripe-documentation   # remove one by name
-entheai --memory stats                         # inspect the memory store (also: list / search <namespace> <query...>)
-entheai --doctor                               # install the rain-on-glass shader into your own ~/.config/ghostty/config
+entheai --skills remove stripe-documentation   # remove skill by slug
+entheai --memory stats                         # inspect 5-namespace memory store (also: list / search)
+entheai --app                                  # launch native minimalist Ghostty window with rain shader
+entheai --doctor                               # install rain-on-glass shader to ~/.config/ghostty/config
 ```
+
+In the interactive TUI:
+- `/zen` or `Ctrl-G` — toggle the living field visualization canvas.
+- `/theme` — cycle ambient palettes (`entheia` teal default, `ember` night fire, `verdant` garden, `void` monochrome).
+- `/freeze` / `/thaw` — snapshot session entropy state to `.entheai/checkpoints/` and restore context.
+- `/current` / `/current pulse` — check daily awareness budget & pull live feeds into raw soil.
+- `/radio` / `/speak` — ambient audio loop & OS-native speech output.
 
 **Federation (opt-in).** Set `[nats] enabled = true` in `entheai.toml` (with `NATS_URL` / `NATS_TOKEN` in `.env`) and every `--fanout` run publishes its lifecycle to NATS on `entheai.fanout.<session>.*` for any tailnet subscriber to watch live. Fully fail-safe — disabled or unreachable, runs stay entirely local.
 

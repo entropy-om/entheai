@@ -1,19 +1,34 @@
 ---
 id: tui
-title: "Brain ring & swarm graph"
+title: "Visual TUI & Zen field"
 group: "The visual TUI"
 order: 1
 badgeText: "Visual TUI"
 badgeColor: magenta
 ---
 
-The TUI streams the chat like any terminal agent, plus two always-available live visualizations rendered on a `ratatui` canvas.
+The interactive TUI (`crates/tui`) runs on `ratatui` with responsive canvas rendering:
 
-**Brain panel** — a rotating faculties graph (model / tools / context) with a footer readout (worker count, NATS up/down, context %, compression ratio). Frozen nodes sit on an outer ring and glow when a task's triggers wake them — either reactively (the prompt matched) or proactively (`BrainJudge` judged recent tool activity relevant, even with no matching words in the prompt itself). The graph's rotation speed reacts to whether you're actually at the keyboard — a direct idle-time poll (the same sensor [`rmcp-sensors`](https://github.com/8bit-wraith/rmcp-sensors)' idle tool wraps) slows it as you step away and brings it back to full speed the moment you return, with a floor so it never fully stops.
+## Core Visual Features
 
-**Swarm graph** — appears during `--fanout`: nodes are sub-agents, edges show the fan-out topology, glyphs show per-node status (pending / running / done / failed) as the orchestrator dispatches and merges.
+- **Brain Panel (`/brain`)**: A rotating braille 3D pseudo-graph representing model, tools, context, and fleet node presence. Features direct idle-time sensor polling (slowing rotation when user steps away from keyboard) and frozen node wake glows.
+- **Swarm Graph**: Inline visualization during `--fanout` runs showing sub-agent worktree nodes, execution state, and empirical verification outcome gold flashes.
+- **Zen View (`/zen` or `Ctrl-G`)**: Full-canvas living field with a breathing singularity core (`BrainState::vitality()`), orbiting faculty bodies, frozen constellation ring, current-awareness motes, and dissolving reply motes.
+- **Color Themes (`/theme`)**: Switch ambient palettes between `entheia` (teal), `ember` (night fire), `verdant` (garden), and `void` (monochrome + gold thread). Source identity colors (gold, cyan, green) are machine-validated and invariant across themes.
+- **Pomodoro Timer**: Automatic 25m work / 5m break countdown displayed in status bar.
+- **Modals (`/config` & `/setup`)**: Arrow-key navigable setup wizards for switching models, permission modes, fan-out settings, and themes.
 
-| Command | Action |
+## TUI Command Shortcuts
+
+| Command / Key | Action |
 |---|---|
-| `/brain` | Toggle the brain panel on/off |
-| `/config` | Open the config menu — toggle brain panel, swarm graph, fan-out mode, permission mode, and model from one place |
+| `/zen` or `Ctrl-G` | Toggle full-canvas Zen field |
+| `/theme [name]` | Cycle or set ambient theme (`entheia` / `ember` / `verdant` / `void`) |
+| `/brain` | Toggle brain panel side bar |
+| `/config` | Open interactive configuration modal |
+| `/setup` | Launch first-time setup wizard |
+| `Shift+Tab` | Cycle permission posture (`ask` -> `plan` -> `auto` -> `yolo`) |
+| `/freeze` / `/thaw` | Snapshot session checkpoint / list and restore checkpoints |
+| `/current [pulse]` | Check current-awareness budget status / trigger immediate pulse |
+| `/radio` / `Ctrl-P` / `Ctrl-N` | Ambient radio controls (pause / next station) |
+| `/speak [on|off|stop]` | Assistant text-to-speech output |
