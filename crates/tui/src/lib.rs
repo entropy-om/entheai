@@ -489,7 +489,28 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// The message shown when there's no terminal to draw on. Kept as a constant
+/// so the test asserts on the exact words the human will read.
+const NO_TTY_HELP: &str = "\
+entheai's interface needs a terminal, and this stdout isn't one \
+(piped, redirected, or headless).
+
+What to do:
+  • run it in a terminal:            entheai
+  • or ask one question, no TUI:     entheai \"your prompt here\"
+  • capturing output on purpose?     entheai \"your prompt\" > out.txt
+  • in tmux/CI, give it a real pty:  script -q /dev/null entheai";
+
 fn init_terminal() -> anyhow::Result<Terminal<Backend>> {
+    // Pre-flight: without a TTY, crossterm fails with a bare OS error
+    // ("Device not configured (os error 6)" on macOS, ENOTTY on Linux) that
+    // names neither the limit nor the remedy. Per the project's own doctrine
+    // (README — bug vs error vs quantum) that silence IS the bug; this says
+    // what happened and how to proceed.
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        anyhow::bail!("{NO_TTY_HELP}");
+    }
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -3770,6 +3791,37 @@ mod tests {
         assert!(app.notice.is_some());
         let a2 = handle_key(&mut app, KeyEvent::new(KeyCode::Char('c'), ctrl));
         assert!(matches!(a2, Action::Quit));
+    }
+
+    #[test]
+    fn no_tty_help_names_the_limit_and_the_remedy() {
+        // The project's own doctrine: an error must say what stopped it AND
+        // what to do next. Assert both halves so a future edit can't quietly
+        // reduce this back to a bare OS code.
+        assert!(
+            NO_TTY_HELP.contains("needs a terminal") && NO_TTY_HELP.contains("isn't one"),
+            "the limit must be named in plain words"
+        );
+        for remedy in ["entheai \"your prompt here\"", "script -q /dev/null"] {
+            assert!(
+                NO_TTY_HELP.contains(remedy),
+                "remedy missing from the help: {remedy}"
+            );
+        }
+    }
+
+    #[test]
+    fn init_terminal_refuses_without_a_tty_and_says_why() {
+        // Under `cargo test`, stdout is captured — i.e. exactly the situation
+        // that used to produce "Device not configured (os error 6)".
+        use std::io::IsTerminal;
+        if std::io::stdout().is_terminal() {
+            return; // running attached to a real terminal; nothing to prove
+        }
+        let err = init_terminal().expect_err("must refuse without a tty");
+        let msg = err.to_string();
+        assert!(msg.contains("needs a terminal"), "unhelpful error: {msg}");
+        assert!(!msg.contains("os error"), "raw OS code leaked: {msg}");
     }
 
     #[test]
