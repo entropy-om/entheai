@@ -87,13 +87,21 @@ jobs:
         id: shot
         if: steps.build.outcome == 'success'
         continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # freeze renders ANSI → PNG (single static binary from charm).
-          # Resolve the Linux x86_64 asset via the API — never guess the name.
-          ASSET=$(curl -s https://api.github.com/repos/charmbracelet/freeze/releases/latest \
-            | jq -r '.assets[] | select(.name | test("[Ll]inux.*(x86_64|amd64).*tar.gz$")) | .browser_download_url' | head -1)
-          test -n "$ASSET"
+          # Resolve the Linux x86_64 asset via the API — never guess the name,
+          # and AUTHENTICATE: anonymous calls from shared runner IPs get
+          # rate-limited to a null .assets (ladder run 4's lesson).
+          ASSET=$(curl -s -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            https://api.github.com/repos/charmbracelet/freeze/releases/latest \
+            | jq -r '(.assets // [])[] | select(.name | test("[Ll]inux.*(x86_64|amd64).*tar.gz$")) | .browser_download_url' | head -1)
+          if [ -z "$ASSET" ]; then
+            echo "freeze release asset not resolved (API said no) — screenshot tier ends here."
+            exit 1
+          fi
           mkdir -p /tmp/freeze-dl && curl -sL "$ASSET" | tar xz -C /tmp/freeze-dl
           FREEZE=$(find /tmp/freeze-dl -name freeze -type f | head -1)
           test -x "$FREEZE"
