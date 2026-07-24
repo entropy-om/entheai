@@ -7,48 +7,32 @@ badgeText: "Companion · Radio · Speak"
 badgeColor: teal
 ---
 
-Small extras that run alongside the terminal session: a desktop companion window, an in-TUI music player, and voice output.
+Peripheral integrations that run concurrently with the terminal session:
 
-## Companion
+## 1. Companion Window (`crates/companion`)
 
-A borderless, always-on-top 180×180 window that spawns automatically when the TUI starts. It shows a QR code for pairing a phone to the session over Tailscale, and doubles as a glanceable status light — it glows and pulses differently depending on whether the agent is idle, working, waiting on a permission prompt, or has hit an error. Click it to copy the session URL to your clipboard; it fades out when the session ends.
+A 180×180 px borderless, always-on-top floating window (winit + softbuffer) spawned when `[companion].enabled = true`:
 
-The QR code encodes the session ID, Tailscale MagicDNS hostname, port, and working directory.
+- **QR Code Pairing**: Encodes session ID, Tailscale MagicDNS hostname, port, and working directory for phone/device pairing.
+- **State Telemetry**: Listens on a Unix socket (`$TMPDIR/entheai-<sid>.sock`) for `StateChange` events:
+  - *Idle*: Slow teal pulse (3s cycle)
+  - *Working*: Fast teal pulse (1.5s) + orbiting spinner
+  - *Permission Pending*: Magenta pulse (1s) + "?" glyph
+  - *Error*: Red dim pulse (4s)
+- **Click Action**: Click window to copy `http://<host>.local:9876/session/<sid>` to system clipboard.
+- **CLI Flag**: `entheai --no-companion` disables the window for a session.
 
-```toml
-[companion]
-enabled = true          # spawn on TUI start
-always_on_top = true    # float above other windows
-```
+## 2. Audio Radio (`crates/radio`)
 
-```bash
-# Suppress the companion window for a session
-entheai --no-companion
-```
+Zero-fetch ambient audio generator running through `rodio` on a dedicated thread:
 
-## Radio
+- **Station 1 ("Standing-Onde")**: Bundled track by 8bit-Wraith embedded directly in the binary (`include_bytes!`).
+- **Station 2 ("Mirror in F — Fable's seed")**: Infinite, deterministic Arvo Pärt tintinnabuli generator synthesized sample-by-sample in pure `std` math, seeded by `b"FABLE"`.
+- **Controls**: `/radio pause` (`Ctrl-P`), `/radio next` (`Ctrl-N` — cycles stations), `/radio stop`.
 
-An in-TUI ambient loop of one bundled track — "Standing-Onde" by 8bit-Wraith — embedded in the binary at compile time and played through your speakers (via `rodio`) on a dedicated thread, so audio never blocks the UI. No network fetch, no external tool, nothing to install.
+## 3. OS-Native Speech Output (`crates/tts`)
 
-| Command | Action |
-|---|---|
-| `/radio pause` | Pause/resume playback |
-| `/radio next` | Restart the track from the beginning |
-| `/radio stop` | Stop playback (starts again on `/radio next`) |
+Assistant responses read aloud via native OS TTS synthesizer (`AVSpeechSynthesizer` on macOS):
 
-| Key | Action |
-|---|---|
-| `Ctrl-P` | Toggle pause/resume |
-| `Ctrl-N` | Restart the track |
-
-The now-playing status appears in the status bar (`♪ Standing-Onde — 8bit-Wraith`) and clears on stop.
-
-## Speak
-
-Reads assistant responses aloud through the OS-native TTS engine (AVSpeechSynthesizer/NSSpeechSynthesizer on macOS) — no models, no network fetch. Off by default.
-
-| Command | Action |
-|---|---|
-| `/speak` | Toggle voice output on/off |
-| `/speak on` / `/speak off` | Explicitly enable/disable |
-| `/speak stop` | Interrupt the current utterance |
+- Toggle via `/speak`, `/speak on`, `/speak off`, or interrupt with `/speak stop`.
+- Operates entirely offline with zero network calls or heavy models.

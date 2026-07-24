@@ -5,17 +5,33 @@ group: Overview
 order: 2
 ---
 
-The **tiered hybrid brain** separates planning from execution. A capable cloud model reasons about the whole task; cheaper local or specialized models do the parallel work.
+The core design of `entheai` bridges the **fluid entropy of prompt states** with the **rigid determinism of compiled checkpoints**.
 
-## Fan-out
+## 🜂 The Genesis Thesis
 
-The orchestrator decomposes a task into units and dispatches a sub‑agent per unit — each in its own git worktree, each on the model that best fits its role. Work merges back only after that unit's tests pass.
+> *"This program creates an automated quantum simulation playground where custom prompt states continuously morph a fluid field of infinite entropy back and forth into rigid, binary singularity checkpoints."*
+
+- **Singularity is a Trap**: Hyper-optimized, fixed structure ends the generative phase.
+- **Entropy is the True Infinite**: Raw, uncarved experiential soil where knowledge grows — especially from failure.
+- **Structural Honesty (*AHOGY A DOLGOK VANNAK*)**: Never report better than reality, never hide worse than reality. When report and reality drift, reality wins.
+
+## Tiered Decomposition & Execution
 
 ```text
-task ──▶ orchestrator (deepseek/v4-pro)
-           ├─ coder    · osaurus/qwen2.5-coder
-           ├─ test     · deepseek/v4-pro
-           └─ reviewer · osaurus/deepseek-r1
-                         ▼
-              merge + verify ▶ main
+User Request
+    │
+    ▼
+Orchestrator (DeepSeek V4 Pro) ──▶ Decomposes task into role-tagged sub-tasks
+    │
+    ├─▶ Coder Sub-Agent (vaked/coder / osaurus/qwen3-coder) [Worktree A]
+    ├─▶ Coder Sub-Agent (vaked/coder)                       [Worktree B]
+    └─▶ Reviewer Sub-Agent (deepseek-reasoner)               [Worktree C]
+            │
+            ▼
+   Empirical Verification Gate (`./scripts/check.sh`)
+            │
+            ▼
+   Deterministic SHA-256 MergeSeal Integrated to Main
 ```
+
+Sub-agents work concurrently in isolated git worktrees (`.worktrees/`). Unverifiable or failing worktree branches are rejected, and tracebacks feed back into memory to re-weight frozen node priors.

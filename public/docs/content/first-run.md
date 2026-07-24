@@ -5,11 +5,30 @@ group: "Getting started"
 order: 3
 ---
 
-Ask entheai to summarize your repo. Tokens stream into the terminal as the plan comes back.
+Start using `entheai` out-of-the-box with zero API key configuration by connecting to the free community node on `coder.vaked.dev`:
 
 ```bash
-entheai "summarize this repo"
+# Create an initial entheai.toml
+cat > entheai.toml <<'TOML'
+default_model = "vaked/coder"
+
+[providers.vaked]
+base_url = "https://coder.vaked.dev/v1"
+TOML
+
+# Run a one-shot query
+entheai "summarize this repository"
+
+# Launch the interactive TUI
+entheai
+
+# Run parallel fan-out coders in isolated worktrees
+entheai --fanout "add a CONTRIBUTING.md and .editorconfig"
 ```
 
 > [!NOTE]
-> The first run indexes your codebase into memory. Subsequent runs are faster and more context‑aware.
+> On startup, `entheai` indexes codebase symbols into the `codebase` memory namespace. Subsequent runs retrieve relevant architectural spans instantly before model calls.
+
+## Troubleshooting Startup Limits
+
+- **Headless / No-TTY Execution**: If launched without an interactive terminal (e.g. piped stdout), `entheai` names the limit and remedy: run in an interactive terminal, pass `--prompt "<task>"` for one-shot mode, or wrap execution in a pseudo-terminal (`script -q /dev/null entheai`).
