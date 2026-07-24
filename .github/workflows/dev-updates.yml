@@ -1,0 +1,49 @@
+name: Dev updates
+# Announce every push to main in the dev-updates Slack channel: a short
+# "what shipped" (commit subjects) plus links. Skips honestly — with a log
+# line, never a failure — while the webhook secret is absent, so a missing
+# Slack setup can never break a push.
+#
+# One-time setup (owner):
+#   1. Create the Slack channel (suggested name: #entheai-dev-updates).
+#   2. Add an Incoming Webhook pointed at that channel
+#      (api.slack.com/apps → your app → Incoming Webhooks → Add New Webhook),
+#      then store it:  gh secret set SLACK_WEBHOOK_URL --body '<webhook url>'
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  announce:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - name: Post what shipped
+        env:
+          HOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "SLACK_WEBHOOK_URL not set — skipping announce (setup steps in the workflow header)."
+            exit 0
+          fi
+          count=$(jq -r '.commits | length' "$GITHUB_EVENT_PATH")
+          if [ "$count" = "0" ]; then
+            echo "No commits in this push event (tag/force edge) — nothing shipped, nothing to say."
+            exit 0
+          fi
+          # Up to 5 "• <url|sha7> subject" lines, oldest → newest.
+          lines=$(jq -r '.commits[:5][] | "• <\(.url)|\(.id[0:7])> \(.message | split("\n")[0])"' "$GITHUB_EVENT_PATH")
+          extra=""
+          if [ "$count" -gt 5 ]; then
+            extra=$(printf '\n…and %d more' "$((count - 5))")
+          fi
+          compare=$(jq -r '.compare' "$GITHUB_EVENT_PATH")
+          pusher=$(jq -r '.pusher.name' "$GITHUB_EVENT_PATH")
+          text=$(printf '🜂 *entheai* shipped (push by %s):\n%s%s\n<%s|full diff>' \
+            "$pusher" "$lines" "$extra" "$compare")
+          jq -n --arg text "$text" '{text: $text}' \
+            | curl -sf -X POST -H 'Content-Type: application/json' -d @- "$HOOK"
+          echo "Announced $count commit(s) to Slack."
