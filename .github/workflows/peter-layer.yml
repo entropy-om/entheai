@@ -71,8 +71,31 @@ jobs:
             echo "diffstat<<EOF_D"; echo "${DIFFSTAT:-'(diffstat unavailable for this push range)'}"; echo "EOF_D"
           } >> "$GITHUB_OUTPUT"
 
+      # ── Screenshot tier: OPT-IN (workflow_dispatch), not on every push ──────
+      #
+      # Ladder log — seven runs, each a different real failure, all of them
+      # narrated into the channel rather than hidden:
+      #   1. build   — missing libspeechd (the /speak crate's Linux backend)
+      #   2. build   — missing X headers (the idle sensor's x11 chain)
+      #   3. boot    — CI config named a provider it never defined
+      #   4. tooling — anonymous GitHub API from a shared runner IP → rate
+      #                limited → null .assets → jq iterated over null
+      #   5. boot    — redirecting stdout killed the interface being probed
+      #                (crossterm draws on stdout)
+      #   6. boot    — died silently; dying words went to the vanished pane
+      #   7. boot    — pane-corpse probe WORKED: she renders her full border,
+      #                then APP-EXIT=13 with empty stderr. No process::exit(13)
+      #                exists anywhere in the workspace, and there is no TTY
+      #                guard — so the 13 comes from outside her, in the
+      #                headless container. UNRESOLVED.
+      #
+      # The text tier (which is the point) works and ships on every push. The
+      # picture is a nicety, and seven runs is past its honest value — so it
+      # now runs only when someone deliberately asks (Actions → Run workflow),
+      # with the corpse probe intact for a warm start.
       - name: Build the TUI (screenshot tier)
         id: build
+        if: github.event_name == 'workflow_dispatch'
         continue-on-error: true
         run: |
           # libasound2-dev: rodio/cpal (radio) · libspeechd-dev: tts (/speak) ·
@@ -190,7 +213,9 @@ jobs:
           fi
           NOTE=""
           if [ -z "$SHOT_URL" ]; then
-            if [ "$BUILD_OUTCOME" != "success" ]; then NOTE="📷 screenshot skipped: TUI build failed in CI";
+            if [ "$BUILD_OUTCOME" = "skipped" ] || [ -z "$BUILD_OUTCOME" ]; then
+              NOTE="📷 see it live instead: \`cargo run -p entheai\` → \`/zen\` (CI screenshots are opt-in — Actions → Run workflow)";
+            elif [ "$BUILD_OUTCOME" != "success" ]; then NOTE="📷 screenshot skipped: TUI build failed in CI";
             elif [ "$SHOT_OK" != "true" ]; then NOTE="📷 screenshot skipped: capture/render step failed";
             else NOTE="📷 screenshot skipped: publish step failed"; fi
           fi
