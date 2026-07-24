@@ -21,6 +21,10 @@ const KV_TTL_SECS = 3600;
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.hostname === "gallery.entheai.com" && (url.pathname === "/" || url.pathname === "/gallery")) {
+      url.pathname = "/gallery.html";
+      return env.ASSETS.fetch(new Request(url, request));
+    }
     if (url.pathname === "/api/entropy") {
       return handleEntropy(request, env);
     }

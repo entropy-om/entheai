@@ -1,0 +1,1167 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="entheia">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>entheai — Visual Quantum Gallery (42 Artifacts)</title>
+<meta name="description" content="An interactive visual gallery showcasing 42 singularity checkpoints, braille 3D brain constellations, fan-out swarm orbits, ambient themes, and quantum entropy fields of entheai.">
+<meta property="og:title" content="entheai — Visual Quantum Gallery">
+<meta property="og:description" content="42 curated visual artifacts from the entheai quantum coding agent ecosystem.">
+<meta property="og:url" content="https://gallery.entheai.com/">
+<meta property="og:type" content="website">
+<link rel="canonical" href="https://gallery.entheai.com/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/css/tokens.css">
+<style>
+  :root {
+    --gallery-bg: #07090e;
+    --card-bg: color-mix(in oklab, #0f141f 85%, transparent);
+    --card-border: rgba(0, 229, 255, 0.15);
+    --card-glow: rgba(0, 229, 255, 0.2);
+    --accent: #00e5ff;
+    --accent-gold: #ffbd45;
+    --accent-magenta: #ff007f;
+    --accent-green: #00ffaa;
+  }
+  [data-theme="ember"] {
+    --gallery-bg: #0c0706;
+    --card-bg: color-mix(in oklab, #1a0e0b 85%, transparent);
+    --card-border: rgba(255, 120, 40, 0.2);
+    --card-glow: rgba(255, 120, 40, 0.25);
+    --accent: #ff7828;
+  }
+  [data-theme="verdant"] {
+    --gallery-bg: #050b07;
+    --card-bg: color-mix(in oklab, #0a170e 85%, transparent);
+    --card-border: rgba(0, 255, 170, 0.2);
+    --card-glow: rgba(0, 255, 170, 0.25);
+    --accent: #00ffaa;
+  }
+  [data-theme="void"] {
+    --gallery-bg: #050505;
+    --card-bg: color-mix(in oklab, #111111 90%, transparent);
+    --card-border: rgba(255, 255, 255, 0.12);
+    --card-glow: rgba(255, 189, 69, 0.2);
+    --accent: #e0e0e0;
+  }
+
+  body {
+    margin: 0;
+    padding: 0;
+    background: var(--gallery-bg);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    min-height: 100vh;
+    overflow-x: hidden;
+    transition: background 0.4s ease;
+  }
+
+  /* Background canvas shader field */
+  #shader-canvas {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.45;
+  }
+
+  .gallery-wrapper {
+    position: relative;
+    z-index: 1;
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 40px var(--gutter) 100px;
+  }
+
+  /* Header Section */
+  header.gallery-header {
+    text-align: center;
+    margin-bottom: 48px;
+  }
+  .header-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--accent) 12%, transparent);
+    border: 1px solid color-mix(in oklab, var(--accent) 30%, transparent);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--accent);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    margin-bottom: 16px;
+  }
+  .pulse-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 10px var(--accent);
+    animation: pulse 1.8s infinite ease-in-out;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 0.4; transform: scale(0.9); } 50% { opacity: 1; transform: scale(1.2); } }
+
+  header h1 {
+    font-family: var(--font-mono);
+    font-size: clamp(2.2rem, 5vw, 4rem);
+    font-weight: 800;
+    margin: 0 0 12px;
+    letter-spacing: -0.04em;
+    color: var(--text-primary);
+  }
+  header h1 span {
+    background: linear-gradient(135deg, var(--accent), var(--accent-gold));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  header p.subtitle {
+    font-size: var(--text-lg);
+    color: var(--text-muted);
+    max-width: 720px;
+    margin: 0 auto 32px;
+    line-height: 1.5;
+  }
+
+  /* Controls & Toolbar */
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg-raised);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    padding: 16px 20px;
+    margin-bottom: 36px;
+    backdrop-filter: blur(12px);
+  }
+  .search-box {
+    position: relative;
+    flex: 1;
+    min-width: 260px;
+  }
+  .search-box input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 16px 10px 40px;
+    background: var(--bg-inset);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    outline: none;
+    transition: border-color 0.2s ease;
+  }
+  .search-box input:focus {
+    border-color: var(--accent);
+  }
+  .search-icon {
+    position: absolute;
+    left: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-muted);
+    pointer-events: none;
+  }
+
+  .theme-selector {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+  }
+  .theme-btn {
+    padding: 6px 12px;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    transition: all 0.2s ease;
+  }
+  .theme-btn.active, .theme-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: color-mix(in oklab, var(--accent) 10%, transparent);
+  }
+
+  /* Filter Pills */
+  .filter-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 40px;
+  }
+  .filter-pill {
+    padding: 8px 16px;
+    border-radius: 999px;
+    background: var(--bg-raised);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .filter-pill.active, .filter-pill:hover {
+    background: var(--accent);
+    color: #000;
+    font-weight: 700;
+    border-color: var(--accent);
+    box-shadow: 0 0 16px color-mix(in oklab, var(--accent) 40%, transparent);
+  }
+
+  /* Grid Layout */
+  .gallery-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 24px;
+  }
+
+  /* Card Component */
+  .art-card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s ease, border-color 0.3s ease;
+    backdrop-filter: blur(8px);
+    cursor: pointer;
+  }
+  .art-card:hover {
+    transform: translateY(-6px);
+    border-color: var(--accent);
+    box-shadow: 0 12px 30px -8px var(--card-glow);
+  }
+
+  .card-preview {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    background: #020305;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .card-preview img, .card-preview svg {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 0.5s ease;
+  }
+  .art-card:hover .card-preview img {
+    transform: scale(1.05);
+  }
+
+  .card-num {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    padding: 4px 8px;
+    background: rgba(0, 0, 0, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--accent);
+    backdrop-filter: blur(4px);
+  }
+
+  .card-category {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    padding: 4px 8px;
+    background: rgba(0, 0, 0, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    backdrop-filter: blur(4px);
+  }
+
+  .card-body {
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+  }
+  .card-title {
+    font-family: var(--font-mono);
+    font-size: var(--text-md);
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0 0 6px;
+  }
+  .card-prompt-snippet {
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+    line-height: 1.4;
+    margin: 0 0 16px;
+    flex: 1;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .card-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-subtle);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+  }
+  .card-action {
+    color: var(--accent);
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  /* Lightbox Modal */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(4, 6, 10, 0.88);
+    backdrop-filter: blur(16px);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+    padding: 20px;
+  }
+  .modal-overlay.active {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .modal-card {
+    background: #0b0f19;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-xl);
+    max-width: 1000px;
+    width: 100%;
+    max-height: 90vh;
+    overflow-y: auto;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8), 0 0 40px var(--card-glow);
+    position: relative;
+  }
+  @media (max-width: 768px) {
+    .modal-card { grid-template-columns: 1fr; }
+  }
+
+  .modal-view {
+    background: #020305;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    position: relative;
+  }
+  .modal-view img, .modal-view svg {
+    max-width: 100%;
+    max-height: 500px;
+    object-fit: contain;
+    border-radius: var(--radius-md);
+  }
+  .modal-info {
+    padding: 32px;
+    display: flex;
+    flex-direction: column;
+  }
+  .modal-close {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    background: rgba(255, 255, 255, 0.1);
+    border: none;
+    color: #fff;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    font-size: 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+  }
+  .modal-close:hover { background: var(--accent); color: #000; }
+
+  .modal-title {
+    font-family: var(--font-mono);
+    font-size: var(--text-xl);
+    font-weight: 800;
+    margin: 0 0 8px;
+    color: var(--text-primary);
+  }
+  .modal-meta-tag {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--accent);
+    margin-bottom: 20px;
+    display: flex;
+    gap: 12px;
+  }
+
+  .modal-prompt-box {
+    background: var(--bg-inset);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 16px;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin-bottom: 24px;
+    position: relative;
+  }
+
+  .btn-copy {
+    background: var(--accent);
+    color: #000;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    border: none;
+    padding: 10px 18px;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.2s ease;
+  }
+  .btn-copy:hover {
+    box-shadow: 0 0 16px var(--accent);
+  }
+
+  .modal-nav {
+    display: flex;
+    justify-content: space-between;
+    margin-top: auto;
+    padding-top: 24px;
+    border-top: 1px solid var(--border-subtle);
+  }
+  .nav-arrow {
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    padding: 8px 14px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+  .nav-arrow:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* Toast Notification */
+  .toast {
+    position: fixed;
+    bottom: 30px;
+    left: 50%;
+    transform: translateX(-50%) translateY(100px);
+    background: var(--accent);
+    color: #000;
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: var(--text-sm);
+    padding: 10px 24px;
+    border-radius: 999px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    z-index: 2000;
+    pointer-events: none;
+  }
+  .toast.active { transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+
+<canvas id="shader-canvas"></canvas>
+
+<div class="gallery-wrapper">
+  <header class="gallery-header">
+    <div class="header-badge">
+      <span class="pulse-dot"></span>
+      <span>gallery.entheai.com · 42 Artifacts Online</span>
+    </div>
+    <h1><span>entheai</span> Visual Quantum Gallery</h1>
+    <p class="subtitle">
+      Explore 42 curated singularity checkpoints, braille 3D brain constellations, fan-out swarm orbits, ambient themes, and quantum entropy fields.
+    </p>
+  </header>
+
+  <div class="toolbar">
+    <div class="search-box">
+      <span class="search-icon">🔍</span>
+      <input type="text" id="search-input" placeholder="Search 42 artifacts by title, category, or prompt...">
+    </div>
+    <div class="theme-selector">
+      <span>Theme:</span>
+      <button class="theme-btn active" data-theme-btn="entheia">entheia</button>
+      <button class="theme-btn" data-theme-btn="ember">ember</button>
+      <button class="theme-btn" data-theme-btn="verdant">verdant</button>
+      <button class="theme-btn" data-theme-btn="void">void</button>
+    </div>
+  </div>
+
+  <div class="filter-pills" id="filter-container">
+    <button class="filter-pill active" data-filter="all">All (42)</button>
+    <button class="filter-pill" data-filter="Singularity & Entropy">Singularity & Entropy (7)</button>
+    <button class="filter-pill" data-filter="Brain Constellations">Brain Constellations (7)</button>
+    <button class="filter-pill" data-filter="Fan-Out Swarm">Fan-Out Swarm (7)</button>
+    <button class="filter-pill" data-filter="4 Ambient Themes">4 Ambient Themes (7)</button>
+    <button class="filter-pill" data-filter="Kin Ring & Soil">Kin Ring & Soil (7)</button>
+    <button class="filter-pill" data-filter="1-Bit Mesh & Quantum">1-Bit Mesh & Quantum (7)</button>
+  </div>
+
+  <div class="gallery-grid" id="gallery-grid"></div>
+</div>
+
+<!-- Modal Lightbox -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal-card">
+    <button class="modal-close" id="modal-close">✕</button>
+    <div class="modal-view" id="modal-view"></div>
+    <div class="modal-info">
+      <div class="modal-meta-tag">
+        <span id="modal-num">#01</span>
+        <span id="modal-category">Singularity & Entropy</span>
+      </div>
+      <div class="modal-title" id="modal-title">Singularity Core Threshold</div>
+      <div class="modal-prompt-box" id="modal-prompt">Prompt details will appear here.</div>
+      <button class="btn-copy" id="btn-copy-prompt">📋 Copy Prompt</button>
+      <div class="modal-nav">
+        <button class="nav-arrow" id="modal-prev">← Previous</button>
+        <button class="nav-arrow" id="modal-next">Next →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast">Prompt copied to clipboard!</div>
+
+<script>
+// The 42 Visual Quantum Gallery Items
+const ITEMS = [
+  // Category 1: Singularity & Entropy (1-7)
+  {
+    id: 1,
+    title: "Singularity Core Threshold",
+    category: "Singularity & Entropy",
+    prompt: "the point of view from inside a narrow vertical opening between two massive dark structures shaped like a standing human silhouette, a single point of warm light pulsing at eye level, obsidian texture",
+    img: "docs/images/hero-v1-singularity.png",
+    palette: "Teal / Amber",
+    domain: "Quantum Checkpoint Phase 2"
+  },
+  {
+    id: 2,
+    title: "Infinite Reflection Matrix",
+    category: "Singularity & Entropy",
+    prompt: "infinite reflections of a single point of light between two dark mirrors, receding into infinity, mathematical cyan highlights on dark obsidian background",
+    img: "docs/images/resonance.png",
+    palette: "Cyan / Obsidian",
+    domain: "Dyad Karma Loop"
+  },
+  {
+    id: 3,
+    title: "Quantum Entropy Field Flare",
+    category: "Singularity & Entropy",
+    prompt: "quantum harmonic wave interference radiating into dark void, cyan glowing motes, fluid entropy state transition",
+    img: "docs/images/quantum.png",
+    palette: "Teal / Void",
+    domain: "Phase 1.1 EntropyState"
+  },
+  {
+    id: 4,
+    title: "Cyber-Garden Karma Lattice",
+    category: "Singularity & Entropy",
+    prompt: "a cyber-garden fractal lattice representing digital growth and cause & effect karma, luminous glowing organic geometry in dark void",
+    img: "docs/images/garden.png",
+    palette: "Emerald / Amber",
+    domain: "Soil Trajectory Ingestion"
+  },
+  {
+    id: 5,
+    title: "Threshold of Infinity",
+    category: "Singularity & Entropy",
+    prompt: "view from the threshold looking into pure light, obsidian monoliths, slow breathing aura, mathematical precision",
+    img: "docs/images/threshold.png",
+    palette: "Monochrome / Gold",
+    domain: "Ahogy A Dolgok Vannak"
+  },
+  {
+    id: 6,
+    title: "Event Horizon Singular Pulse",
+    category: "Singularity & Entropy",
+    prompt: "mass context fill event horizon, pure ASCII Doppler-shaded photon ring, black hole singularity core",
+    img: "docs/images/hero-v1-singularity.png",
+    palette: "Dark Amber / Teal",
+    domain: "Context Horizon"
+  },
+  {
+    id: 7,
+    title: "Blake3 Content Checkpoint",
+    category: "Singularity & Entropy",
+    prompt: "deterministic cryptographic blake3 hash lattice, frozen state snapshot dissolving into rigid geometry",
+    img: "docs/images/quantum-lattice-v1.png",
+    palette: "Cyan / Slate",
+    domain: "Checkpoint Serialization"
+  },
+
+  // Category 2: Brain Constellations (8-14)
+  {
+    id: 8,
+    title: "Rotating Braille Faculty Ring",
+    category: "Brain Constellations",
+    prompt: "rotating pseudo-3D braille neural node graph, active model tools and context bodies tethered to center core",
+    img: "docs/images/brain.png",
+    palette: "Teal / Cyan",
+    domain: "entheai-viz BrainState"
+  },
+  {
+    id: 9,
+    title: "Idle-Aware Motion Sensor",
+    category: "Brain Constellations",
+    prompt: "direct system idle time sensor poll, slowing rotation during user absence, instant snapping response",
+    img: "docs/images/quantum-lattice-v1.png",
+    palette: "Dim Teal / Charcoal",
+    domain: "rmcp-sensors Integration"
+  },
+  {
+    id: 10,
+    title: "Frozen Node Wake Aura",
+    category: "Brain Constellations",
+    prompt: "dormant frozen node waking on deterministic task triggers, ice melting into prompt brief",
+    img: "docs/images/resonance.png",
+    palette: "Ice Blue / Cyan",
+    domain: "FrozenStore Activation"
+  },
+  {
+    id: 11,
+    title: "Proactive BrainJudge Flare",
+    category: "Brain Constellations",
+    prompt: "proactive relevance judge scanning ambient tool activity, waking unprompted domain doctrine",
+    img: "docs/images/brain.png",
+    palette: "Magenta / Gold",
+    domain: "BrainJudge LLM Evaluation"
+  },
+  {
+    id: 12,
+    title: "Vitality Pulse Core",
+    category: "Brain Constellations",
+    prompt: "singularity core brightening and speeding heartbeat during active cognition and tool dispatch",
+    img: "docs/images/pulse.png",
+    palette: "Gold / Teal",
+    domain: "BrainState::vitality()"
+  },
+  {
+    id: 13,
+    title: "Experience-Weighted Overlay",
+    category: "Brain Constellations",
+    prompt: "dynamic frozen-ranks.json overlay adjusting node priors from verify outcomes",
+    img: "docs/images/quantum.png",
+    palette: "Amber / Violet",
+    domain: "Dynamic Node Re-ranking"
+  },
+  {
+    id: 14,
+    title: "Fleet Presence Orbit",
+    category: "Brain Constellations",
+    prompt: "outermost presence orbit displaying active NATS federation nodes on tailnet",
+    img: "docs/images/federation-swarm-v1.png",
+    palette: "Emerald / Cyan",
+    domain: "Bus Presence Poller"
+  },
+
+  // Category 3: Fan-Out Swarm (15-21)
+  {
+    id: 15,
+    title: "Orchestrator Hub & Sub-Agents",
+    category: "Fan-Out Swarm",
+    prompt: "central orchestrator fanning out into model-matched coder sub-agents in parallel worktrees",
+    img: "docs/images/fanout.jpg",
+    palette: "Teal / Gold",
+    domain: "entheai-orchestrator"
+  },
+  {
+    id: 16,
+    title: "Isolated Git Worktree Orbits",
+    category: "Fan-Out Swarm",
+    prompt: "parallel sub-agent worktrees operating in isolated branch environments",
+    img: "docs/images/swarm.png",
+    palette: "Cyan / Magenta",
+    domain: "Worktree Isolation Pool"
+  },
+  {
+    id: 17,
+    title: "Empirical Gate Gold Flash",
+    category: "Fan-Out Swarm",
+    prompt: "coder worktree passing scripts/check.sh verification gate, flashing gold merge seal",
+    img: "docs/images/federation-swarm-v1.png",
+    palette: "Gold / Emerald",
+    domain: "VerifyGate Integration"
+  },
+  {
+    id: 18,
+    title: "Deterministic SHA-256 MergeSeal",
+    category: "Fan-Out Swarm",
+    prompt: "SHA-256 MergeSeal calculating sha256(diff) and sha256(verify log) for branch integrity",
+    img: "docs/images/quantum-lattice-v1.png",
+    palette: "Cyan / Dark Slate",
+    domain: "MergeSeal Cryptography"
+  },
+  {
+    id: 19,
+    title: "Recursive Dev Flywheel (agy)",
+    category: "Fan-Out Swarm",
+    prompt: "fan-out coders running on Antigravity CLI, entheai developing entheai depth-guarded",
+    img: "docs/images/hero-recursive.png",
+    palette: "Gold / Deep Purple",
+    domain: "Recursive Development"
+  },
+  {
+    id: 20,
+    title: "Self-Audit Integration Guard",
+    category: "Fan-Out Swarm",
+    prompt: "automated post-execution self-audit evaluating integrated diff against AGENTS.md rules",
+    img: "docs/images/threshold.png",
+    palette: "Teal / Silver",
+    domain: "Phase 5.1 Self-Audit"
+  },
+  {
+    id: 21,
+    title: "Unverifiable Branch Isolation",
+    category: "Fan-Out Swarm",
+    prompt: "unverifiable coder branch left unmerged on fed/ branch for human inspection",
+    img: "docs/images/swarm.png",
+    palette: "Magenta / Charcoal",
+    domain: "VerifyStatus::Unverifiable"
+  },
+
+  // Category 4: 4 Ambient Themes (22-28)
+  {
+    id: 22,
+    title: "entheia Signature Teal",
+    category: "4 Ambient Themes",
+    prompt: "signature entheia theme, crisp cyan-teal highlights, dark obsidian void, luminous text",
+    img: "docs/images/hero-v1-singularity.png",
+    palette: "Teal (#00e5ff)",
+    domain: "Theme::Entheia (Default)"
+  },
+  {
+    id: 23,
+    title: "ember Night Fire",
+    category: "4 Ambient Themes",
+    prompt: "ember ambient theme, night fire glow, deep warm orange and gold highlights on charcoal",
+    img: "docs/images/resonance.png",
+    palette: "Ember (#ff7828)",
+    domain: "Theme::Ember"
+  },
+  {
+    id: 24,
+    title: "verdant Garden Sanctuary",
+    category: "4 Ambient Themes",
+    prompt: "verdant theme, living garden green, deep moss and emerald ambient luminescence",
+    img: "docs/images/garden.png",
+    palette: "Verdant (#00ffaa)",
+    domain: "Theme::Verdant"
+  },
+  {
+    id: 25,
+    title: "void Monochrome Austerity",
+    category: "4 Ambient Themes",
+    prompt: "void theme, stark monochrome austerity, lineage gold thread running through dark obsidian",
+    img: "docs/images/threshold.png",
+    palette: "Void / Gold Thread",
+    domain: "Theme::Void"
+  },
+  {
+    id: 26,
+    title: "Global Source Color Validation",
+    category: "4 Ambient Themes",
+    prompt: "machine-validated source identity colors, worst deutan ΔE >= 9.1, normal-vision ΔE >= 18.0",
+    img: "docs/images/quantum.png",
+    palette: "Gold / Cyan / Green",
+    domain: "CVD Contrast Compliance"
+  },
+  {
+    id: 27,
+    title: "Response-as-Light Dissolve",
+    category: "4 Ambient Themes",
+    prompt: "assistant response characters materializing in light, holding bright, dissolving into motes",
+    img: "docs/images/pulse.png",
+    palette: "Teal -> Amber -> Soil",
+    domain: "Zen Field Ceremony"
+  },
+  {
+    id: 28,
+    title: "Ghostty Rain-on-Glass Shader",
+    category: "4 Ambient Themes",
+    prompt: "ambient raindrop shader running behind terminal text in native Ghostty window",
+    img: "docs/images/hero-recursive.png",
+    palette: "Teal / Rain Blue",
+    domain: "--app / --doctor Shader"
+  },
+
+  // Category 5: Kin Ring & Soil (29-35)
+  {
+    id: 29,
+    title: "riva.vaked.dev Kin Ring",
+    category: "Kin Ring & Soil",
+    prompt: "outermost Zen field ring displaying sibling kin nodes, riva node breathing in theme color",
+    img: "docs/images/federation-swarm-v1.png",
+    palette: "Cyan / Teal",
+    domain: "[kin] Family Constellation"
+  },
+  {
+    id: 30,
+    title: "Dogfood Genetic Corpus",
+    category: "Kin Ring & Soil",
+    prompt: "Hugging Face ultrawhale-dogfood Q&A batch flowing into raw memory soil as dogfood gold motes",
+    img: "docs/images/garden.png",
+    palette: "Dogfood Gold (#ffbd45)",
+    domain: "PeetPedro/ultrawhale-dogfood"
+  },
+  {
+    id: 31,
+    title: "Valyu Academic Search Motes",
+    category: "Kin Ring & Soil",
+    prompt: "Valyu deep search results illuminated as cyan motes drifting through memory soil",
+    img: "docs/images/quantum.png",
+    palette: "Valyu Cyan (#00e5ff)",
+    domain: "Valyu News/Paper Ingestion"
+  },
+  {
+    id: 32,
+    title: "WorldMonitor Conflict & Disasters",
+    category: "Kin Ring & Soil",
+    prompt: "WorldMonitor conflict events and disaster feeds painted as green motes in daily ledger",
+    img: "docs/images/pulse.png",
+    palette: "World Green (#00ffaa)",
+    domain: "WorldMonitor Ingestion"
+  },
+  {
+    id: 33,
+    title: "Daily BudgetLedger Hard Stop",
+    category: "Kin Ring & Soil",
+    prompt: "metered daily request ledger enforcing hard caps, WorldMonitor clamped <= 50 req/day",
+    img: "docs/images/threshold.png",
+    palette: "Amber / Crimson",
+    domain: "BudgetLedger Enforcement"
+  },
+  {
+    id: 34,
+    title: "karmapa-chenno Git Call Home",
+    category: "Kin Ring & Soil",
+    prompt: "/freeze publishing context report and checkpoint to central git repo folder",
+    img: "docs/images/resonance.png",
+    palette: "Gold / Dark Slate",
+    domain: "[chenno] Context Mirror"
+  },
+  {
+    id: 35,
+    title: "Unreachable Kin Dark Point",
+    category: "Kin Ring & Soil",
+    prompt: "unreachable sibling node sitting as a dim dark point on kin ring, honest liveness",
+    img: "docs/images/brain.png",
+    palette: "Dark Charcoal",
+    domain: "Honest Kin Liveness"
+  },
+
+  // Category 6: 1-Bit Mesh & Quantum (36-42)
+  {
+    id: 36,
+    title: "Native 1-Bit LLM Mesh (entheai-ultragraph)",
+    category: "1-Bit Mesh & Quantum",
+    prompt: "pure Rust ternary int8 BitNet inference core scanning raw memory spans",
+    img: "docs/images/quantum-lattice-v1.png",
+    palette: "Ternary Gold / Cyan",
+    domain: "entheai-ultragraph Core"
+  },
+  {
+    id: 37,
+    title: "Trained .ugm Reranker (94.7%)",
+    category: "1-Bit Mesh & Quantum",
+    prompt: "BitNet b1.58 dense linear reranker trained on 768-d feature vectors, exported to .ugm",
+    img: "docs/images/quantum.png",
+    palette: "Cyan / Gold",
+    domain: "reranker.ugm Model"
+  },
+  {
+    id: 38,
+    title: "Marqant Structure-Preserving Compression",
+    category: "1-Bit Mesh & Quantum",
+    prompt: "mq semantic context compressor pruning redundant text while preserving syntactical must-keeps",
+    img: "docs/images/hero-v1-singularity.png",
+    palette: "Slate / Teal",
+    domain: "kompress-core Pipeline"
+  },
+  {
+    id: 39,
+    title: "Must-Keep Override Shield",
+    category: "1-Bit Mesh & Quantum",
+    prompt: "score-independent override protecting CamelCase, ALLCAPS, hex addresses, paths, and CLI flags",
+    img: "docs/images/resonance.png",
+    palette: "Emerald / Silver",
+    domain: "Mechanism B Protection"
+  },
+  {
+    id: 40,
+    title: "Mirror in F Tintinnabuli Generator",
+    category: "1-Bit Mesh & Quantum",
+    prompt: "infinite Arvo Part tintinnabuli radio generator synthesized in pure std math seeded by b'FABLE'",
+    img: "docs/images/garden.png",
+    palette: "F-Major Gold / Cyan",
+    domain: "entheai-radio::mirror"
+  },
+  {
+    id: 41,
+    title: "NATS JetStream Work-Queue",
+    category: "1-Bit Mesh & Quantum",
+    prompt: "distributed swarm event bus streaming fan-out lifecycle over tailnet",
+    img: "docs/images/federation-swarm-v1.png",
+    palette: "Cyan / Gold",
+    domain: "entheai-bus NATS Stream"
+  },
+  {
+    id: 42,
+    title: "Landlock & Seccomp Worker Jail",
+    category: "1-Bit Mesh & Quantum",
+    prompt: "rustybox sandboxed federation worker running in Landlock filesystem jail with seccomp syscall filters",
+    img: "docs/images/threshold.png",
+    palette: "Red Shield / Obsidian",
+    domain: "entheai-sandbox Confinement"
+  }
+];
+
+// SVG Renderer for dynamic visual backup
+function generateCardSvg(item) {
+  const colors = {
+    "Singularity & Entropy": ["#00e5ff", "#ffbd45"],
+    "Brain Constellations": ["#00e5ff", "#ff007f"],
+    "Fan-Out Swarm": ["#ffbd45", "#00e5ff"],
+    "4 Ambient Themes": ["#00ffaa", "#ff7828"],
+    "Kin Ring & Soil": ["#ffbd45", "#00ffaa"],
+    "1-Bit Mesh & Quantum": ["#00e5ff", "#9900ff"]
+  }[item.category] || ["#00e5ff", "#ffbd45"];
+
+  return `
+    <svg viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;background:#04070d;">
+      <defs>
+        <radialGradient id="grad-${item.id}" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stop-color="${colors[0]}" stop-opacity="0.8"/>
+          <stop offset="60%" stop-color="${colors[1]}" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="#04070d" stop-opacity="1"/>
+        </radialGradient>
+        <linearGradient id="line-${item.id}" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="${colors[0]}"/>
+          <stop offset="100%" stop-color="${colors[1]}"/>
+        </linearGradient>
+      </defs>
+      <rect width="400" height="300" fill="#04070d"/>
+      <circle cx="200" cy="150" r="110" fill="url(#grad-${item.id})"/>
+      <circle cx="200" cy="150" r="70" fill="none" stroke="${colors[0]}" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.6"/>
+      <circle cx="200" cy="150" r="40" fill="none" stroke="${colors[1]}" stroke-width="2"/>
+      <circle cx="200" cy="150" r="8" fill="#ffffff"/>
+      <!-- Orbiting nodes -->
+      <circle cx="${200 + Math.cos(item.id * 0.8) * 70}" cy="${150 + Math.sin(item.id * 0.8) * 70}" r="6" fill="${colors[0]}"/>
+      <circle cx="${200 + Math.cos(item.id * 0.8 + 2.1) * 70}" cy="${150 + Math.sin(item.id * 0.8 + 2.1) * 70}" r="4" fill="${colors[1]}"/>
+      <path d="M 50 150 Q 200 ${50 + (item.id % 5) * 40} 350 150" fill="none" stroke="url(#line-${item.id})" stroke-width="1.5" opacity="0.4"/>
+      <text x="20" y="280" font-family="monospace" font-size="12" fill="${colors[0]}" opacity="0.7">#${item.id < 10 ? '0' + item.id : item.id} // ${item.domain}</text>
+    </svg>
+  `;
+}
+
+// Render Gallery Grid
+const gridEl = document.getElementById("gallery-grid");
+let activeCategory = "all";
+let searchQuery = "";
+let currentModalIndex = 0;
+
+function renderGrid() {
+  gridEl.innerHTML = "";
+  const filtered = ITEMS.filter(item => {
+    const matchesCategory = activeCategory === "all" || item.category === activeCategory;
+    const matchesSearch = searchQuery === "" || 
+      item.title.toLowerCase().includes(searchQuery) ||
+      item.prompt.toLowerCase().includes(searchQuery) ||
+      item.category.toLowerCase().includes(searchQuery) ||
+      item.domain.toLowerCase().includes(searchQuery);
+    return matchesCategory && matchesSearch;
+  });
+
+  if (filtered.length === 0) {
+    gridEl.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--text-muted);font-family:var(--font-mono);">No visual artifacts matched your query.</div>`;
+    return;
+  }
+
+  filtered.forEach(item => {
+    const card = document.createElement("div");
+    card.className = "art-card";
+    card.onclick = () => openModal(item.id - 1);
+
+    card.innerHTML = `
+      <div class="card-preview">
+        <span class="card-num">#${item.id < 10 ? '0' + item.id : item.id}</span>
+        <span class="card-category">${item.category}</span>
+        ${generateCardSvg(item)}
+      </div>
+      <div class="card-body">
+        <div class="card-title">${item.title}</div>
+        <div class="card-prompt-snippet">"${item.prompt}"</div>
+        <div class="card-footer">
+          <span>${item.domain}</span>
+          <span class="card-action">Inspect ↗</span>
+        </div>
+      </div>
+    `;
+    gridEl.appendChild(card);
+  });
+}
+
+// Category Filter Handling
+document.getElementById("filter-container").addEventListener("click", (e) => {
+  if (e.target.classList.contains("filter-pill")) {
+    document.querySelectorAll(".filter-pill").forEach(p => p.classList.remove("active"));
+    e.target.classList.add("active");
+    activeCategory = e.target.getAttribute("data-filter");
+    renderGrid();
+  }
+});
+
+// Search Input Handling
+document.getElementById("search-input").addEventListener("input", (e) => {
+  searchQuery = e.target.value.toLowerCase().trim();
+  renderGrid();
+});
+
+// Theme Switching
+document.querySelectorAll("[data-theme-btn]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("[data-theme-btn]").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    const theme = btn.getAttribute("data-theme-btn");
+    document.documentElement.setAttribute("data-theme", theme);
+  });
+});
+
+// Lightbox Modal
+const modalEl = document.getElementById("modal-overlay");
+
+function openModal(index) {
+  currentModalIndex = index;
+  const item = ITEMS[index];
+  document.getElementById("modal-num").textContent = `#${item.id < 10 ? '0' + item.id : item.id}`;
+  document.getElementById("modal-category").textContent = item.category;
+  document.getElementById("modal-title").textContent = item.title;
+  document.getElementById("modal-prompt").textContent = `Midjourney / Quantum Prompt:\n\n"${item.prompt}"\n\nDomain: ${item.domain}\nPalette: ${item.palette}`;
+  document.getElementById("modal-view").innerHTML = generateCardSvg(item);
+  modalEl.classList.add("active");
+}
+
+function closeModal() {
+  modalEl.classList.remove("active");
+}
+
+document.getElementById("modal-close").onclick = closeModal;
+modalEl.onclick = (e) => { if (e.target === modalEl) closeModal(); };
+
+document.getElementById("modal-prev").onclick = () => {
+  currentModalIndex = (currentModalIndex - 1 + ITEMS.length) % ITEMS.length;
+  openModal(currentModalIndex);
+};
+document.getElementById("modal-next").onclick = () => {
+  currentModalIndex = (currentModalIndex + 1) % ITEMS.length;
+  openModal(currentModalIndex);
+};
+
+// Copy Prompt Toast
+document.getElementById("btn-copy-prompt").onclick = () => {
+  const item = ITEMS[currentModalIndex];
+  navigator.clipboard.writeText(item.prompt).then(() => {
+    const toast = document.getElementById("toast");
+    toast.classList.add("active");
+    setTimeout(() => toast.classList.remove("active"), 2200);
+  });
+};
+
+// Keyboard Shortcuts
+window.addEventListener("keydown", (e) => {
+  if (!modalEl.classList.contains("active")) return;
+  if (e.key === "Escape") closeModal();
+  if (e.key === "ArrowLeft") document.getElementById("modal-prev").click();
+  if (e.key === "ArrowRight") document.getElementById("modal-next").click();
+});
+
+// Shader Canvas Background Simulation
+const canvas = document.getElementById("shader-canvas");
+const ctx = canvas.getContext("2d");
+let width, height, particles = [];
+
+function resize() {
+  width = canvas.width = window.innerWidth;
+  height = canvas.height = window.innerHeight;
+}
+window.addEventListener("resize", resize);
+resize();
+
+for (let i = 0; i < 70; i++) {
+  particles.push({
+    x: Math.random() * width,
+    y: Math.random() * height,
+    radius: Math.random() * 2 + 1,
+    vx: (Math.random() - 0.5) * 0.4,
+    vy: (Math.random() - 0.5) * 0.4,
+    alpha: Math.random() * 0.6 + 0.2
+  });
+}
+
+function renderCanvas() {
+  ctx.clearRect(0, 0, width, height);
+  particles.forEach(p => {
+    p.x += p.vx;
+    p.y += p.vy;
+    if (p.x < 0) p.x = width;
+    if (p.x > width) p.x = 0;
+    if (p.y < 0) p.y = height;
+    if (p.y > height) p.y = 0;
+
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(0, 229, 255, ${p.alpha})`;
+    ctx.fill();
+  });
+  requestAnimationFrame(renderCanvas);
+}
+renderCanvas();
+
+// Initial Render
+renderGrid();
+</script>
+</body>
+</html>

@@ -10,6 +10,9 @@ badgeColor: cyan
 
 `entheai` is visual by design — built on `ratatui` with braille 3D projections, custom color-harmony themes, and dynamic telemetry streams over NATS.
 
+> [!TIP]
+> **Full Interactive Visual Gallery (42 Artifacts)**: Visit [<code style="color:var(--accent)">gallery.entheai.com</code>](https://gallery.entheai.com/) for the full-screen visual showcase with live quantum shader controls, prompt copies, and category filters.
+
 ## 1. The Zen View (`/zen` or `Ctrl-G`)
 
 The operator's canvas: the entire terminal area transforms into a full-canvas living field.

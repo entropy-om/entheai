@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
+import worker, {
   handleEntropy,
   SCHEMA,
   KV_KEY,
@@ -86,4 +86,20 @@ test("unbound KV yields 503, other methods 405", async () => {
   const res = await handleEntropy(del, env());
   assert.equal(res.status, 405);
   assert.equal(res.headers.get("allow"), "GET, POST");
+});
+
+test("gallery.entheai.com request routes to /gallery.html", async () => {
+  let fetchedUrl = null;
+  const mockEnv = {
+    ASSETS: {
+      async fetch(req) {
+        fetchedUrl = req.url;
+        return new Response("gallery html", { status: 200 });
+      },
+    },
+  };
+  const req = new Request("https://gallery.entheai.com/");
+  const res = await worker.fetch(req, mockEnv);
+  assert.equal(res.status, 200);
+  assert.equal(fetchedUrl, "https://gallery.entheai.com/gallery.html");
 });

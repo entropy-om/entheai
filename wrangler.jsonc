@@ -22,6 +22,7 @@
   },
   "routes": [
     { "pattern": "entheai.com", "custom_domain": true },
-    { "pattern": "www.entheai.com", "custom_domain": true }
+    { "pattern": "www.entheai.com", "custom_domain": true },
+    { "pattern": "gallery.entheai.com", "custom_domain": true }
   ]
 }
