@@ -294,6 +294,10 @@ pub struct VizConfig {
     /// Width of the brain panel in columns. Default: 26.
     #[serde(default = "default_viz_brain_width")]
     pub brain_width: u16,
+    /// Zen field theme: "entheia" | "ember" | "verdant" | "void". Unknown
+    /// names fall back to "entheia". Default: "entheia".
+    #[serde(default = "default_viz_theme")]
+    pub theme: String,
 }
 
 fn default_viz_swarm() -> bool {
@@ -329,8 +333,13 @@ impl Default for VizConfig {
             swarm_rows_cap: default_viz_swarm_rows_cap(),
             brain: default_viz_brain(),
             brain_width: default_viz_brain_width(),
+            theme: default_viz_theme(),
         }
     }
+}
+
+fn default_viz_theme() -> String {
+    "entheia".to_string()
 }
 
 /// Provider request defaults (applied to every LLM call).

@@ -258,6 +258,10 @@ impl entheai_orchestrator::TrajectorySink for PpTrajectorySink {
 
 /// All mutable UI state.
 struct App {
+    /// Active Zen palette (theme) — from `[viz] theme`, swapped live by /theme.
+    palette: &'static entheai_viz::palette::Palette,
+    /// In-flight response-as-light ceremony: (reply text, born brain-frame).
+    zen_reveal: Option<(String, u64)>,
     messages: Vec<Msg>,
     input: String,
     status: Status,
@@ -592,6 +596,8 @@ async fn event_loop(
         verb_idx: 0,
         plan: Vec::new(),
         swarm: entheai_viz::SwarmModel::new(),
+        palette: entheai_viz::palette::by_name("entheia"),
+        zen_reveal: None,
         view: ViewMode::Chat,
         viz_swarm: config.viz.swarm,
         brain: entheai_viz::BrainState::new(),
@@ -695,6 +701,9 @@ async fn event_loop(
         }
         _ => None,
     };
+
+    // The configured Zen theme ([viz] theme); /theme swaps it live.
+    app.palette = entheai_viz::palette::by_name(&config.viz.theme);
 
     // Seed the NATS indicator from the initial connect results; the live poll below
     // refreshes it whenever the fleet actually responds.
@@ -833,6 +842,9 @@ async fn event_loop(
                         }
                         Action::Submit(text) if is_zen_command(&text) => {
                             handle_zen_command(&mut app, &text);
+                        }
+                        Action::Submit(text) if is_theme_command(&text) => {
+                            handle_theme_command(&mut app, &text);
                         }
                         Action::Submit(text) if is_brain_command(&text) => {
                             handle_brain_command(&mut app);
@@ -1022,6 +1034,11 @@ async fn event_loop(
                     Some(Ok(answer)) => {
                         if app.speak_enabled {
                             voice.speak(&answer);
+                        }
+                        // Response-as-light: hand the reply to the Zen ceremony
+                        // (renders only in Zen view; retired by the tick arm).
+                        if !answer.trim().is_empty() {
+                            app.zen_reveal = Some((answer.clone(), app.brain.frame));
                         }
                         if let Some(idx) = app.streaming_idx {
                             // Authoritative final text overwrites whatever streamed in live.
@@ -1219,6 +1236,13 @@ async fn event_loop(
                 let brain_w = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(0);
                 if show_brain(app.brain_enabled, brain_w) {
                     app.brain.tick();
+                    // Retire a finished reveal ceremony so the whisper returns.
+                    if let Some((text, born)) = &app.zen_reveal {
+                        let age = app.brain.frame.saturating_sub(*born);
+                        if entheai_viz::zen::reveal_envelope(age, text.chars().count()).done {
+                            app.zen_reveal = None;
+                        }
+                    }
                     dirty = true;
                 }
                 // Drain BrainJudge's proactive-surfacing events (BRAIN v1 Slice 2) —
@@ -1678,6 +1702,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 || is_workers_command(trimmed)
                 || is_viz_command(trimmed)
                 || is_zen_command(trimmed)
+                || is_theme_command(trimmed)
                 || is_brain_command(trimmed)
                 || is_help_command(trimmed)
                 || is_fleet_command(trimmed)
@@ -2130,6 +2155,41 @@ fn handle_zen_command(app: &mut App, text: &str) {
     app.messages.push(Msg {
         role: Role::Tool,
         text: word.to_string(),
+    });
+    app.follow = true;
+}
+
+/// True when the submitted input is the local `/theme` command.
+fn is_theme_command(text: &str) -> bool {
+    let t = text.trim_start();
+    t == "/theme" || t.starts_with("/theme ")
+}
+
+/// `/theme` cycles the Zen palette; `/theme <name>` sets one. Source identity
+/// colours (lineage gold & co) never change with the theme — the entity rule.
+fn handle_theme_command(app: &mut App, text: &str) {
+    app.messages.push(Msg {
+        role: Role::User,
+        text: text.to_string(),
+    });
+    app.palette = match text.split_whitespace().nth(1) {
+        Some(name) => entheai_viz::palette::by_name(name),
+        None => entheai_viz::palette::next_after(app.palette.name),
+    };
+    let roster = entheai_viz::palette::ALL
+        .iter()
+        .map(|p| {
+            if p.name == app.palette.name {
+                format!("[{}]", p.name)
+            } else {
+                p.name.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    app.messages.push(Msg {
+        role: Role::Tool,
+        text: format!("🎨 zen theme: {roster}"),
     });
     app.follow = true;
 }
@@ -2698,28 +2758,39 @@ fn render(
         // without this a previous frame's motes/glyphs would ghost.
         frame.render_widget(Clear, field_area);
         let title = format!("entheai · {}", app.status.zen_word());
+        let reveal = app
+            .zen_reveal
+            .as_ref()
+            .map(|(t, born)| (t.as_str(), app.brain.frame.saturating_sub(*born)));
         entheai_viz::zen::render(
             &app.brain,
             &title,
+            reveal,
+            app.palette,
             field_area,
             frame.buffer_mut(),
             ratatui::symbols::Marker::Braille,
         );
         // One dim line: the most recent assistant/tool message, truncated —
-        // a whisper over the field, not a transcript.
-        if let Some(last) = app
-            .messages
-            .iter()
-            .rev()
-            .find(|m| matches!(m.role, Role::Assistant | Role::Tool))
-        {
-            let w = overlay_area.width.saturating_sub(2) as usize;
-            let whisper = truncate(last.text.trim(), w.max(1));
-            let line = Paragraph::new(Line::styled(
-                whisper,
-                Style::default().fg(Color::Rgb(120, 140, 160)),
-            ));
-            frame.render_widget(line, overlay_area);
+        // a whisper over the field, not a transcript. Silenced while a reveal
+        // ceremony burns (her words are already IN the field); the tick arm
+        // retires the ceremony, and the whisper returns.
+        if app.zen_reveal.is_none() {
+            if let Some(last) = app
+                .messages
+                .iter()
+                .rev()
+                .find(|m| matches!(m.role, Role::Assistant | Role::Tool))
+            {
+                let w = overlay_area.width.saturating_sub(2) as usize;
+                let whisper = truncate(last.text.trim(), w.max(1));
+                let (wr, wg, wb) = app.palette.whisper;
+                let line = Paragraph::new(Line::styled(
+                    whisper,
+                    Style::default().fg(Color::Rgb(wr, wg, wb)),
+                ));
+                frame.render_widget(line, overlay_area);
+            }
         }
         render_input(frame, app, input_area);
         render_slash_menu(frame, app, input_area);
@@ -3163,6 +3234,10 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
         "/zen",
         "the full-canvas living field — one message box  (Ctrl-G)",
     ),
+    (
+        "/theme",
+        "zen palette — entheia · ember · verdant · void (cycle or name)",
+    ),
     ("/brain", "toggle the always-on brain side panel"),
     ("/quit", "exit entheai  (Ctrl-C ×2)"),
 ];
@@ -3443,6 +3518,8 @@ mod tests {
             verb_idx: 0,
             plan: Vec::new(),
             swarm: entheai_viz::SwarmModel::new(),
+            palette: entheai_viz::palette::by_name("entheia"),
+            zen_reveal: None,
             view: ViewMode::Chat,
             viz_swarm: false,
             brain: entheai_viz::BrainState::new(),
@@ -3899,6 +3976,8 @@ mod tests {
             verb_idx: 0,
             plan: Vec::new(),
             swarm: entheai_viz::SwarmModel::new(),
+            palette: entheai_viz::palette::by_name("entheia"),
+            zen_reveal: None,
             view: ViewMode::Chat,
             viz_swarm: false,
             brain: entheai_viz::BrainState::new(),
@@ -3946,6 +4025,8 @@ mod tests {
             verb_idx: 0,
             plan: Vec::new(),
             swarm: entheai_viz::SwarmModel::new(),
+            palette: entheai_viz::palette::by_name("entheia"),
+            zen_reveal: None,
             view: ViewMode::Chat,
             viz_swarm: false,
             brain: entheai_viz::BrainState::new(),
@@ -3991,6 +4072,8 @@ mod tests {
             verb_idx: 0,
             plan: Vec::new(),
             swarm: entheai_viz::SwarmModel::new(),
+            palette: entheai_viz::palette::by_name("entheia"),
+            zen_reveal: None,
             view: ViewMode::Chat,
             viz_swarm: false,
             brain: entheai_viz::BrainState::new(),
@@ -4091,6 +4174,8 @@ mod tests {
             verb_idx: 0,
             plan: Vec::new(),
             swarm: entheai_viz::SwarmModel::new(),
+            palette: entheai_viz::palette::by_name("entheia"),
+            zen_reveal: None,
             view: ViewMode::Chat,
             viz_swarm: false,
             brain: entheai_viz::BrainState::new(),
@@ -4139,6 +4224,8 @@ mod tests {
             verb_idx: 0,
             plan: Vec::new(),
             swarm: entheai_viz::SwarmModel::new(),
+            palette: entheai_viz::palette::by_name("entheia"),
+            zen_reveal: None,
             view: ViewMode::Chat,
             viz_swarm: false,
             brain: entheai_viz::BrainState::new(),

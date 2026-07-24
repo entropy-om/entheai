@@ -73,6 +73,13 @@ dogfood_repo = "PeetPedro/ultrawhale-dogfood"
 # valyu_max_results = 5               # results per query (1–20)
 # valyu_max_price = 30.0              # CPM dollar ceiling per Valyu query
 
+# ── Zen field theme ──────────────────────────────────────────────────────────
+# Ambient palette for /zen: entheia (teal default) | ember (night fire) |
+# verdant (the garden) | void (monochrome + the gold thread). Source identity
+# colours (lineage gold, search cyan, world green) never change with the theme.
+# [viz]
+# theme = "entheia"
+
 # ── Permission posture + per-tool pins ─────────────────────────────────────────
 [permission]
 mode = "ask"                      # startup default: plan | auto | yolo | ask
