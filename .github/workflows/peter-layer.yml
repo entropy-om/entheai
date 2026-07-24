@@ -89,6 +89,14 @@ jobs:
       #                guard — so the 13 comes from outside her, in the
       #                headless container. UNRESOLVED.
       #
+      # Clue banked for whoever resumes (found by accident, on a Mac, when the
+      # app was launched with stdout captured instead of on a terminal):
+      #   Error: Device not configured (os error 6)   [ENXIO]
+      # She needs a real terminal device; without one she errors out at once.
+      # Under tmux CI she HAS a pty and does render — so run 7's exit 13 is a
+      # later, different death. Next probe worth trying: run her under `script`
+      # (a forced pty) and/or raise the boot wait, then read the corpse again.
+      #
       # The text tier (which is the point) works and ships on every push. The
       # picture is a nicety, and seven runs is past its honest value — so it
       # now runs only when someone deliberately asks (Actions → Run workflow),
