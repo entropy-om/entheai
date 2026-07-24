@@ -119,8 +119,10 @@ jobs:
             '[companion]' 'enabled = false' \
             > "$SCRATCH/entheai.toml"
           BIN="$PWD/target/debug/entheai"
+          # stderr only into the log — stdout IS the TUI's canvas; redirecting
+          # it kills the interface (ladder run 5's lesson, learned the hard way).
           tmux new-session -d -s shot -x 170 -y 44 \
-            "cd $SCRATCH && LANG=C.UTF-8 $BIN > $SCRATCH/boot.log 2>&1"
+            "cd $SCRATCH && LANG=C.UTF-8 $BIN 2> $SCRATCH/boot.log"
           sleep 18
           # If the app died, say WHY instead of failing blind at send-keys.
           if ! tmux has-session -t shot 2>/dev/null; then
@@ -132,7 +134,11 @@ jobs:
           sleep 4
           tmux capture-pane -t shot -e -p > "$SCRATCH/zen.ans"
           tmux kill-session -t shot
-          "$FREEZE" --execute "cat $SCRATCH/zen.ans" --output zen.png
+          if ! "$FREEZE" --execute "cat $SCRATCH/zen.ans" --output zen.png 2> "$SCRATCH/freeze.err"; then
+            echo '--- freeze failed ---'
+            cat "$SCRATCH/freeze.err" || true
+            exit 1
+          fi
           test -s zen.png
           echo "ok=true" >> "$GITHUB_OUTPUT"
 
