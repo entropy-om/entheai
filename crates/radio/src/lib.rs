@@ -1,4 +1,4 @@
-//! In-TUI procedural music: two stations, zero fetches.
+//! In-TUI procedural music: three stations, zero fetches.
 //!
 //!   * **"Standing-Onde" — 8bit-Wraith**
 //!     (<https://soundcloud.com/8bit-wraith/standing-onde>): the bundled
@@ -6,6 +6,9 @@
 //!   * **"Mirror in F — Fable's seed"** ([`mirror`]): an infinite,
 //!     deterministic tintinnabuli piece synthesized sample-by-sample from the
 //!     seed `b"FABLE"` — the style is the seed; nothing is fetched or stored.
+//!   * **"Quantshuffle — 1bit"** ([`quantshuffle`]): the classical canon
+//!     (Beethoven first) in superposition — every theme at once, none dominant —
+//!     under a self-feeding 1-bit oscillator. Lofi-ambient, synthesized live.
 //!
 //! `Next` (Ctrl-N / `/radio next`) switches stations. No network fetch, no
 //! external tool, no user-supplied URL or local-file seed — this is the
@@ -30,7 +33,9 @@ use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
 
 pub mod mirror;
+pub mod quantshuffle;
 pub use mirror::{MirrorInF, FABLE_SEED};
+pub use quantshuffle::Quantshuffle;
 
 /// The bundled track, embedded at compile time so playback needs no network
 /// access, no cache directory, and no external tool.
@@ -40,6 +45,8 @@ const TRACK_TITLE: &str = "Standing-Onde — 8bit-Wraith";
 /// The procedural station's title (see [`mirror`]) — kept short enough to
 /// live whole in the status bar; the tintinnabuli story lives in the docs.
 pub const MIRROR_TITLE: &str = "Mirror in F — Fable's seed";
+/// The 1-bit lofi-ambient quantshuffle station title (see [`quantshuffle`]).
+pub const QUANTSHUFFLE_TITLE: &str = "Quantshuffle — 1bit";
 
 /// Which station the player is tuned to. `Next` cycles.
 #[cfg(feature = "audio")]
@@ -47,6 +54,7 @@ pub const MIRROR_TITLE: &str = "Mirror in F — Fable's seed";
 enum Station {
     StandingOnde,
     MirrorInF,
+    Quantshuffle,
 }
 
 #[cfg(feature = "audio")]
@@ -54,7 +62,8 @@ impl Station {
     fn next(self) -> Station {
         match self {
             Station::StandingOnde => Station::MirrorInF,
-            Station::MirrorInF => Station::StandingOnde,
+            Station::MirrorInF => Station::Quantshuffle,
+            Station::Quantshuffle => Station::StandingOnde,
         }
     }
 }
@@ -201,12 +210,15 @@ impl Player {
     /// `advance` simply never sees an empty sink on that station).
     fn restart(&mut self) {
         self.loop_count += 1;
-        let title = match self.station {
+        let station = self.station; // Copy — captured before the &mut sink borrow.
+        let title = match station {
             Station::StandingOnde => TRACK_TITLE,
             Station::MirrorInF => MIRROR_TITLE,
+            Station::Quantshuffle => QUANTSHUFFLE_TITLE,
         };
-        // Resolve the source before borrowing the sink (decode can fail).
-        let decoded = match self.station {
+        // Decode the embedded track before borrowing the sink (the only station
+        // that can fail); the procedural stations synthesize on demand.
+        let decoded = match station {
             Station::StandingOnde => match rodio::Decoder::new(Cursor::new(TRACK_BYTES)) {
                 Ok(s) => Some(s),
                 Err(e) => {
@@ -214,13 +226,14 @@ impl Player {
                     return;
                 }
             },
-            Station::MirrorInF => None,
+            Station::MirrorInF | Station::Quantshuffle => None,
         };
         if let Some(sink) = self.sink() {
             sink.stop();
-            match decoded {
-                Some(source) => sink.append(source),
-                None => sink.append(MirrorInF::new(FABLE_SEED)),
+            match station {
+                Station::StandingOnde => sink.append(decoded.expect("StandingOnde decoded above")),
+                Station::MirrorInF => sink.append(MirrorInF::new(FABLE_SEED)),
+                Station::Quantshuffle => sink.append(Quantshuffle::new()),
             }
             sink.play();
             self.playing = true;
