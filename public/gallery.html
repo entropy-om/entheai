@@ -37,6 +37,14 @@
     --card-glow: rgba(0, 255, 170, 0.25);
     --accent: #00ffaa;
   }
+  [data-theme="breeze"] {
+    --gallery-bg: #090c14;
+    --card-bg: color-mix(in oklab, #141b2b 85%, transparent);
+    --card-border: rgba(255, 202, 122, 0.25);
+    --card-glow: rgba(112, 193, 255, 0.3);
+    --accent: #ffca7a;
+    --accent-gold: #70c1ff;
+  }
   [data-theme="void"] {
     --gallery-bg: #050505;
     --card-bg: color-mix(in oklab, #111111 90%, transparent);
@@ -513,6 +521,9 @@
     <p class="subtitle">
       Explore 42 curated singularity checkpoints, braille 3D brain constellations, fan-out swarm orbits, ambient themes, and quantum entropy fields.
     </p>
+    <div style="margin-top: 12px; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--accent-gold); opacity: 0.85;">
+      ✨ Seed: <em>"when the smoothest breeze dances with the curtains at your eternal love's apartment during an open windows session"</em>
+    </div>
   </header>
 
   <div class="toolbar">
@@ -523,6 +534,7 @@
     <div class="theme-selector">
       <span>Theme:</span>
       <button class="theme-btn active" data-theme-btn="entheia">entheia</button>
+      <button class="theme-btn" data-theme-btn="breeze">breeze 🍃</button>
       <button class="theme-btn" data-theme-btn="ember">ember</button>
       <button class="theme-btn" data-theme-btn="verdant">verdant</button>
       <button class="theme-btn" data-theme-btn="void">void</button>
@@ -1118,10 +1130,10 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "ArrowRight") document.getElementById("modal-next").click();
 });
 
-// Shader Canvas Background Simulation
+// Shader Canvas Background Simulation: Silk Curtains & Afternoon Breeze
 const canvas = document.getElementById("shader-canvas");
 const ctx = canvas.getContext("2d");
-let width, height, particles = [];
+let width, height, particles = [], time = 0;
 
 function resize() {
   width = canvas.width = window.innerWidth;
@@ -1130,32 +1142,66 @@ function resize() {
 window.addEventListener("resize", resize);
 resize();
 
-for (let i = 0; i < 70; i++) {
+// 90 dust motes & sunshine particles dancing in open window draft
+for (let i = 0; i < 90; i++) {
   particles.push({
     x: Math.random() * width,
     y: Math.random() * height,
-    radius: Math.random() * 2 + 1,
-    vx: (Math.random() - 0.5) * 0.4,
-    vy: (Math.random() - 0.5) * 0.4,
-    alpha: Math.random() * 0.6 + 0.2
+    radius: Math.random() * 2.5 + 0.8,
+    vx: Math.random() * 0.4 + 0.1, // breeze drift rightwards
+    vy: (Math.random() - 0.5) * 0.3,
+    alpha: Math.random() * 0.65 + 0.2,
+    phase: Math.random() * Math.PI * 2
   });
 }
 
 function renderCanvas() {
   ctx.clearRect(0, 0, width, height);
+  time += 0.015;
+
+  const currentTheme = document.documentElement.getAttribute("data-theme") || "entheia";
+  const primaryColor = {
+    entheia: "rgba(0, 229, 255, ",
+    breeze: "rgba(255, 202, 122, ",
+    ember: "rgba(255, 120, 40, ",
+    verdant: "rgba(0, 255, 170, ",
+    void: "rgba(220, 220, 220, "
+  }[currentTheme] || "rgba(0, 229, 255, ";
+
+  // Render 4 translucent dancing curtain folds (wave ribbons)
+  for (let c = 0; c < 4; c++) {
+    ctx.beginPath();
+    const offset = c * 180;
+    const alpha = 0.03 + c * 0.015;
+    ctx.fillStyle = primaryColor + alpha + ")";
+
+    ctx.moveTo(0, height);
+    for (let x = 0; x <= width; x += 15) {
+      const wave1 = Math.sin(time * 0.8 + x * 0.003 + c) * 45;
+      const wave2 = Math.cos(time * 0.5 + x * 0.006 - c) * 30;
+      const y = height * 0.35 + wave1 + wave2 + offset;
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(width, height);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Render dust motes floating in breeze
   particles.forEach(p => {
-    p.x += p.vx;
-    p.y += p.vy;
-    if (p.x < 0) p.x = width;
+    p.x += p.vx + Math.sin(time + p.phase) * 0.2;
+    p.y += p.vy + Math.cos(time * 0.7 + p.phase) * 0.25;
     if (p.x > width) p.x = 0;
-    if (p.y < 0) p.y = height;
+    if (p.x < 0) p.x = width;
     if (p.y > height) p.y = 0;
+    if (p.y < 0) p.y = height;
 
     ctx.beginPath();
     ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(0, 229, 255, ${p.alpha})`;
+    ctx.fillStyle = primaryColor + (p.alpha * 0.85) + ")";
     ctx.fill();
   });
+
   requestAnimationFrame(renderCanvas);
 }
 renderCanvas();
