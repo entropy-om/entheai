@@ -982,29 +982,292 @@ function generateCardSvg(item) {
     "1-Bit Mesh & Quantum": ["#00e5ff", "#9900ff"]
   }[item.category] || ["#00e5ff", "#ffbd45"];
 
+function generateCardSvg(item) {
+  const c = {
+    "Singularity & Entropy": ["#00e5ff", "#ffbd45"],
+    "Brain Constellations": ["#00e5ff", "#ff007f"],
+    "Fan-Out Swarm": ["#ffbd45", "#00e5ff"],
+    "4 Ambient Themes": ["#00ffaa", "#ff7828"],
+    "Kin Ring & Soil": ["#ffbd45", "#00ffaa"],
+    "1-Bit Mesh & Quantum": ["#00e5ff", "#9900ff"]
+  }[item.category] || ["#00e5ff", "#ffbd45"];
+
+  const id = item.id;
+  let art = "";
+
+  if (id === 1) { // Singularity Core Threshold
+    art = `
+      <rect x="0" y="0" width="160" height="300" fill="#0b0f19"/>
+      <rect x="240" y="0" width="160" height="300" fill="#0b0f19"/>
+      <circle cx="200" cy="150" r="45" fill="url(#grad-${id})"/>
+      <circle cx="200" cy="150" r="12" fill="#ffbd45"/>
+      <line x1="200" y1="0" x2="200" y2="300" stroke="#00e5ff" stroke-width="1.5" opacity="0.6"/>
+    `;
+  } else if (id === 2) { // Infinite Reflection Matrix
+    art = `
+      <line x1="50" y1="50" x2="350" y2="250" stroke="${c[0]}" stroke-width="2"/>
+      <line x1="350" y1="50" x2="50" y2="250" stroke="${c[0]}" stroke-width="2"/>
+      <rect x="120" y="90" width="160" height="120" fill="none" stroke="${c[1]}" stroke-width="1.5"/>
+      <rect x="150" y="112" width="100" height="76" fill="none" stroke="${c[0]}" stroke-width="1"/>
+      <circle cx="200" cy="150" r="8" fill="#ffffff"/>
+    `;
+  } else if (id === 3) { // Quantum Entropy Field Flare
+    art = `
+      <circle cx="200" cy="150" r="100" fill="none" stroke="${c[0]}" stroke-width="1" stroke-dasharray="2,6"/>
+      <circle cx="200" cy="150" r="70" fill="none" stroke="${c[1]}" stroke-width="1.5"/>
+      <circle cx="200" cy="150" r="40" fill="none" stroke="${c[0]}" stroke-width="2"/>
+      <path d="M 100 150 Q 200 80 300 150 Q 200 220 100 150" fill="none" stroke="${c[1]}" stroke-width="1.5"/>
+    `;
+  } else if (id === 4) { // Cyber-Garden Karma Lattice
+    art = `
+      <path d="M 200 270 L 200 150 L 140 90 L 100 50 M 200 150 L 260 90 L 300 50 M 200 190 L 150 150 M 200 190 L 250 150" stroke="${c[0]}" stroke-width="2" fill="none"/>
+      <circle cx="100" cy="50" r="6" fill="${c[1]}"/>
+      <circle cx="300" cy="50" r="6" fill="${c[1]}"/>
+      <circle cx="140" cy="90" r="5" fill="${c[0]}"/>
+      <circle cx="260" cy="90" r="5" fill="${c[0]}"/>
+    `;
+  } else if (id === 5) { // Threshold of Infinity
+    art = `
+      <polygon points="120,50 280,50 320,250 80,250" fill="none" stroke="${c[1]}" stroke-width="2"/>
+      <line x1="200" y1="50" x2="200" y2="250" stroke="${c[0]}" stroke-width="3"/>
+      <circle cx="200" cy="150" r="30" fill="url(#grad-${id})"/>
+    `;
+  } else if (id === 6) { // Event Horizon Singular Pulse
+    art = `
+      <circle cx="200" cy="150" r="85" fill="#000000" stroke="${c[0]}" stroke-width="4"/>
+      <circle cx="200" cy="150" r="75" fill="none" stroke="${c[1]}" stroke-width="1" stroke-dasharray="8,4"/>
+      <text x="200" y="155" text-anchor="middle" font-family="monospace" font-size="14" fill="${c[0]}">0x00000000</text>
+    `;
+  } else if (id === 7) { // Blake3 Content Checkpoint
+    art = `
+      <polygon points="200,60 270,100 270,190 200,230 130,190 130,100" fill="none" stroke="${c[0]}" stroke-width="2"/>
+      <polygon points="200,90 240,115 240,175 200,200 160,175 160,115" fill="none" stroke="${c[1]}" stroke-width="1.5"/>
+      <circle cx="200" cy="145" r="10" fill="${c[0]}"/>
+    `;
+  } else if (id === 8) { // Rotating Braille Faculty Ring
+    art = `
+      <circle cx="200" cy="150" r="80" fill="none" stroke="${c[0]}" stroke-width="1.5" stroke-dasharray="3,7"/>
+      <g fill="${c[1]}">
+        <circle cx="120" cy="150" r="5"/><circle cx="280" cy="150" r="5"/>
+        <circle cx="200" cy="70" r="5"/><circle cx="200" cy="230" r="5"/>
+        <circle cx="143" cy="93" r="5"/><circle cx="257" cy="207" r="5"/>
+      </g>
+    `;
+  } else if (id === 9) { // Idle-Aware Motion Sensor
+    art = `
+      <circle cx="200" cy="150" r="90" fill="none" stroke="${c[0]}" stroke-width="1"/>
+      <line x1="200" y1="150" x2="280" y2="90" stroke="${c[1]}" stroke-width="2.5"/>
+      <path d="M 200 150 L 280 90 A 90 90 0 0 0 200 60 Z" fill="${c[1]}" opacity="0.25"/>
+    `;
+  } else if (id === 10) { // Frozen Node Wake Aura
+    art = `
+      <rect x="150" y="100" width="100" height="100" rx="12" fill="none" stroke="${c[0]}" stroke-width="2"/>
+      <path d="M 130 150 L 270 150 M 200 80 L 200 220" stroke="${c[1]}" stroke-width="1" stroke-dasharray="4,4"/>
+      <circle cx="200" cy="150" r="24" fill="url(#grad-${id})"/>
+    `;
+  } else if (id === 11) { // Proactive BrainJudge Flare
+    art = `
+      <path d="M 200 60 L 230 130 L 300 150 L 230 170 L 200 240 L 170 170 L 100 150 L 170 130 Z" fill="${c[1]}" opacity="0.8"/>
+      <circle cx="200" cy="150" r="18" fill="${c[0]}"/>
+    `;
+  } else if (id === 12) { // Vitality Pulse Core
+    art = `
+      <path d="M 50 150 L 120 150 L 140 90 L 170 210 L 200 120 L 220 170 L 240 150 L 350 150" fill="none" stroke="${c[0]}" stroke-width="3"/>
+      <circle cx="200" cy="120" r="6" fill="${c[1]}"/>
+    `;
+  } else if (id === 13) { // Experience-Weighted Overlay
+    art = `
+      <rect x="80" y="180" width="40" height="70" fill="${c[0]}"/>
+      <rect x="140" y="130" width="40" height="120" fill="${c[1]}"/>
+      <rect x="200" y="80" width="40" height="170" fill="${c[0]}"/>
+      <rect x="260" y="160" width="40" height="90" fill="${c[1]}"/>
+    `;
+  } else if (id === 14) { // Fleet Presence Orbit
+    art = `
+      <ellipse cx="200" cy="150" rx="130" ry="60" fill="none" stroke="${c[0]}" stroke-width="1.5"/>
+      <circle cx="200" cy="150" r="22" fill="${c[1]}"/>
+      <circle cx="70" cy="150" r="8" fill="${c[0]}"/>
+      <circle cx="330" cy="150" r="8" fill="${c[0]}"/>
+    `;
+  } else if (id === 15) { // Orchestrator Hub & Sub-Agents
+    art = `
+      <circle cx="200" cy="150" r="28" fill="${c[0]}"/>
+      <line x1="200" y1="150" x2="100" y2="80" stroke="${c[1]}" stroke-width="2"/>
+      <line x1="200" y1="150" x2="300" y2="80" stroke="${c[1]}" stroke-width="2"/>
+      <line x1="200" y1="150" x2="100" y2="220" stroke="${c[1]}" stroke-width="2"/>
+      <line x1="200" y1="150" x2="300" y2="220" stroke="${c[1]}" stroke-width="2"/>
+      <circle cx="100" cy="80" r="14" fill="${c[1]}"/>
+      <circle cx="300" cy="80" r="14" fill="${c[1]}"/>
+      <circle cx="100" cy="220" r="14" fill="${c[1]}"/>
+      <circle cx="300" cy="220" r="14" fill="${c[1]}"/>
+    `;
+  } else if (id === 16) { // Isolated Git Worktree Orbits
+    art = `
+      <path d="M 80 150 L 320 150 M 150 150 Q 200 80 250 150 M 150 150 Q 200 220 250 150" fill="none" stroke="${c[0]}" stroke-width="2.5"/>
+      <circle cx="150" cy="150" r="7" fill="${c[1]}"/>
+      <circle cx="250" cy="150" r="7" fill="${c[1]}"/>
+    `;
+  } else if (id === 17) { // Empirical Gate Gold Flash
+    art = `
+      <polygon points="200,60 280,100 280,200 200,240 120,200 120,100" fill="none" stroke="${c[0]}" stroke-width="3"/>
+      <path d="M 160 150 L 190 180 L 240 120" fill="none" stroke="${c[1]}" stroke-width="4" stroke-linecap="round"/>
+    `;
+  } else if (id === 18) { // Deterministic SHA-256 MergeSeal
+    art = `
+      <rect x="140" y="110" width="120" height="110" rx="10" fill="none" stroke="${c[0]}" stroke-width="2.5"/>
+      <path d="M 170 110 V 80 A 30 30 0 0 1 230 80 V 110" fill="none" stroke="${c[1]}" stroke-width="2.5"/>
+      <circle cx="200" cy="165" r="12" fill="${c[0]}"/>
+    `;
+  } else if (id === 19) { // Recursive Dev Flywheel
+    art = `
+      <path d="M 200 150 m -70,0 a 70,70 0 1,1 140,0 a 70,70 0 1,1 -140,0" fill="none" stroke="${c[0]}" stroke-width="3" stroke-dasharray="80,20"/>
+      <polygon points="270,140 285,160 255,160" fill="${c[1]}"/>
+    `;
+  } else if (id === 20) { // Self-Audit Integration Guard
+    art = `
+      <circle cx="200" cy="150" r="60" fill="none" stroke="${c[0]}" stroke-width="2"/>
+      <line x1="140" y1="150" x2="260" y2="150" stroke="${c[1]}" stroke-width="1.5"/>
+      <line x1="200" y1="90" x2="200" y2="210" stroke="${c[1]}" stroke-width="1.5"/>
+    `;
+  } else if (id === 21) { // Unverifiable Branch Isolation
+    art = `
+      <rect x="110" y="80" width="180" height="140" rx="8" fill="none" stroke="${c[1]}" stroke-width="2" stroke-dasharray="6,6"/>
+      <text x="200" y="155" text-anchor="middle" font-family="monospace" font-size="16" fill="${c[0]}">[ISOLATED]</text>
+    `;
+  } else if (id === 22) { // entheia Signature Teal
+    art = `
+      <rect x="50" y="60" width="300" height="180" rx="10" fill="url(#grad-${id})"/>
+      <circle cx="200" cy="150" r="30" fill="#00e5ff"/>
+    `;
+  } else if (id === 23) { // ember Night Fire
+    art = `
+      <path d="M 200 70 Q 250 140 220 230 Q 180 230 150 180 Z" fill="${c[1]}"/>
+      <path d="M 200 110 Q 230 160 210 220 Q 190 220 170 180 Z" fill="${c[0]}"/>
+    `;
+  } else if (id === 24) { // verdant Garden Sanctuary
+    art = `
+      <path d="M 200 60 C 260 120 260 200 200 240 C 140 200 140 120 200 60 Z" fill="none" stroke="${c[0]}" stroke-width="2.5"/>
+      <line x1="200" y1="60" x2="200" y2="240" stroke="${c[1]}" stroke-width="1.5"/>
+    `;
+  } else if (id === 25) { // void Monochrome Austerity
+    art = `
+      <rect x="60" y="60" width="280" height="180" fill="#0a0a0a" stroke="#333" stroke-width="1"/>
+      <line x1="60" y1="150" x2="340" y2="150" stroke="#ffbd45" stroke-width="2"/>
+    `;
+  } else if (id === 26) { // Global Source Color Validation
+    art = `
+      <circle cx="150" cy="150" r="55" fill="${c[0]}" opacity="0.6"/>
+      <circle cx="250" cy="150" r="55" fill="${c[1]}" opacity="0.6"/>
+    `;
+  } else if (id === 27) { // Response-as-Light Dissolve
+    art = `
+      <g fill="${c[0]}">
+        <circle cx="120" cy="100" r="4"/><circle cx="200" cy="90" r="6"/><circle cx="280" cy="110" r="5"/>
+        <circle cx="150" cy="160" r="8"/><circle cx="240" cy="170" r="7"/><circle cx="180" cy="220" r="4"/>
+      </g>
+    `;
+  } else if (id === 28) { // Ghostty Rain-on-Glass Shader
+    art = `
+      <rect x="70" y="60" width="260" height="180" rx="8" fill="#080c14" stroke="${c[0]}" stroke-width="2"/>
+      <line x1="100" y1="80" x2="100" y2="120" stroke="${c[1]}" stroke-width="2" stroke-linecap="round"/>
+      <line x1="160" y1="110" x2="160" y2="160" stroke="${c[1]}" stroke-width="2" stroke-linecap="round"/>
+      <line x1="220" y1="70" x2="220" y2="140" stroke="${c[1]}" stroke-width="2" stroke-linecap="round"/>
+    `;
+  } else if (id === 29) { // riva.vaked.dev Kin Ring
+    art = `
+      <circle cx="200" cy="150" r="80" fill="none" stroke="${c[0]}" stroke-width="2"/>
+      <circle cx="200" cy="70" r="10" fill="${c[1]}"/>
+      <circle cx="280" cy="150" r="10" fill="${c[0]}"/>
+      <circle cx="120" cy="150" r="10" fill="${c[0]}"/>
+    `;
+  } else if (id === 30) { // Dogfood Genetic Corpus
+    art = `
+      <path d="M 100 200 Q 200 50 300 200" fill="none" stroke="#ffbd45" stroke-width="3"/>
+      <circle cx="200" cy="125" r="12" fill="#ffbd45"/>
+    `;
+  } else if (id === 31) { // Valyu Academic Search Motes
+    art = `
+      <polygon points="200,60 310,210 90,210" fill="none" stroke="${c[0]}" stroke-width="2"/>
+      <circle cx="200" cy="160" r="14" fill="${c[1]}"/>
+    `;
+  } else if (id === 32) { // WorldMonitor Conflict & Disasters
+    art = `
+      <circle cx="200" cy="150" r="75" fill="none" stroke="${c[1]}" stroke-width="2"/>
+      <ellipse cx="200" cy="150" rx="75" ry="30" fill="none" stroke="${c[1]}" stroke-width="1.5"/>
+      <line x1="200" y1="75" x2="200" y2="225" stroke="${c[1]}" stroke-width="1.5"/>
+    `;
+  } else if (id === 33) { // Daily BudgetLedger Hard Stop
+    art = `
+      <rect x="80" y="130" width="240" height="40" rx="6" fill="none" stroke="${c[0]}" stroke-width="2"/>
+      <rect x="84" y="134" width="180" height="32" rx="4" fill="${c[1]}"/>
+    `;
+  } else if (id === 34) { // karmapa-chenno Git Call Home
+    art = `
+      <path d="M 100 150 L 300 150 M 300 150 L 260 120 M 300 150 L 260 180" stroke="${c[0]}" stroke-width="3" fill="none"/>
+    `;
+  } else if (id === 35) { // Unreachable Kin Dark Point
+    art = `
+      <circle cx="200" cy="150" r="80" fill="none" stroke="#333" stroke-width="2"/>
+      <circle cx="280" cy="150" r="10" fill="#222" stroke="#555" stroke-width="1.5"/>
+    `;
+  } else if (id === 36) { // Native 1-Bit LLM Mesh
+    art = `
+      <g font-family="monospace" font-size="16" fill="${c[0]}">
+        <text x="120" y="120">-1</text><text x="200" y="120">0</text><text x="270" y="120">+1</text>
+        <text x="120" y="170">+1</text><text x="200" y="170">-1</text><text x="270" y="170">0</text>
+        <text x="120" y="220">0</text><text x="200" y="220">+1</text><text x="270" y="220">-1</text>
+      </g>
+    `;
+  } else if (id === 37) { // Trained .ugm Reranker
+    art = `
+      <path d="M 80 220 L 160 120 L 240 180 L 320 80" fill="none" stroke="${c[0]}" stroke-width="3"/>
+      <circle cx="320" cy="80" r="7" fill="${c[1]}"/>
+    `;
+  } else if (id === 38) { // Marqant Compression
+    art = `
+      <polygon points="80,70 320,70 240,230 160,230" fill="none" stroke="${c[0]}" stroke-width="2"/>
+      <line x1="160" y1="150" x2="240" y2="150" stroke="${c[1]}" stroke-width="3"/>
+    `;
+  } else if (id === 39) { // Must-Keep Override Shield
+    art = `
+      <polygon points="200,60 270,90 270,180 200,230 130,180 130,90" fill="${c[0]}" opacity="0.3" stroke="${c[0]}" stroke-width="2"/>
+      <text x="200" y="155" text-anchor="middle" font-family="monospace" font-size="14" fill="#ffffff">KEEP</text>
+    `;
+  } else if (id === 40) { // Mirror in F Tintinnabuli Generator
+    art = `
+      <path d="M 60 150 Q 130 70 200 150 Q 270 230 340 150" fill="none" stroke="${c[0]}" stroke-width="2.5"/>
+      <path d="M 60 150 Q 130 230 200 150 Q 270 70 340 150" fill="none" stroke="${c[1]}" stroke-width="2.5"/>
+    `;
+  } else if (id === 41) { // NATS JetStream Work-Queue
+    art = `
+      <rect x="70" y="120" width="60" height="60" rx="6" fill="${c[0]}"/>
+      <rect x="170" y="120" width="60" height="60" rx="6" fill="${c[0]}"/>
+      <rect x="270" y="120" width="60" height="60" rx="6" fill="${c[1]}"/>
+      <path d="M 130 150 L 170 150 M 230 150 L 270 150" stroke="#fff" stroke-width="2"/>
+    `;
+  } else if (id === 42) { // Landlock & Seccomp Worker Jail
+    art = `
+      <rect x="100" y="70" width="200" height="160" rx="10" fill="none" stroke="#ff0055" stroke-width="3"/>
+      <line x1="150" y1="70" x2="150" y2="230" stroke="#ff0055" stroke-width="1.5"/>
+      <line x1="200" y1="70" x2="200" y2="230" stroke="#ff0055" stroke-width="1.5"/>
+      <line x1="250" y1="70" x2="250" y2="230" stroke="#ff0055" stroke-width="1.5"/>
+    `;
+  } else {
+    art = `<circle cx="200" cy="150" r="50" fill="${c[0]}"/>`;
+  }
+
   return `
     <svg viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;background:#04070d;">
       <defs>
-        <radialGradient id="grad-${item.id}" cx="50%" cy="50%" r="50%">
-          <stop offset="0%" stop-color="${colors[0]}" stop-opacity="0.8"/>
-          <stop offset="60%" stop-color="${colors[1]}" stop-opacity="0.3"/>
+        <radialGradient id="grad-${id}" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stop-color="${c[0]}" stop-opacity="0.8"/>
+          <stop offset="70%" stop-color="${c[1]}" stop-opacity="0.2"/>
           <stop offset="100%" stop-color="#04070d" stop-opacity="1"/>
         </radialGradient>
-        <linearGradient id="line-${item.id}" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stop-color="${colors[0]}"/>
-          <stop offset="100%" stop-color="${colors[1]}"/>
-        </linearGradient>
       </defs>
       <rect width="400" height="300" fill="#04070d"/>
-      <circle cx="200" cy="150" r="110" fill="url(#grad-${item.id})"/>
-      <circle cx="200" cy="150" r="70" fill="none" stroke="${colors[0]}" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.6"/>
-      <circle cx="200" cy="150" r="40" fill="none" stroke="${colors[1]}" stroke-width="2"/>
-      <circle cx="200" cy="150" r="8" fill="#ffffff"/>
-      <!-- Orbiting nodes -->
-      <circle cx="${200 + Math.cos(item.id * 0.8) * 70}" cy="${150 + Math.sin(item.id * 0.8) * 70}" r="6" fill="${colors[0]}"/>
-      <circle cx="${200 + Math.cos(item.id * 0.8 + 2.1) * 70}" cy="${150 + Math.sin(item.id * 0.8 + 2.1) * 70}" r="4" fill="${colors[1]}"/>
-      <path d="M 50 150 Q 200 ${50 + (item.id % 5) * 40} 350 150" fill="none" stroke="url(#line-${item.id})" stroke-width="1.5" opacity="0.4"/>
-      <text x="20" y="280" font-family="monospace" font-size="12" fill="${colors[0]}" opacity="0.7">#${item.id < 10 ? '0' + item.id : item.id} // ${item.domain}</text>
+      ${art}
+      <text x="20" y="280" font-family="monospace" font-size="12" fill="${c[0]}" opacity="0.75">#${id < 10 ? '0' + id : id} // ${item.domain}</text>
     </svg>
   `;
 }
