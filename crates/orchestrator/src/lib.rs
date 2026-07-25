@@ -27,11 +27,13 @@ use futures::stream::{self, StreamExt};
 use serde::Deserialize;
 
 pub mod agy;
+pub mod copilot;
 pub mod pool;
 pub mod repair_stop;
 pub mod worktree;
 
 pub use agy::AgyExecutor;
+pub use copilot::CopilotExecutor;
 
 pub use pool::{WorkerId, WorkerPool, WorkerStatus, WorkerSummary};
 pub use repair_stop::{Attempt, RepairDecision, RepairLedger, StopReason};

@@ -583,6 +583,12 @@ async fn event_loop(
                 entheai_orchestrator::AgyExecutor::new(config.fanout.agy_model.clone())
                     as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>,
             )
+        } else if config.fanout.executor == "copilot" {
+            // GitHub Copilot CLI path (depth-guarded); copilot missing/at-cap → local.
+            Some(
+                entheai_orchestrator::CopilotExecutor::new(config.fanout.copilot_model.clone())
+                    as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>,
+            )
         } else {
             fleet_fed.clone().map(|f| {
                 entheai_federation::FederationExecutor::new(f, root.clone())

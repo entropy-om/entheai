@@ -259,6 +259,15 @@ async fn main() -> anyhow::Result<()> {
                             entheai_orchestrator::AgyExecutor::new(cfg.fanout.agy_model.clone())
                                 as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>,
                         )
+                    } else if cfg.fanout.executor == "copilot" {
+                        // GitHub Copilot CLI path (depth-guarded). copilot missing/at-cap
+                        // → local fallback.
+                        Some(
+                            entheai_orchestrator::CopilotExecutor::new(
+                                cfg.fanout.copilot_model.clone(),
+                            )
+                                as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>,
+                        )
                     } else if cfg.federation.enabled {
                         entheai_federation::Federation::connect(
                             &entheai_federation::FedOptions::from_config(

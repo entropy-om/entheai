@@ -185,12 +185,17 @@ pub struct FanoutConfig {
     #[serde(default = "default_coder_timeout_secs")]
     pub coder_timeout_secs: u64,
     /// Coder execution backend: "auto" (federation if enabled, else local) |
-    /// "agy" (run each coder via the Antigravity CLI — recursive dev) | "local".
+    /// "agy" (run each coder via the Antigravity CLI — recursive dev) |
+    /// "copilot" (run each coder via the GitHub Copilot CLI) | "local".
     #[serde(default = "default_fanout_executor")]
     pub executor: String,
     /// Model the "agy" executor runs fan-out coders on.
     #[serde(default = "default_agy_model")]
     pub agy_model: String,
+    /// Model the "copilot" executor runs fan-out coders on, passed to
+    /// `copilot --model` (empty = the Copilot CLI's own default model).
+    #[serde(default = "default_copilot_model")]
+    pub copilot_model: String,
     /// Per-run mode override for fan-out sub-agents ("" = inherit parent ceiling).
     #[serde(default)]
     pub mode: String,
@@ -204,6 +209,7 @@ impl Default for FanoutConfig {
             coder_timeout_secs: default_coder_timeout_secs(),
             executor: default_fanout_executor(),
             agy_model: default_agy_model(),
+            copilot_model: default_copilot_model(),
             mode: String::new(),
         }
     }
@@ -231,6 +237,10 @@ fn default_fanout_executor() -> String {
 }
 fn default_agy_model() -> String {
     "gemini-3.6-flash-high".into()
+}
+fn default_copilot_model() -> String {
+    // Empty → defer to the Copilot CLI's own configured default model.
+    String::new()
 }
 
 fn default_coder_timeout_secs() -> u64 {
