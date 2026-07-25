@@ -95,7 +95,7 @@ Instead of compressing early into lossy vector embeddings (where subtle nuances 
 
 ## Gallery
 
-> Full interactive documentation and capture details available in the [Visualization Gallery](https://entheai.com/docs#gallery).
+> Full interactive visual showcase available at [<code style="color:var(--teal-300)">gallery.entheai.com</code>](https://gallery.entheai.com/) (42 interactive quantum visual artifacts) and in the [Docs Gallery](https://entheai.com/docs#gallery).
 
 <p align="center">
   <img src="docs/images/hero-v1-singularity.png" alt="v1.0 Singularity Checkpoint & Fluid Entropy" width="48%">
