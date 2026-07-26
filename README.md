@@ -1,6 +1,6 @@
 # entheai
 
-Community call: `https://luma.com/sfkwmsjx`
+Community call: `https://luma.com/sfkwmsjx` [sign-up](https://luma.com/sfkwmsjx)
 
 <p align="center">
   <img src="docs/images/hero-v1-singularity.png" alt="entheai v1.0 — fluid quantum entropy morphing into a 3D singularity structure in dark void" width="100%">
