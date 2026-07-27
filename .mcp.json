@@ -9,6 +9,14 @@
         "stdio"
       ],
       "description": "repowise: codebase intelligence \u2014 docs, graph, git signals, dead code, decisions"
+    },
+    "bluesky": {
+      "command": "sh",
+      "args": [
+        "-c",
+        "cd /Users/peter.lodri/workspace/peterlodri-sec/bluesky-mcp && exec node dist/index.js"
+      ],
+      "description": "Bluesky (AT Protocol) \u2014 post, read timeline, search, whoami"
     }
   }
 }
