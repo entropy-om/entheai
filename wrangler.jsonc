@@ -15,7 +15,14 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "not_found_handling": "404-page"
+    "not_found_handling": "404-page",
+    // Static assets are served BEFORE the Worker by default, so a bare "/"
+    // matched index.html directly and the Worker's gallery.entheai.com host
+    // rewrite (src/worker.mjs) never ran — the subdomain root showed the
+    // homepage instead of the gallery. Run the Worker first for the root (and
+    // /gallery) so that rewrite to /gallery.html executes; every other asset
+    // still serves directly from the edge.
+    "run_worker_first": ["/", "/gallery"]
   },
   "observability": {
     "enabled": true
