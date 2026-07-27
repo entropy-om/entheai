@@ -291,6 +291,9 @@ pub mod wave_scorer {
     impl Band {
         /// Classify text into a frequency band based on content cues.
         pub fn for_text(text: &str) -> Band {
+            if text.len() < 10 {
+                return Band::Delta;
+            }
             let t = text.to_lowercase();
             if t.contains("func ")
                 || t.contains("def ")
