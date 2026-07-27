@@ -712,7 +712,7 @@ fn build_prompt_processor(
                 let m = NativeMesh::load_model(&expand_home(&pc.native_model));
                 if m.is_none() {
                     log::warn!(
-                        "pp native_model {:?} missing or wrong shape; using lexical scorer",
+                        "pp native_model {:?} missing or wrong shape; using MEM8 wave scorer",
                         pc.native_model
                     );
                 }
