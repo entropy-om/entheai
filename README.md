@@ -129,19 +129,23 @@ git clone https://github.com/entropy-om/entheai.git
 cd entheai && cargo build --release
 ```
 
-Configure `entheai.toml` — start out-of-the-box with the free community node on `coder.vaked.dev` (no API key required):
+A fresh `entheai` **works out of the box on the free tier — no config, no API key.** With no `entheai.toml` it defaults to the free community node on `coder.vaked.dev` (`vaked/qwen3-coder:30b`, a Qwen3-Coder-30B; it runs on CPU, so it's slow but genuinely free), and the fan-out falls back to it too:
+
+```bash
+entheai "Reply with exactly: pong"     # one-shot execution
+entheai                                 # interactive TUI session
+entheai --fanout "add a CONTRIBUTING.md and a .editorconfig"   # parallel fan-out coders
+```
+
+To pin the model or add your own providers, drop an `entheai.toml` in the repo (the free node still needs no key):
 
 ```bash
 cat > entheai.toml <<'TOML'
-default_model = "vaked/coder"
+default_model = "vaked/qwen3-coder:30b"
 
 [providers.vaked]
 base_url = "https://coder.vaked.dev/v1"
 TOML
-
-entheai "Reply with exactly: pong"     # one-shot execution
-entheai                                 # interactive TUI session
-entheai --fanout "add a CONTRIBUTING.md and a .editorconfig"   # parallel fan-out coders
 ```
 
 Local models via [Osaurus](https://github.com/osaurus-ai/osaurus) on `127.0.0.1:1337` or cloud gateways like [OpenCode Zen](https://opencode.ai) work seamlessly too:
