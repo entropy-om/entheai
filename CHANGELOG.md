@@ -6,6 +6,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+## [4.2.1] - 2026-07-27
+
+### Fixed
+- **The default free-tier one-shot was silently empty — found by running the real binary.** Ollama-backed OpenAI-compatible providers — which is exactly what coder.vaked.dev's free tier (the v4.2.0 default) serves — stream the answer only as partial deltas and end with an empty-content `finish_reason:"stop"` chunk plus a `{"choices":[]}` usage chunk, emitting **no** final non-partial text event. `event_bridge::run_with_events` only set the answer from a final non-partial event, so the reply was dropped even though the model replied in full (the model returned *"Hello! How can I help you today?"*; entheai printed nothing). It now accumulates the streamed partial text and falls back to it when no final event arrives, resetting at each turn boundary so tool-calling flows are unaffected. Verified end-to-end against the live endpoint (`entheai --model vaked/qwen3-coder:30b` now prints its reply) and regression-tested against the exact Ollama stream shape.
+
 ## [4.2.0] - 2026-07-27
 
 Free by default, and one honest tool set. A fresh `entheai` now fans out with

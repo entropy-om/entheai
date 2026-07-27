@@ -50,6 +50,15 @@ pub async fn run_with_events(
 
     let mut stream = agent.run_with_history(prior_turns, user_message).await?;
     let mut answer = String::new();
+    // Accumulates partial (streamed-delta) text for the current turn. Some
+    // OpenAI-compatible providers — notably Ollama-backed ones (`fp_ollama`,
+    // which is what coder.vaked.dev's free tier serves) — stream the answer
+    // only as partial deltas and terminate with a `{"choices":[]}` + usage
+    // chunk, emitting NO final non-partial text event. So the `answer = text`
+    // path below never fires and the reply is silently dropped. We fall back to
+    // this after the loop. Reset at every turn boundary (a final text answer,
+    // or any tool call/result) so it only ever holds the LAST turn's stream.
+    let mut streamed_text = String::new();
     let mut transcript: Vec<(String, String)> =
         vec![("user".to_string(), user_message.to_string())];
     let mut tool_evidence: Vec<ToolEvidence> = Vec::new();
@@ -66,6 +75,7 @@ pub async fn run_with_events(
         if ev.llm_response.partial {
             for part in &content.parts {
                 if let Some(t) = part.text() {
+                    streamed_text.push_str(t);
                     let _ = event_tx.send(AgentEvent::Token(t.to_string()));
                 }
             }
@@ -87,7 +97,12 @@ pub async fn run_with_events(
         // `EntheaiAgent::run_to_text`'s "last one wins" contract.
         if !text.is_empty() && !has_calls && !has_results {
             answer = text.clone();
+            streamed_text.clear(); // a real final answer arrived — drop partials
             transcript.push(("assistant".to_string(), text));
+        } else if has_calls || has_results {
+            // Turn boundary: partials streamed before this were thinking-text
+            // ahead of a tool call, or a tool round — not the final answer.
+            streamed_text.clear();
         }
 
         for part in &content.parts {
@@ -135,6 +150,15 @@ pub async fn run_with_events(
                 _ => {}
             }
         }
+    }
+
+    // Fallback for providers that stream the answer only as partial deltas and
+    // never emit a final non-partial text event (see `streamed_text` above).
+    // Without this, one-shot — and the default free-tier experience — is
+    // silently empty even though the model replied in full.
+    if answer.is_empty() && !streamed_text.is_empty() {
+        answer = streamed_text.clone();
+        transcript.push(("assistant".to_string(), streamed_text));
     }
 
     if let Some(mem) = &memory {
@@ -293,6 +317,51 @@ mod tests {
             ),
             "expected a ToolFinished(echo) event carrying the tool's result, got {events:?}"
         );
+    }
+
+    // Regression: Ollama-backed OpenAI-compat streams (what coder.vaked.dev's
+    // free tier serves) send the answer only as partial deltas and end with an
+    // empty-content `finish_reason:"stop"` chunk + a `{"choices":[]}` usage
+    // chunk — no final non-partial text event. The reply must still come
+    // through; before the `streamed_text` fallback it was silently empty, which
+    // broke the default free-tier one-shot introduced in v4.2.0.
+    #[tokio::test]
+    async fn partial_only_ollama_style_stream_still_returns_the_answer() {
+        let server = MockServer::start().await;
+        let body = "data: {\"id\":\"o\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n\
+             data: {\"id\":\"o\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\", free\"},\"finish_reason\":null}]}\n\n\
+             data: {\"id\":\"o\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" tier\"},\"finish_reason\":null}]}\n\n\
+             data: {\"id\":\"o\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}]}\n\n\
+             data: {\"id\":\"o\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3,\"total_tokens\":8}}\n\n\
+             data: [DONE]\n\n";
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(body)
+                    .insert_header("Content-Type", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let agent = build_agent(&server).await;
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let answer = run_with_events(&agent, &[], "say hi", "test/model", tx, None, None, scope())
+            .await
+            .expect("run succeeds");
+        assert_eq!(
+            answer, "Hello, free tier",
+            "partial-only (Ollama-style) stream must still yield the reply"
+        );
+
+        // The tokens were still forwarded live to the UI channel as they streamed.
+        let mut toks = String::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let AgentEvent::Token(t) = ev {
+                toks.push_str(&t);
+            }
+        }
+        assert_eq!(toks, "Hello, free tier", "tokens also stream to the UI");
     }
 
     #[tokio::test]
