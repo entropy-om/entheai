@@ -270,6 +270,193 @@ pub(crate) fn lexical_score(query: &str, text: &str) -> f32 {
         .count() as f32
 }
 
+/// MEM8 wave interference scorer — ported from hf-mac's `Memory.swift`.
+///
+/// Encodes text as a wave (frequency from content classification, phase from
+/// content hash, amplitude from length) and scores query↔span relevance via
+/// interference magnitude: gaussian frequency proximity × amplitude product ×
+/// phase alignment. Replaces the lexical fallback when no `.ugm` model is set.
+pub mod wave_scorer {
+    /// Frequency bands matching MEM8's semantic categories (Hz).
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum Band {
+        Delta = 50,       // 0–100   — deep structural / general
+        Theta = 150,      // 100–200 — integration / summarization
+        Alpha = 250,      // 200–300 — conversational flow
+        Beta = 400,       // 300–500 — active processing / code
+        Gamma = 650,      // 500–800 — conscious binding / reasoning
+        HyperGamma = 900, // 800–1000 — peak awareness / creative
+    }
+
+    impl Band {
+        /// Classify text into a frequency band based on content cues.
+        pub fn for_text(text: &str) -> Band {
+            let t = text.to_lowercase();
+            if t.contains("func ")
+                || t.contains("def ")
+                || t.contains("class ")
+                || t.contains("import ")
+                || t.contains("```")
+                || t.contains("rust")
+                || t.contains("swift")
+                || t.contains("python")
+            {
+                return Band::Beta;
+            }
+            if t.contains("solve")
+                || t.contains("proof")
+                || t.contains("reason")
+                || t.contains("math")
+                || t.contains("calculate")
+                || t.contains("equation")
+            {
+                return Band::Gamma;
+            }
+            if t.contains("summarize")
+                || t.contains("summary")
+                || t.contains("tl;dr")
+                || t.contains("bullet")
+                || t.contains("key takeaway")
+            {
+                return Band::Theta;
+            }
+            if t.contains("story")
+                || t.contains("poem")
+                || t.contains("write a")
+                || t.contains("novel")
+                || t.contains("essay")
+                || t.contains("creative")
+            {
+                return Band::HyperGamma;
+            }
+            Band::Alpha
+        }
+
+        /// Center frequency of this band.
+        pub fn hz(self) -> f32 {
+            self as i32 as f32
+        }
+
+        /// Add content-specific jitter within the band (±20% of ∼100 Hz span).
+        pub fn jitter(self, text: &str) -> f32 {
+            let hash = blake3::hash(text.as_bytes());
+            // Use first 2 bytes as a u16 for jitter
+            let jv = u16::from_le_bytes([hash.as_bytes()[0], hash.as_bytes()[1]]);
+            let j = (jv as f32 / 65535.0) * 40.0 - 20.0; // ±20 Hz
+            self.hz() + j
+        }
+    }
+
+    /// A memory encoded as a wave.
+    #[derive(Debug, Clone)]
+    pub struct Wave {
+        pub frequency: f32,
+        pub amplitude: f32,
+        pub phase: f32,
+    }
+
+    impl Wave {
+        /// Encode text as a MEM8 wave.
+        pub fn from_text(text: &str) -> Self {
+            let band = Band::for_text(text);
+            let frequency = band.jitter(text);
+            let hash = blake3::hash(text.as_bytes());
+            let pv = u16::from_le_bytes([hash.as_bytes()[2], hash.as_bytes()[3]]);
+            let phase = (pv as f32 / 65535.0) * 2.0 * std::f32::consts::PI;
+            let length = (text.len().min(2000) as f32) / 2000.0;
+            let amplitude = 0.3 + 0.7 * length.sqrt();
+            Self {
+                frequency,
+                amplitude,
+                phase,
+            }
+        }
+
+        /// Interference magnitude with another wave.
+        ///
+        /// Gaussian frequency proximity (σ = 200 Hz) × amplitude product ×
+        /// phase alignment ([0, 1]).
+        pub fn interference(&self, other: &Wave) -> f32 {
+            let df = self.frequency - other.frequency;
+            let freq_factor = (-(df * df) / (200.0 * 200.0)).exp();
+            let amp_product = self.amplitude * other.amplitude;
+            let phase_align = (self.phase - other.phase).cos() * 0.5 + 0.5;
+            amp_product * freq_factor * phase_align
+        }
+    }
+
+    /// MEM8 wave interference score between query and text.
+    ///
+    /// Returns a relevance score that combines wave interference with lexical
+    /// overlap. Higher = more relevant.
+    pub fn score(query: &str, text: &str) -> f32 {
+        let qw = Wave::from_text(query);
+        let sw = Wave::from_text(text);
+        let wave = qw.interference(&sw);
+        let lexical = crate::mesh::lexical_score(query, text);
+        // Wave handles cross-domain discrimination; lexical handles intra-domain
+        // keyword matching. Blend so neither dominates alone.
+        wave * 2.0 + lexical * 0.5
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_band_classification() {
+            assert_eq!(Band::for_text("def hello():"), Band::Beta);
+            assert_eq!(Band::for_text("solve for x"), Band::Gamma);
+            assert_eq!(Band::for_text("summarize the key points"), Band::Theta);
+            assert_eq!(Band::for_text("write a poem"), Band::HyperGamma);
+            assert_eq!(Band::for_text("how are you"), Band::Alpha);
+        }
+
+        #[test]
+        fn test_wave_encoding() {
+            let w = Wave::from_text("write a fibonacci function in rust");
+            assert!(w.frequency > 0.0 && w.frequency <= 1000.0);
+            assert!(w.amplitude > 0.0 && w.amplitude <= 1.0);
+            assert!(w.phase >= 0.0 && w.phase <= 2.0 * std::f32::consts::PI);
+        }
+
+        #[test]
+        fn test_self_interference() {
+            let w = Wave::from_text("hello world");
+            let s = w.interference(&w);
+            assert!(s > 0.0, "self-interference should be positive");
+        }
+
+        #[test]
+        fn test_dissimilar_interference() {
+            let code = Wave::from_text("write rust fibonacci function");
+            let weather = Wave::from_text("what is the weather today");
+            let s = code.interference(&weather);
+            let same = code.interference(&code);
+            assert!(s < same, "dissimilar texts should interfere less");
+        }
+
+        #[test]
+        fn test_score_matches_relevant() {
+            // "rust function" → high lexical overlap + wave match for code
+            let relevant = "how do I write a function in rust";
+            // "capital of france" → no lexical overlap, different wave band
+            let irrelevant = "the capital of france is paris and the weather is nice";
+            let high = score("rust function", relevant);
+            let low = score("rust function", irrelevant);
+            assert!(
+                high > low,
+                "relevant text should score higher than irrelevant (high={high}, low={low})"
+            );
+            // Wave + lexical blend should give the relevant text a meaningful lead
+            assert!(
+                high >= 1.0,
+                "relevant text should score at least 1.0 (got {high})"
+            );
+        }
+    }
+}
+
 /// The native in-process mesh: reranks candidate spans without any subprocess.
 /// Scores each candidate with a configured `.ugm` reranker (via `entheai-ultragraph`)
 /// when present, else the lexical fallback. This is the default backend — it drops
@@ -326,7 +513,7 @@ impl NativeMesh {
                     .and_then(|row| row.first().copied())
                     .unwrap_or(0.0)
             }
-            None => lexical_score(query, text),
+            None => wave_scorer::score(query, text),
         }
     }
 }
