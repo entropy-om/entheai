@@ -88,7 +88,7 @@ test("unbound KV yields 503, other methods 405", async () => {
   assert.equal(res.headers.get("allow"), "GET, POST");
 });
 
-test("gallery.entheai.com request routes to /gallery.html", async () => {
+test("gallery.entheai.com root routes to the pretty /gallery", async () => {
   let fetchedUrl = null;
   const mockEnv = {
     ASSETS: {
@@ -101,5 +101,8 @@ test("gallery.entheai.com request routes to /gallery.html", async () => {
   const req = new Request("https://gallery.entheai.com/");
   const res = await worker.fetch(req, mockEnv);
   assert.equal(res.status, 200);
-  assert.equal(fetchedUrl, "https://gallery.entheai.com/gallery.html");
+  // The PRETTY path, not "/gallery.html": html_handling 307-redirects
+  // /gallery.html → /gallery, which would loop. The assets pipeline serves
+  // gallery.html for /gallery directly (200).
+  assert.equal(fetchedUrl, "https://gallery.entheai.com/gallery");
 });
