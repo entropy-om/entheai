@@ -797,6 +797,8 @@ async fn run_memory_cmd(cfg: &Config, args: &[String]) -> anyhow::Result<()> {
 
     match args.first().map(String::as_str) {
         Some("stats") => {
+            // entheai's brain has a name.
+            println!("{:<13} {}", "brain", entheai_brain::NAME);
             let mut total = 0usize;
             for ns in [
                 Namespace::Codebase,

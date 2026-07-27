@@ -1,0 +1,9 @@
+[package]
+name = "entheai-brain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+entheai-memory = { path = "../memory" }
+entheai-memory-pp = { path = "../memory-pp" }
