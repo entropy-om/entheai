@@ -21,8 +21,14 @@ const KV_TTL_SECS = 3600;
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.hostname === "gallery.entheai.com" && (url.pathname === "/" || url.pathname === "/gallery")) {
-      url.pathname = "/gallery.html";
+    // gallery.entheai.com/ → serve the gallery at the root. Rewrite to the
+    // PRETTY path "/gallery" (which the assets pipeline serves as gallery.html,
+    // 200) — NOT "/gallery.html", which html_handling 307-redirects back to
+    // /gallery and loops. Paired with assets.run_worker_first=["/"] so the
+    // Worker runs for the root at all (assets are served first by default).
+    // /gallery itself is left to the assets pretty-URL handler (200, no Worker).
+    if (url.hostname === "gallery.entheai.com" && url.pathname === "/") {
+      url.pathname = "/gallery";
       return env.ASSETS.fetch(new Request(url, request));
     }
     if (url.pathname === "/api/entropy") {

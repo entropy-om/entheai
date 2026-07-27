@@ -19,10 +19,11 @@
     // Static assets are served BEFORE the Worker by default, so a bare "/"
     // matched index.html directly and the Worker's gallery.entheai.com host
     // rewrite (src/worker.mjs) never ran — the subdomain root showed the
-    // homepage instead of the gallery. Run the Worker first for the root (and
-    // /gallery) so that rewrite to /gallery.html executes; every other asset
-    // still serves directly from the edge.
-    "run_worker_first": ["/", "/gallery"]
+    // homepage instead of the gallery. Run the Worker first for the ROOT ONLY
+    // (NOT /gallery — that's served directly by the assets pretty-URL handler;
+    // running the Worker for it would rewrite → /gallery.html → 307 → /gallery
+    // → a redirect loop). Every other asset still serves directly from the edge.
+    "run_worker_first": ["/"]
   },
   "observability": {
     "enabled": true
