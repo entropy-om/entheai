@@ -31,25 +31,57 @@ type Theme = &'static [(f32, f32)];
 
 /// Beethoven — Symphony No. 5, the opening motif.
 const BEETHOVEN_5: Theme = &[
-    (392.00, 0.5), (392.00, 0.5), (392.00, 0.5), (311.13, 2.0),
-    (349.23, 0.5), (349.23, 0.5), (349.23, 0.5), (293.66, 2.0), (0.0, 1.0),
+    (392.00, 0.5),
+    (392.00, 0.5),
+    (392.00, 0.5),
+    (311.13, 2.0),
+    (349.23, 0.5),
+    (349.23, 0.5),
+    (349.23, 0.5),
+    (293.66, 2.0),
+    (0.0, 1.0),
 ];
 /// Beethoven — Ode to Joy.
 const ODE_TO_JOY: Theme = &[
-    (329.63, 1.0), (329.63, 1.0), (349.23, 1.0), (392.00, 1.0),
-    (392.00, 1.0), (349.23, 1.0), (329.63, 1.0), (293.66, 1.0),
-    (261.63, 1.0), (261.63, 1.0), (293.66, 1.0), (329.63, 1.0),
-    (329.63, 1.5), (293.66, 0.5), (293.66, 2.0),
+    (329.63, 1.0),
+    (329.63, 1.0),
+    (349.23, 1.0),
+    (392.00, 1.0),
+    (392.00, 1.0),
+    (349.23, 1.0),
+    (329.63, 1.0),
+    (293.66, 1.0),
+    (261.63, 1.0),
+    (261.63, 1.0),
+    (293.66, 1.0),
+    (329.63, 1.0),
+    (329.63, 1.5),
+    (293.66, 0.5),
+    (293.66, 2.0),
 ];
 /// Beethoven — Für Elise.
 const FUR_ELISE: Theme = &[
-    (659.26, 0.5), (622.25, 0.5), (659.26, 0.5), (622.25, 0.5), (659.26, 0.5),
-    (493.88, 0.5), (587.33, 0.5), (523.25, 0.5), (440.00, 1.0), (0.0, 0.5),
+    (659.26, 0.5),
+    (622.25, 0.5),
+    (659.26, 0.5),
+    (622.25, 0.5),
+    (659.26, 0.5),
+    (493.88, 0.5),
+    (587.33, 0.5),
+    (523.25, 0.5),
+    (440.00, 1.0),
+    (0.0, 0.5),
 ];
 /// Pachelbel — Canon in D (the descending line).
 const PACHELBEL: Theme = &[
-    (739.99, 1.0), (659.26, 1.0), (587.33, 1.0), (554.37, 1.0),
-    (493.88, 1.0), (440.00, 1.0), (493.88, 1.0), (554.37, 1.0),
+    (739.99, 1.0),
+    (659.26, 1.0),
+    (587.33, 1.0),
+    (554.37, 1.0),
+    (493.88, 1.0),
+    (440.00, 1.0),
+    (493.88, 1.0),
+    (554.37, 1.0),
 ];
 
 /// The voices and their tempos (bpm) + gentle mix gains — Beethoven's Fifth loud
@@ -96,11 +128,7 @@ struct Voice {
 impl Voice {
     fn new(theme: Theme, bpm: f32, amp: f32) -> Self {
         let spb = 60.0 / bpm * RATE as f32;
-        let loop_samples = theme
-            .iter()
-            .map(|&(_, b)| b * spb)
-            .sum::<f32>()
-            .max(1.0) as u64;
+        let loop_samples = theme.iter().map(|&(_, b)| b * spb).sum::<f32>().max(1.0) as u64;
         Voice {
             theme,
             spb_samples: spb,
@@ -196,7 +224,11 @@ impl Quantshuffle {
         let step = (hz * 0.5 / RATE as f32 * 4_294_967_296.0) as u32;
         let step = step.wrapping_add((self.fb_last * 20_000.0) as i32 as u32);
         self.acc = self.acc.wrapping_add(step);
-        let sub = if self.acc & 0x8000_0000 != 0 { 1.0 } else { -1.0 };
+        let sub = if self.acc & 0x8000_0000 != 0 {
+            1.0
+        } else {
+            -1.0
+        };
 
         self.drone_lp * DRONE_AMP + sub * SUB_AMP
     }
@@ -208,7 +240,7 @@ impl Quantshuffle {
         let raw = classical * CLASSICAL_AMP + low;
 
         // Lofi bit-crush: sample-and-hold at a reduced effective rate.
-        if self.t % CRUSH == 0 {
+        if self.t.is_multiple_of(CRUSH) {
             self.held = raw;
         }
         // Gentle master low-pass over the held signal.

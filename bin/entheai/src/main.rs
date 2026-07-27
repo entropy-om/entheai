@@ -262,12 +262,10 @@ async fn main() -> anyhow::Result<()> {
                     } else if cfg.fanout.executor == "copilot" {
                         // GitHub Copilot CLI path (depth-guarded). copilot missing/at-cap
                         // → local fallback.
-                        Some(
-                            entheai_orchestrator::CopilotExecutor::new(
-                                cfg.fanout.copilot_model.clone(),
-                            )
-                                as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>,
+                        Some(entheai_orchestrator::CopilotExecutor::new(
+                            cfg.fanout.copilot_model.clone(),
                         )
+                            as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>)
                     } else if cfg.federation.enabled {
                         entheai_federation::Federation::connect(
                             &entheai_federation::FedOptions::from_config(
@@ -859,24 +857,18 @@ async fn build_tools(
     Vec<entheai_mcp::ChildGuard>,
 )> {
     let mut registry = entheai_tools::ToolRegistry::new();
-    registry.register(Box::new(entheai_tools::fs::ReadFile::new(
-        root.to_path_buf(),
-    )));
-    registry.register(Box::new(entheai_tools::fs::WriteFile::new(
-        root.to_path_buf(),
-    )));
-    registry.register(Box::new(entheai_tools::fs::EditFile::new(
-        root.to_path_buf(),
-    )));
-    registry.register(Box::new(
-        entheai_tools::shell::RunShell::new(root.to_path_buf())
-            .with_limits(cfg.tools.shell_timeout_secs, cfg.tools.shell_output_cap),
-    ));
-    registry.register(Box::new(
-        entheai_tools::search::Search::new(root.to_path_buf())
-            .with_max_results(cfg.tools.search_max_results),
-    ));
-    registry.register(Box::new(entheai_tools::todo::TodoTool));
+    // The canonical builtin set, shared with the fan-out coders (one source of
+    // truth — see entheai_tools::register_builtins), with the user's configured
+    // shell/search limits threaded through.
+    entheai_tools::register_builtins(
+        &mut registry,
+        root,
+        entheai_tools::BuiltinLimits {
+            shell_timeout_secs: Some(cfg.tools.shell_timeout_secs),
+            shell_output_cap: Some(cfg.tools.shell_output_cap),
+            search_max_results: Some(cfg.tools.search_max_results),
+        },
+    );
 
     // Skills: discover, advertise via a system prompt, expose the `skill` tool.
     let skill_dirs: Vec<PathBuf> = cfg.skills.dirs.iter().map(|d| root.join(d)).collect();

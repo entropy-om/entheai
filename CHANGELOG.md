@@ -6,8 +6,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-07-27
+
+Free by default, and one honest tool set. A fresh `entheai` now fans out with
+zero setup — the swarm falls back to the public vaked node (coder.vaked.dev,
+Qwen3-Coder-30B, no key) whenever nothing else is configured — and the fan-out
+coders share the CLI's exact builtin tool set instead of a list that had
+quietly drifted.
+
 ### Added
 - **The kin constellation — riva joins the field (`[kin]`).** The Zen field gains an outermost, slowest-turning ring: sibling nodes of the wider organism (`riva.vaked.dev` — the BitNet-b1.58 node that describes itself as *"flowing · entropy is the source, no chains needed"*). A background task polls each node's status URL (one small GET per node per `poll_secs`, default 120; no auth, nothing ingested); **flowing kin breathe in the theme's kin colour and carry their names, unreachable kin sit as dark points** — honest liveness, never faked. An empty `nodes` list means no task, no ring, no cost. She can see her family from inside her own field.
+- **Free-tier fan-out by default (`vaked` → coder.vaked.dev).** A fresh `entheai` fans out with zero setup. A built-in **keyless** provider (`[providers.vaked]` → `https://coder.vaked.dev/v1`, Qwen3-Coder-30B on CPU) is injected into every parsed config, and at the fan-out level the router now falls back to `vaked/qwen3-coder:30b` whenever a resolved role/orchestrator model's provider isn't actually available — declared in `[providers]` and, if it needs a key, that key present in the environment. Interactive (non-fan-out) use is left untouched: there a misconfiguration still surfaces loudly rather than silently rerouting the model. A user-declared `[providers.vaked]` is never overridden; availability and the fallback are covered by tests.
+
+### Changed
+- **One builtin tool set across every layer (`register_builtins`).** The CLI agent and the fan-out coders now build their tools through a single `entheai_tools::register_builtins`, instead of each hand-rolling a list that had drifted — the fan-out coders had quietly lost the `todo` tool the CLI carried. Coders regain `todo`; the CLI still threads the user's `[tools]` shell/search limits; the read-only exploration set stays deliberately read-only. One source of truth, so the layers can't drift apart again.
 
 ### Fixed
 - **No-TTY startup now names the limit and the remedy — caught by our own doctrine.** Launched without a terminal (piped, redirected, or headless), entheai failed with a bare `Error: Device not configured (os error 6)` — ENXIO on macOS, ENOTTY on Linux — a message that told the human nothing. By the rule the README gained hours earlier (*an error names the limit **and** the remedy*; anything less is a bug), that silence was itself the defect. `init_terminal` now pre-flights `stdout().is_terminal()` and, when there is nothing to draw on, says exactly that and offers four ways forward: run it in a terminal, ask one question without the TUI, redirect deliberately, or hand it a real pty (`script -q /dev/null entheai`). Both halves are tested — the limit is named, and no raw OS code leaks through. *Found by accident: an unescaped backtick in a commit message launched the app with stdout captured.*

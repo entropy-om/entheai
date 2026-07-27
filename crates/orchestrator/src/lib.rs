@@ -323,7 +323,10 @@ async fn run_subagent(
     scope: &MemoryScope,
 ) -> SubResult {
     let output = async {
-        let model_id = entheai_router::model_for_role(config, &st.role)?;
+        let model_id = entheai_router::available_or_free(
+            config,
+            entheai_router::model_for_role(config, &st.role)?,
+        );
         let (system, user) = subagent_messages(&st.role, &st.task);
         let agent = match memory {
             Some(mem) => EntheaiAgent::new_with_memory(
@@ -372,7 +375,8 @@ async fn run_fanout_readonly(
     memory: Option<Arc<MemoryRuntime>>,
     scope: &MemoryScope,
 ) -> anyhow::Result<String> {
-    let orch_model = entheai_router::orchestrator_model(config)?;
+    let orch_model =
+        entheai_router::available_or_free(config, entheai_router::orchestrator_model(config)?);
 
     // 1. Map + decompose.
     let mapped = entheai_mapper::Mapper::map(root, task, &[]).await;
@@ -407,26 +411,16 @@ async fn run_fanout_readonly(
     orchestrate_once(config, &orch_model, Some(&synth_system), &synth_user).await
 }
 
-/// Full (read/write/shell/search) tool set for a coder sub-agent, rooted at its
-/// own isolated worktree — safe to run in parallel because each coder's `root`
-/// is a distinct `git worktree` checkout, not the shared process cwd.
+/// Full (read/write/edit/shell/search/todo) tool set for a coder sub-agent,
+/// rooted at its own isolated worktree — safe to run in parallel because each
+/// coder's `root` is a distinct `git worktree` checkout, not the shared cwd.
+///
+/// Uses the shared [`entheai_tools::register_builtins`] so the coders and the
+/// CLI agent stay in lockstep — this is where the coders regained the `todo`
+/// tool. Default limits preserve the exact shell/search behaviour they had.
 fn write_registry(root: &Path) -> entheai_tools::ToolRegistry {
     let mut r = entheai_tools::ToolRegistry::new();
-    r.register(Box::new(entheai_tools::fs::ReadFile::new(
-        root.to_path_buf(),
-    )));
-    r.register(Box::new(entheai_tools::fs::WriteFile::new(
-        root.to_path_buf(),
-    )));
-    r.register(Box::new(entheai_tools::fs::EditFile::new(
-        root.to_path_buf(),
-    )));
-    r.register(Box::new(entheai_tools::shell::RunShell::new(
-        root.to_path_buf(),
-    )));
-    r.register(Box::new(entheai_tools::search::Search::new(
-        root.to_path_buf(),
-    )));
+    entheai_tools::register_builtins(&mut r, root, entheai_tools::BuiltinLimits::default());
     r
 }
 
@@ -463,7 +457,10 @@ pub async fn run_coder_once(
     worktree_path: &Path,
 ) -> String {
     async {
-        let model_id = entheai_router::model_for_role(config, role)?;
+        let model_id = entheai_router::available_or_free(
+            config,
+            entheai_router::model_for_role(config, role)?,
+        );
         let (system, user) = coder_messages(role, task);
         let agent = entheai_router::build_agent(
             &model_id,
@@ -493,7 +490,10 @@ async fn run_coder_local(
     memory: Option<(Arc<MemoryRuntime>, MemoryScope)>,
 ) -> String {
     async {
-        let model_id = entheai_router::model_for_role(config, role)?;
+        let model_id = entheai_router::available_or_free(
+            config,
+            entheai_router::model_for_role(config, role)?,
+        );
         let (system, user) = coder_messages(role, task);
         let agent = match memory {
             Some((mem, scope)) => EntheaiAgent::new_with_memory(
@@ -811,7 +811,8 @@ pub async fn run_fanout(
         return Ok(format!("(not a git repo — read-only fan-out)\n\n{out}"));
     }
 
-    let orch_model = entheai_router::orchestrator_model(config)?;
+    let orch_model =
+        entheai_router::available_or_free(config, entheai_router::orchestrator_model(config)?);
     let max_par = config.router.max_parallel.max(1);
 
     // 1. Map + decompose.
@@ -1184,7 +1185,7 @@ async fn recursive_self_audit(config: &Config, root: &Path, diff: &str) -> Strin
         Err(e) => return format!("self-audit skipped (AGENTS.md unreadable: {e})"),
     };
     let orch_model = match entheai_router::orchestrator_model(config) {
-        Ok(m) => m,
+        Ok(m) => entheai_router::available_or_free(config, m),
         Err(e) => return format!("self-audit skipped (no orchestrator model: {e})"),
     };
     let system = "You are entheai auditing a change that entheai just made to ITSELF \

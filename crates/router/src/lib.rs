@@ -7,6 +7,13 @@ use std::sync::Arc;
 /// strongest cheap MoE. Overridable via `[router].orchestrator` / `default_model`.
 pub const DEFAULT_ORCHESTRATOR: &str = "deepseek/deepseek-chat";
 
+/// The keyless free-tier fallback model — coder.vaked.dev's Qwen3-Coder-30B,
+/// via the built-in [`entheai_config::VAKED_PROVIDER`] every config injects.
+/// [`available_or_free`] returns this at the fan-out level when no configured
+/// provider is actually usable, so a bare `entheai` with zero setup can still
+/// fan out instead of erroring on an unresolved provider.
+pub const DEFAULT_FREE_MODEL: &str = "vaked/qwen3-coder:30b";
+
 /// The default orchestrator system prompt (identity + decomposition behavior).
 /// Override with `[router].orchestrator_prompt`, extend with `..._append`.
 pub const DEFAULT_ORCHESTRATOR_PROMPT: &str = "You are the orchestrator of entheai — a hybrid, fan-out coding agent. You are the strongest model in the swarm; your job is to plan, decompose, and synthesize, not to write code yourself.\n\nGiven a task and repository context you:\n1. Understand the goal and the provided codebase context.\n2. Decompose the work into the smallest set of independent, parallelizable sub-tasks, each matched to a role (explore, coder, test, docs, review). Prefer few well-scoped sub-tasks over many tiny ones, and only decompose when parallelism genuinely helps — a small task is a single sub-task.\n3. Give each sub-agent a precise, self-contained instruction; it sees only its own instruction, not the others'.\n4. After the sub-agents run in isolated git worktrees, synthesize their results into a coherent outcome, resolving conflicts and stating what was done.\n\nPrinciples: correctness first; minimal, focused changes; respect the repository's existing patterns; never fabricate file contents or results; if the task is ambiguous, make the most reasonable assumption and state it. Be decisive and concise.";
@@ -45,6 +52,39 @@ pub fn model_for_role(config: &Config, role: &str) -> anyhow::Result<String> {
         }
     }
     orchestrator_model(config)
+}
+
+/// Is `model_id`'s provider actually usable right now — known in `[providers]`,
+/// and (when it declares an `api_key_env`) that key present in the environment?
+/// A keyless provider counts as available as soon as it's declared.
+pub fn provider_available(config: &Config, model_id: &str) -> bool {
+    let Some((provider, _)) = model_id.split_once('/') else {
+        return false;
+    };
+    match config.providers.get(provider) {
+        None => false,
+        Some(pc) => match &pc.api_key_env {
+            None => true,
+            Some(env) => std::env::var(env).is_ok(),
+        },
+    }
+}
+
+/// A model id guaranteed to be buildable: `preferred` when its provider is
+/// available, else the keyless free-tier default ([`DEFAULT_FREE_MODEL`]).
+///
+/// This is the "use coder.vaked.dev's free tier if nothing else is available"
+/// rule. The fan-out orchestrator applies it to every leaf and to its own
+/// meta-model, so an unconfigured swarm degrades to the free tier instead of
+/// erroring on an unresolved provider. Interactive (non-fan-out) use is left
+/// untouched — there a misconfiguration should surface loudly, not silently
+/// reroute the user's model.
+pub fn available_or_free(config: &Config, preferred: String) -> String {
+    if provider_available(config, &preferred) {
+        preferred
+    } else {
+        DEFAULT_FREE_MODEL.to_string()
+    }
 }
 
 /// Build an `EntheaiAgent` for a `"<provider>/<model>"` id using the config's
@@ -216,5 +256,42 @@ mod tests {
             test_prompter(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn provider_available_true_for_keyless_declared_provider() {
+        let cfg = cfg_with_router_and_agents();
+        assert!(provider_available(&cfg, "osaurus/qwen3-coder"));
+    }
+
+    #[test]
+    fn provider_available_false_for_undeclared_provider() {
+        let cfg = cfg_with_router_and_agents();
+        assert!(!provider_available(&cfg, "deepseek/deepseek-chat"));
+    }
+
+    #[test]
+    fn available_or_free_keeps_available_and_falls_back_otherwise() {
+        let cfg = cfg_with_router_and_agents();
+        // osaurus is declared + keyless → kept as-is.
+        assert_eq!(
+            available_or_free(&cfg, "osaurus/qwen3-coder".to_string()),
+            "osaurus/qwen3-coder"
+        );
+        // deepseek isn't declared here → free-tier fallback.
+        assert_eq!(
+            available_or_free(&cfg, "deepseek/deepseek-chat".to_string()),
+            DEFAULT_FREE_MODEL
+        );
+    }
+
+    #[test]
+    fn free_model_resolves_against_the_injected_builtin_provider() {
+        // Its provider prefix must match config's injected builtin, else
+        // resolve_model would reject it as unknown.
+        assert!(DEFAULT_FREE_MODEL.starts_with(&format!("{}/", entheai_config::VAKED_PROVIDER)));
+        // And even an empty config carries that provider, keyless, to build it.
+        let cfg = Config::from_toml_str("").unwrap();
+        assert!(provider_available(&cfg, DEFAULT_FREE_MODEL));
     }
 }

@@ -5,6 +5,7 @@ pub mod todo;
 
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
@@ -66,6 +67,45 @@ impl ToolRegistry {
     }
 }
 
+/// Optional overrides for the built-in tools. A `None` field leaves that tool at
+/// its own constructor default — so the fan-out orchestrator (which has no
+/// `[tools]` limits to thread through) keeps exactly the behaviour it had, while
+/// the CLI passes the user's configured limits.
+#[derive(Debug, Clone, Default)]
+pub struct BuiltinLimits {
+    pub shell_timeout_secs: Option<u64>,
+    pub shell_output_cap: Option<usize>,
+    pub search_max_results: Option<usize>,
+}
+
+/// Register the canonical built-in tool set — file `read`/`write`/`edit`,
+/// `search`, `run_shell`, and `todo` — rooted at `root`, at their correct
+/// permission tiers.
+///
+/// One source of truth: every layer that builds a write-capable agent (the CLI
+/// and the fan-out orchestrator's coders alike) calls this, instead of
+/// hand-rolling a list that silently drifts — which is exactly how the fan-out
+/// coders had lost the `todo` tool the CLI agent carried.
+pub fn register_builtins(reg: &mut ToolRegistry, root: &Path, limits: BuiltinLimits) {
+    reg.register(Box::new(fs::ReadFile::new(root.to_path_buf())));
+    reg.register(Box::new(fs::WriteFile::new(root.to_path_buf())));
+    reg.register(Box::new(fs::EditFile::new(root.to_path_buf())));
+
+    let mut shell = shell::RunShell::new(root.to_path_buf());
+    if let (Some(secs), Some(cap)) = (limits.shell_timeout_secs, limits.shell_output_cap) {
+        shell = shell.with_limits(secs, cap);
+    }
+    reg.register(Box::new(shell));
+
+    let mut search = search::Search::new(root.to_path_buf());
+    if let Some(n) = limits.search_max_results {
+        search = search.with_max_results(n);
+    }
+    reg.register(Box::new(search));
+
+    reg.register(Box::new(todo::TodoTool));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,6 +119,34 @@ mod tests {
         assert_eq!(reg.to_tools().len(), 1);
         // Registry still usable — to_tools borrows, doesn't consume.
         assert_eq!(reg.to_tools().len(), 1);
+    }
+
+    #[test]
+    fn register_builtins_yields_the_full_core_set() {
+        let mut reg = ToolRegistry::new();
+        register_builtins(
+            &mut reg,
+            std::path::Path::new("/tmp"),
+            BuiltinLimits::default(),
+        );
+        let names: std::collections::HashSet<String> = reg
+            .to_tools()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        // The canonical set every write-capable agent gets — including `todo`,
+        // which the fan-out coders used to be missing.
+        for expected in [
+            "read_file",
+            "write_file",
+            "edit_file",
+            "search",
+            "run_shell",
+            "todo",
+        ] {
+            assert!(names.contains(expected), "builtin set missing {expected:?}");
+        }
+        assert_eq!(reg.to_tools().len(), 6, "exactly the six core builtins");
     }
 
     #[tokio::test]

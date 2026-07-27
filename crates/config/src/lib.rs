@@ -111,6 +111,14 @@ fn default_chenno_dir() -> String {
     "~/.entheai/karmapa-chenno".to_string()
 }
 
+/// Built-in keyless free-tier provider name — coder.vaked.dev's OpenAI-compatible
+/// endpoint (Qwen3-Coder-30B on CPU, no API key). Injected into every parsed
+/// config (unless the user declares their own `[providers.vaked]`) so the
+/// fan-out level always has a working model when nothing else is available.
+pub const VAKED_PROVIDER: &str = "vaked";
+/// Base URL for the built-in [`VAKED_PROVIDER`] free tier.
+pub const VAKED_BASE_URL: &str = "https://coder.vaked.dev/v1";
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderConfig {
     pub base_url: String,
@@ -498,7 +506,22 @@ pub struct TelemetryConfig {
 
 impl Config {
     pub fn from_toml_str(s: &str) -> Result<Self, ConfigError> {
-        Ok(toml::from_str(s)?)
+        let mut cfg: Config = toml::from_str(s)?;
+        cfg.inject_builtin_providers();
+        Ok(cfg)
+    }
+
+    /// Ensure the built-in keyless free-tier provider ([`VAKED_PROVIDER`] →
+    /// coder.vaked.dev) is present, so the fan-out level can always fall back to
+    /// a working model when nothing else is configured. Never overrides a
+    /// user-declared `[providers.vaked]`.
+    fn inject_builtin_providers(&mut self) {
+        self.providers
+            .entry(VAKED_PROVIDER.to_string())
+            .or_insert_with(|| ProviderConfig {
+                base_url: VAKED_BASE_URL.to_string(),
+                api_key_env: None,
+            });
     }
 }
 
@@ -531,6 +554,38 @@ mod tests {
         assert_eq!(
             cfg.providers["zen"].api_key_env.as_deref(),
             Some("OPENCODE_API_KEY")
+        );
+    }
+
+    #[test]
+    fn injects_builtin_vaked_free_tier_provider() {
+        // Even an empty config carries a working, keyless free-tier provider.
+        let cfg = Config::from_toml_str("").unwrap();
+        let vaked = cfg
+            .providers
+            .get(VAKED_PROVIDER)
+            .expect("built-in vaked provider injected");
+        assert_eq!(vaked.base_url, VAKED_BASE_URL);
+        assert_eq!(vaked.api_key_env, None, "free tier is keyless");
+    }
+
+    #[test]
+    fn user_declared_vaked_provider_is_not_overridden() {
+        let cfg = Config::from_toml_str(
+            r#"
+            [providers.vaked]
+            base_url = "https://my-own-node/v1"
+            api_key_env = "MY_KEY"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.providers[VAKED_PROVIDER].base_url,
+            "https://my-own-node/v1"
+        );
+        assert_eq!(
+            cfg.providers[VAKED_PROVIDER].api_key_env.as_deref(),
+            Some("MY_KEY")
         );
     }
 

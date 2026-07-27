@@ -9,7 +9,7 @@ Community call: `https://luma.com/sfkwmsjx` [sign-up](https://luma.com/sfkwmsjx)
 > A personal, macOS-native, **hybrid coding agent for the terminal** — with a brain that fans out.
 
 <p align="center">
-  <a href="https://github.com/entropy-om/entheai/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/release-v1.0.0%20v1.3.0-00e5ff" alt="release v1.0.0"></a>
+  <a href="https://github.com/entropy-om/entheai/releases/tag/v4.2.0"><img src="https://img.shields.io/badge/release-v4.2.0-00e5ff" alt="release v4.2.0"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20·%20Apple%20Silicon-111" alt="platform">
   <img src="https://img.shields.io/badge/built%20in-Rust-orange" alt="Rust">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="license">
