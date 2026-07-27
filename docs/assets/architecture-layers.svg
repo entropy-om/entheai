@@ -120,7 +120,7 @@
       <text x="349" y="86" class="chipdim">→ integrate (git worktrees, conflict-aware)</text>
 
       <rect x="680" y="20" width="280" height="88" class="box"/>
-      <text x="699" y="46" class="chip">memory <tspan class="chipdim">· Rahul</tspan></text>
+      <text x="699" y="46" class="chip">memory</text>
       <text x="699" y="68" class="chipdim">SQLite + vectors · retrieval</text>
       <text x="699" y="86" class="chipdim">trajectory / learning record</text>
 

@@ -10,7 +10,7 @@
 - **Lifecycle** — **per-session**: entheai spawns the watcher from the cwd repo on launch and stops it on exit. No persistent daemon, no project registry.
 - **Write mechanism** — **hybrid**: filesystem-direct writes are the source of truth (always work, Obsidian open or not); an optional best-effort **MCP nudge** refreshes/opens changed notes when Obsidian is running.
 - **Activation floor** — the feature is gated by **vault-resolution**, not by any file (no README requirement). Generators are per-source conditional; the managed subtree is created lazily (never empty).
-- **Ownership** — this is a distinct integration (`crates/obsidian`). It is **not** the SQLite recall memory (`crates/memory`, owned by @rahulmranga); the only touchpoint is the deferred, read-only memory-highlights seam.
+- **Ownership** — this is a distinct integration (`crates/obsidian`). It is **not** the SQLite recall memory (`crates/memory`, owned by the memory owner); the only touchpoint is the deferred, read-only memory-highlights seam.
 
 ## 1. Purpose
 
@@ -23,7 +23,7 @@ A script or an undocumented project has no docs to lean on — which is exactly 
 **Out (explicit, related follow-ups):**
 - **Two-way sync** (vault → repo). Obsidian edits are never pushed back in v1.
 - A **persistent launchd daemon** + multi-project registry (v1 is per-session only).
-- **Memory-highlights** — top learnings/trajectories rendered from `crates/memory` — deferred to v1.1 behind a read-only seam (that crate is @rahulmranga's).
+- **Memory-highlights** — top learnings/trajectories rendered from `crates/memory` — deferred to v1.1 behind a read-only seam (that crate is the memory owner's).
 - Non-macOS vault paths (Linux/Windows Obsidian dirs); Obsidian Sync / Publish; real-time collaborative editing.
 
 ## 3. Architecture
@@ -77,7 +77,7 @@ Notes (each conditional on its source):
 - **`Architecture.md`** — generated from the workspace layout (each `crates/*` + `bin/*` with a one-line role) and folds in the CLAUDE.md Repowise index (entry points, hotspots, health) as linked context. Degrades to a plain file listing outside a cargo workspace.
 - **`Sessions/`** — from `.remember/` (`now.md`, `today-*.md`, `recent.md`, `archive.md`, `core-memories.md`) → dated session notes, tagged for graph navigation.
 - **`Specs-and-Plans.md`** and **`Research.md`** — indexes of `docs/superpowers/specs/` + `plans/` and `docs/research/`, each entry a `[[wikilink]]` into the mirror.
-- **`Memory-Highlights.md`** — *v1.1, deferred*: top learnings/trajectories read **read-only** from `crates/memory`'s store, behind a seam so it composes additively once @rahulmranga's memory wiring lands. Not built in v1.
+- **`Memory-Highlights.md`** — *v1.1, deferred*: top learnings/trajectories read **read-only** from `crates/memory`'s store, behind a seam so it composes additively once the memory owner's memory wiring lands. Not built in v1.
 
 ## 6. Data flow (session lifecycle)
 
@@ -152,7 +152,7 @@ Realized with the workspace's established `#[serde(default = "fn")]` + `impl Def
 
 ## 11. Ownership & placement
 
-New `crates/obsidian` + `[obsidian]` config + thin `bin/entheai` session wiring. Fully distinct from `crates/memory` (@rahulmranga). The single touchpoint into his crate — `Memory-Highlights.md` — is deferred to v1.1 and is read-only.
+New `crates/obsidian` + `[obsidian]` config + thin `bin/entheai` session wiring. Fully distinct from `crates/memory` (the memory owner). The single touchpoint into his crate — `Memory-Highlights.md` — is deferred to v1.1 and is read-only.
 
 ## 12. Success criteria
 

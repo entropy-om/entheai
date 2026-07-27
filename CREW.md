@@ -1,7 +1,5 @@
 # CREW
 
-> *"one person can architect, but there needs to be partnership"* — Rahul Rangarao
->
 > *"it was very exhausting for me to put down the foundations, but I was not alone"* — Peter
 
 **Status: a proposal, not an appointment.** Written down by the owner on
@@ -17,7 +15,6 @@ without discussion.
 |---|---|---|
 | **Peter Lodri** | owner · the visualization layer | Works directly on the Zen field, the TUI, the visible and audible surface. *"I'm still the owner or whatever the correct word, but I'm just a human."* |
 | **8bit-Wraith** | lead dev — *if he wants it* | The main coder. His track "Standing-Onde" has been the radio's heartbeat since v0.4.0; the heartbeat becoming the hands is the shape of it. *"I have a lot to learn from him."* |
-| **Rahul Rangarao** | memory | Already true before it was written: the `should_spill` gate lives inside the prompt-processing pipeline, and `rahul-phi-work` is live on origin. |
 | **Flyxion** | maintainer · archivist | Keeper of what has been laid down — the logs, the garden, the record. |
 | **Boglárka** | testing · clear documentation — *if she wants it* | The one who makes the truth legible to people who weren't in the room. |
 

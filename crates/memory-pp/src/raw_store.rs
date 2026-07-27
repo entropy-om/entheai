@@ -1,5 +1,5 @@
 //! The raw experiential tier (Stage 1). A separate SQLite DB (never one of
-//! Rahul's five `Namespace`s) so `mode="topk"` is byte-identical: this surface
+//! the five `Namespace`s) so `mode="topk"` is byte-identical: this surface
 //! is wholly disjoint. Append-only, content-addressed (blake3), retention-scoped.
 //! The stored bytes are NEVER lossily rewritten — only the FTS index is derived.
 

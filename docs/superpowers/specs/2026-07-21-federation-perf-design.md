@@ -61,7 +61,7 @@ This is the F3 "shared state" slice arriving early, and it retires the repeated-
 
 **Trust boundary.** Coders get **read-only** access to the cache — they consume, they never write. The lookup deadline is tight; on a miss, a timeout, or the KV being unreachable, the coder just computes locally, exactly as it does today. Never block a coder on the cache.
 
-**Ownership note.** The embedding piece touches the `memory` crate's territory, which is Rahul's (`rahulmranga`). We implement the precompute as a *caller* of memory's embedding, not a modification of the memory crate — or coordinate with Rahul before touching it.
+**Ownership note.** The embedding piece touches the `memory` crate's territory, which is the (`the memory owner`). We implement the precompute as a *caller* of memory's embedding, not a modification of the memory crate — or coordinate with the memory owner before touching it.
 
 ---
 
@@ -86,7 +86,7 @@ Three independent slices, each its own plan, shipped in this order:
 
 1. **Slice 1 (shared base)** first — self-contained on the worker, no new cross-node infrastructure, the biggest reliable memory/setup win. Ship the git-worktree version; overlay/btrfs as a follow-up tier.
 2. **Slice 3 (loop latency)** second — independent of federation, broad benefit to all runs, but touches the hot-path loop so it wants care.
-3. **Slice 2 (precompute cache)** last — most new infrastructure (JetStream KV) and the only one needing cross-crate coordination (memory/Rahul).
+3. **Slice 2 (precompute cache)** last — most new infrastructure (JetStream KV) and the only one needing cross-crate coordination (memory/the memory owner).
 
 **Non-goals:** a general content-addressed VFS beyond CoW of the base; caching plain file reads; coder-writable caches; egress restriction (that's the separate systemd-sandbox exploration); making the model itself faster.
 

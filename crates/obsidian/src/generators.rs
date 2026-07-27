@@ -335,7 +335,7 @@ pub fn home_moc(ctx: &RepoContext, out: &mut RenderOutput) {
     if has("Research.md") {
         md.push_str("## [[Research]]\n\n");
     }
-    // SEAM(v1.1, @rahulmranga): when the SQLite memory layer is wired, add a
+    // SEAM(v1.1, the memory owner): when the SQLite memory layer is wired, add a
     // "## [[Memory-Highlights]]" section here + a Memory-Highlights.md generator
     // that reads top learnings read-only from crates/memory. Out of scope now.
 

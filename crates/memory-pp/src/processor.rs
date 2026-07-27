@@ -171,7 +171,7 @@ impl PromptProcessor {
     // ---- Phase-1 ingest (unconditional raw capture, best-effort) ----
 
     /// Tool outputs/diffs — captured RAW and UNCONDITIONALLY (ahead of, and
-    /// independent of, Rahul's `should_spill` gate), content-addressed.
+    /// independent of, the `should_spill` gate), content-addressed.
     pub async fn ingest_tool(&self, scope: &MemoryScope, ev: &ToolEvidence) {
         let meta = json!({
             "tool": ev.name,

@@ -545,7 +545,7 @@ git commit -m "docs(plan): checkpoint — core-to-tui compression wiring needs i
 
 Task 5 checkpoint result: `crates/tui/src/lib.rs:729` calls `.run_task(...)`, not
 `.run_task_with_memory(...)` — confirmed by the pre-existing
-`TODO(@rahulmranga)` at `crates/tui/src/lib.rs:318-323`, which already tracks
+`TODO(the memory owner)` at `crates/tui/src/lib.rs:318-323`, which already tracks
 this exact gap and points to `docs/superpowers/plans/2026-07-19-entheai-memory-v1.md`
 → "Task 9" for the verbatim wiring recipe. Prompt-processing (and therefore
 any `KompressMarqant`/compression-ratio data) does not reach the interactive

@@ -132,7 +132,7 @@ index) so the federation learns collectively.
 
 - JetStream **KV** buckets per memory namespace (`entheai-learnings`, `entheai-trajectories`, …);
   large embeddings/blobs → object store.
-- **Seam only in this spec:** `crates/memory` is **@rahulmranga's** — F3 must be co-designed with
+- **Seam only in this spec:** `crates/memory` is **the memory owner's** — F3 must be co-designed with
   him and is gated on memory-v1 Tasks 9–10 landing first. entheai-federation would expose a
   `StateStore` trait the memory crate *optionally* backs with NATS-KV; no edits to `crates/memory`
   here. **Lowest priority of the three.**
@@ -185,13 +185,13 @@ per-subject permissions before F2 goes wide — §7.)
    Is there already a shared bare repo / does every node have `origin` (GitHub) creds?
 3. **Worker fleet** — which nodes should run `entheai-worker`? (crabcc-ccx33, nixai-base, dev-cx53…)
    Do they have the Rust toolchain + provider keys (`.env`)?
-4. **F3 timing** — defer until memory-v1 Tasks 9–10 (Rahul) land? (recommended.)
+4. **F3 timing** — defer until memory-v1 Tasks 9–10 (the memory owner) land? (recommended.)
 
 ## 10. Proposed order
 
 **F1 event bus** (this week, self-contained, unblocks a federation feed in tailscope/TUI) →
 **F2 distributed swarm** (multi-session, the headline capability) → **F3 shared state**
-(after Rahul's memory wiring, co-designed). Each slice: its own `docs/superpowers/plans/…` +
+(after the memory wiring, co-designed). Each slice: its own `docs/superpowers/plans/…` +
 TDD build + verification on the dev-cx53 sandbox against crabcc-nats.
 
 ---

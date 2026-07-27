@@ -25,7 +25,7 @@ entheai never bundles rustybox in its release; the worker fetches it from
 
 Linux workers only (rustybox is raw-syscall Linux). macOS/other workers keep host `/bin/sh`
 (current behaviour). Opt-in via config; default off — zero change unless enabled. Does **not**
-touch `crates/memory` (Rahul's); the surface is `crates/tools`, `crates/sandbox`,
+touch `crates/memory` (the); the surface is `crates/tools`, `crates/sandbox`,
 `bin/entheai-worker`, `crates/config`.
 
 ## The integration points (grounded)

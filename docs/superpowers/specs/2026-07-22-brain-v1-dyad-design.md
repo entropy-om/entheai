@@ -28,7 +28,7 @@ Three real gaps found by direct investigation (not assumed):
 
 1. **`crates/tui` never calls `run_task_with_memory`** — only plain
    `run_task` (`crates/tui/src/lib.rs:732`, confirmed via a pre-existing
-   `TODO(@rahulmranga)` at line 318-323 pointing at
+   `TODO(the memory owner)` at line 318-323 pointing at
    `docs/superpowers/plans/2026-07-19-entheai-memory-v1.md` → "Task 9"). No
    tool call or transcript turn from an interactive session ever reaches
    `memory-pp`'s `RawStore`. The one-shot CLI path (`bin/entheai/src/main.rs:305`)

@@ -28,9 +28,9 @@ The default path and behaviour are unchanged; this is additive.
 
 ## Ownership note (read first)
 
-This extends `crates/memory`, which is **Rahul's** (`rahulmranga`, CODEOWNERS) — our standing
+This extends `crates/memory`, which is **the** (`the memory owner`, CODEOWNERS) — our standing
 guardrail is "don't touch `crates/memory`." Building here overrides that guardrail on the
-user's direction, so the implementation must be **coordinated with Rahul**: share this spec
+user's direction, so the implementation must be **coordinated with the memory owner**: share this spec
 and the plan with him, do the work on a branch, and land it through his review. The design
 below is deliberately shaped as an *additive mode* (a new variant behind the existing
 `MemoryRuntime`/`retrieve_before` seam) so it composes with his crate rather than rewriting it.

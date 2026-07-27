@@ -1,7 +1,7 @@
 # Prompt-Processing — SLICE 1 Implementation Plan (Phase-1 raw ingest + `RetrievalMode` switch + exact top-K fallback)
 
-> **⚠️ COORDINATE WITH RAHUL FIRST (`rahulmranga`, CODEOWNERS of `crates/memory`).**
-> The spec (`docs/superpowers/specs/2026-07-22-prompt-processing-design.md` §29-36) mandates coordination because this feature extends the memory subsystem, whose standing guardrail is *"don't touch `crates/memory`."* This plan is deliberately shaped so that guardrail is honored **literally**: it changes **zero lines in `crates/memory`**. All new machinery lands in a new sibling crate (`crates/memory-pp`) plus `crates/config`, `crates/core`, and `bin/entheai` — none of which Rahul owns. Still: **share this plan + the spec with Rahul, do the work on a branch, and get his sign-off before merge**, because it reads/writes alongside his store and depends on his public types. If Rahul prefers the spec-literal placement (dispatch inside `MemoryRuntime::retrieve_before`), that is a ~30-line change in his crate; the honest ledger of both options is in the "Ownership" section below.
+> **⚠️ COORDINATE WITH MEMORY OWNER FIRST (`the memory owner`, CODEOWNERS of `crates/memory`).**
+> The spec (`docs/superpowers/specs/2026-07-22-prompt-processing-design.md` §29-36) mandates coordination because this feature extends the memory subsystem, whose standing guardrail is *"don't touch `crates/memory`."* This plan is deliberately shaped so that guardrail is honored **literally**: it changes **zero lines in `crates/memory`**. All new machinery lands in a new sibling crate (`crates/memory-pp`) plus `crates/config`, `crates/core`, and `bin/entheai` — none of which the memory owner owns. Still: **share this plan + the spec with the memory owner, do the work on a branch, and get his sign-off before merge**, because it reads/writes alongside his store and depends on his public types. If the memory owner prefers the spec-literal placement (dispatch inside `MemoryRuntime::retrieve_before`), that is a ~30-line change in his crate; the honest ledger of both options is in the "Ownership" section below.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -13,7 +13,7 @@
 
 **Scope:** Slice 1 only. **Delivered:** Phase-1 ingest (transcripts + all tool outputs, content-addressed, idempotent, retention-pruned), the `topk`↔`prompt-processing` switch, and the complete fail-safe. **Deferred to Slice 2 (behind the same stubs/traits, no upstream change):** the real `sidecars/ultragraph/serve.py` stdio-JSON-RPC `rerank` sidecar, the real `mq compress --semantic` subprocess, and the vector arm of `RawStore::recall`. Phase-2/3 ingest (codebase snapshots, obsidian, external) are out of scope.
 
-**Refinement over the spec:** The spec sketches dispatch *inside* `MemoryRuntime::retrieve_before`. This plan relocates dispatch to the one core call site so the fallback is *literally* Rahul's unchanged `retrieve_before` (byte-identity by construction, not re-implementation) and `crates/memory` stays untouched. `RetrievalMode` and `PpError` live in the new crate; config carries `mode` as a `String`.
+**Refinement over the spec:** The spec sketches dispatch *inside* `MemoryRuntime::retrieve_before`. This plan relocates dispatch to the one core call site so the fallback is *literally* the unchanged `retrieve_before` (byte-identity by construction, not re-implementation) and `crates/memory` stays untouched. `RetrievalMode` and `PpError` live in the new crate; config carries `mode` as a `String`.
 
 ---
 
@@ -25,16 +25,16 @@
 | `crates/config` | ours | `mode: String` + `PromptProcessingConfig` | no `entheai-memory` dep edge introduced |
 | `crates/core` | ours | +1 param, dispatch branch, 2 ingest hooks, 1 pure helper | hotspot — run `get_risk` before editing |
 | `bin/entheai` | ours | `build_prompt_processor` + wire | mirrors `build_memory` |
-| **`crates/memory`** | **Rahul** | **0 lines** | dispatch moved to core; fallback = his unchanged `retrieve_before`; `PpError` isolated |
+| **`crates/memory`** | **the memory owner** | **0 lines** | dispatch moved to core; fallback = his unchanged `retrieve_before`; `PpError` isolated |
 
-**Fallback offer if Rahul wants the spec-literal placement:** add `RetrievalMode` (~6 lines) + a `mode` field on `MemoryRuntimeConfig` + a `pp: Option<Box<dyn PromptRetriever>>` trait-object field (trait defined in `crates/memory`, impl in `crates/memory-pp` — breaks the dep cycle) + the dispatch split in `retrieve_before`. That is ~30-40 lines in his crate vs. 0. Recommend 0; confirm the choice with him on the branch.
+**Fallback offer if the memory owner wants the spec-literal placement:** add `RetrievalMode` (~6 lines) + a `mode` field on `MemoryRuntimeConfig` + a `pp: Option<Box<dyn PromptRetriever>>` trait-object field (trait defined in `crates/memory`, impl in `crates/memory-pp` — breaks the dep cycle) + the dispatch split in `retrieve_before`. That is ~30-40 lines in his crate vs. 0. Recommend 0; confirm the choice with him on the branch.
 
 ---
 
 ## Adversarial-review corrections — MUST apply (folded in 2026-07-22)
 
 A completeness critic verified this plan against the spec + live tree. It confirmed the core win
-(**0 lines changed in `crates/memory`** — verified: dispatch relocated to core, fallback = Rahul's
+(**0 lines changed in `crates/memory`** — verified: dispatch relocated to core, fallback = the
 unchanged `retrieve_before`). Apply these corrections while implementing:
 
 1. **[BLOCKER · Task 6] Update `MemoryConfig`'s manual `Default` impl.** `MemoryConfig` has a
@@ -74,7 +74,7 @@ unchanged `retrieve_before`). Apply these corrections while implementing:
 7. **[Disclose · Scope] Slice-1 ingest fires for ONESHOT runs only.** PP is wired at the single
    `run_task_with_memory` site (`main.rs:266`); the interactive TUI calls `run_task`
    (`crates/tui/src/lib.rs:646`; standing TODO at `:277`), so interactive work is NOT ingested yet.
-   State this as a Slice-1 limitation — wiring the TUI seam is required follow-up (same seam Rahul's
+   State this as a Slice-1 limitation — wiring the TUI seam is required follow-up (same seam the
    memory-into-TUI TODO needs).
 
 **Lower-severity (note, don't block):** N+1 rehydrate loop per prompt (add `get_many` in Slice 2);
@@ -122,7 +122,7 @@ tempfile = "3"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 ```
 
-- [ ] **Step 2: Write `error.rs` (the isolated error type — deliberately NOT merged into Rahul's `MemoryError`)**
+- [ ] **Step 2: Write `error.rs` (the isolated error type — deliberately NOT merged into the `MemoryError`)**
 
 ```rust
 //! Prompt-processing errors. Kept in this crate (never added to
@@ -278,7 +278,7 @@ mod tests {
 
 ```rust
 //! The raw experiential tier (Stage 1). A separate SQLite DB (never one of
-//! Rahul's five `Namespace`s) so `mode="topk"` is byte-identical: this surface
+//! the five `Namespace`s) so `mode="topk"` is byte-identical: this surface
 //! is wholly disjoint. Append-only, content-addressed (blake3), retention-scoped.
 //! The stored bytes are NEVER lossily rewritten — only the FTS index is derived.
 
@@ -1017,7 +1017,7 @@ impl PromptProcessor {
     // ---- Phase-1 ingest (unconditional raw capture, best-effort) ----
 
     /// Tool outputs/diffs — captured RAW and UNCONDITIONALLY (ahead of, and
-    /// independent of, Rahul's `should_spill` gate), content-addressed.
+    /// independent of, the `should_spill` gate), content-addressed.
     pub async fn ingest_tool(&self, scope: &MemoryScope, ev: &ToolEvidence) {
         let meta = json!({
             "tool": ev.name,
@@ -1549,12 +1549,12 @@ git commit -m "test(memory-pp): Slice-1 end-to-end fallback+idempotency guard; d
 
 - [ ] `cargo test -p entheai-memory-pp -p entheai-config -p entheai-core` — all green.
 - [ ] `cargo test -p entheai-memory-pp -- --ignored` — the end-to-end guard passes.
-- [ ] `cargo test -p entheai-memory` — **Rahul's crate is untouched; his existing tests still pass unchanged** (the byte-identity guarantee: the fallback arm calls his unmodified `retrieve_before`).
+- [ ] `cargo test -p entheai-memory` — **the crate is untouched; his existing tests still pass unchanged** (the byte-identity guarantee: the fallback arm calls his unmodified `retrieve_before`).
 - [ ] `cargo clippy --workspace -- -D warnings` — clean.
 - [ ] `cargo build --no-default-features -p entheai` — headless build still compiles (PP pulls in no GUI deps; the sidecar/`mq` are subprocesses, not crate deps).
-- [ ] `git diff main --stat -- crates/memory/` — **empty** (confirm zero lines changed in Rahul's crate).
+- [ ] `git diff main --stat -- crates/memory/` — **empty** (confirm zero lines changed in the crate).
 - [ ] Manual: `mode = "topk"` run is byte-identical to today; `mode = "prompt-processing"` run answers identically (fallback) **and** populates `raw.db` with transcript + tool_output rows; a second run of the same session adds no rows.
-- [ ] Share the branch + this plan with `rahulmranga` for sign-off before merge (spec §29-36), noting the zero-line `crates/memory` diff and the Slice-2 seam markers (`Box::new(StubMesh)` / `Box::new(StubMarqant)` in `build_prompt_processor`, and the unused `sidecar_cmd`/`mesh_size`/`marqant_cmd` config fields).
+- [ ] Share the branch + this plan with `the memory owner` for sign-off before merge (spec §29-36), noting the zero-line `crates/memory` diff and the Slice-2 seam markers (`Box::new(StubMesh)` / `Box::new(StubMarqant)` in `build_prompt_processor`, and the unused `sidecar_cmd`/`mesh_size`/`marqant_cmd` config fields).
 - [ ] Dispatch a holistic code-reviewer subagent over the whole Slice-1 diff.
 
 ## Deferred to Slice 2 (same seams, no upstream change)

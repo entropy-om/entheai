@@ -10,7 +10,7 @@
 
 ---
 
-> ## Execution status (2026-07-19) — engine + inspection CLI DONE, wiring (Tasks 9–10) handed to @rahulmranga
+> ## Execution status (2026-07-19) — engine + inspection CLI DONE, wiring (Tasks 9–10) handed to the memory owner
 >
 > **Tasks 0–7 complete and reviewed** (two-stage: spec + code-quality), each committed to `main`:
 > - Task 0 `12588b7`/`97838e5` · Task 1 `9f9600f`/`527dc7f`/`fb02bc4` · Task 2 `93dc3ae`/`cb31d9b` · Task 3 `b087b1c`/`aa445ba` · Task 4 `855b899` · Task 5 `05059ad`/`392501a` · Task 6 `0d1e2fe` · Task 7 `ad543e4`.
@@ -18,7 +18,7 @@
 >
 > **Task 8 DONE** (`af4461a`, 2026-07-19) — the `--memory list/search/stats` inspection CLI landed on green `main`.
 >
-> **Tasks 9–10 REASSIGNED to Rahul (@rahulmranga) (2026-07-19).** Per the maintainer, the remaining memory "brain" wiring is Rahul's to complete. Ownership is tagged in `.github/CODEOWNERS` (`/crates/memory/` → @rahulmranga) and via inline `TODO(@rahulmranga)` markers at the exact seams — `crates/tui/src/lib.rs` (`run`) for Task 9 and `crates/orchestrator/src/lib.rs` (`run_fanout`) for Task 10. The verbatim recipes remain in Task 9 / Task 10 below.
+> **Tasks 9–10 REASSIGNED to the memory owner (the memory owner) (2026-07-19).** Per the maintainer, the remaining memory "brain" wiring is the to complete. Ownership is tagged in `.github/CODEOWNERS` (`/crates/memory/` → the memory owner) and via inline `TODO(the memory owner)` markers at the exact seams — `crates/tui/src/lib.rs` (`run`) for Task 9 and `crates/orchestrator/src/lib.rs` (`run_fanout`) for Task 10. The verbatim recipes remain in Task 9 / Task 10 below.
 >
 > **Task 10 signature drift — MUST adapt on resume:** the fan-out session changed `run_fanout` to take a `WorkerPool`: it is now `run_fanout(config, root, task, events, pool)` (pool = `entheai_orchestrator::WorkerPool::new(cfg.router.max_parallel.max(1))`). Task 10's plan text assumes `run_fanout(config, root, task, events, memory)`. On resume, Task 10 becomes **`run_fanout(config, root, task, events, pool, memory: Option<SharedMemory>)`** — add `memory` as an *additional* trailing arg, do not remove `pool`; update the call sites in `bin/entheai/src/main.rs` (fanout branch) and `crates/tui/src/lib.rs` accordingly, and thread `memory` down through `run_fanout_readonly`/`run_coder`/`run_subagent` per the plan. Coordinate with whoever owns the orchestrator so the arg order is agreed.
 >

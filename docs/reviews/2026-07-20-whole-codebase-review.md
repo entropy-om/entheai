@@ -2,7 +2,7 @@
 
 Read-only audit of the entire entheai workspace via 6 parallel reviewers (agent-engine, orchestration, memory, UI, tools/infra, obsidian+bins). Findings are high-confidence real defects only — style/clippy/doc nits excluded (handled separately; dead deps already removed in `f8ec724`). Dominant theme: **unguarded external-input surfaces** — missing timeouts and unbounded buffers on provider/MCP/shell/stream paths.
 
-Legend: **[FIX]** = will fix now · **[RAHUL]** = `crates/memory` is @rahulmranga's, handed off · **[FLAG]** = intentional, surfaced for a decision, not changed.
+Legend: **[FIX]** = will fix now · **[MEMORY OWNER]** = `crates/memory` is the memory owner's, handed off · **[FLAG]** = intentional, surfaced for a decision, not changed.
 
 ## IMPORTANT
 
@@ -28,7 +28,7 @@ Legend: **[FIX]** = will fix now · **[RAHUL]** = `crates/memory` is @rahulmrang
 - **[FIX] tools/fs** — `read_file`/`write_file` have no size cap (inconsistent with the shell cap; low risk, workspace-confined).
 - **[FLAG] radio** — latent stdio-pipe deadlock (`lib.rs` ~321): child pipes drained only after `wait_timeout`; safe today only because output is tiny (`--quiet` + 2 `--print`).
 
-## Handed to @rahulmranga (`crates/memory` — not edited here)
+## Handed to the memory owner (`crates/memory` — not edited here)
 
 - **IMPORTANT — tri-store drift.** `store.rs` ~196: on upsert, `entries.embedding` is overwritten unconditionally but the `vec_entries` delete lives inside `if let Some(emb)`. Re-storing a key with **no** embedding NULLs `entries.embedding` while leaving the stale vector row; KNN later surfaces a vector that no longer matches the content, and nothing reconciles it (backfill only inserts). Fix: move the `DELETE FROM vec_entries` out of the `if let Some(emb)` guard.
 - MINOR — `load_entries` IN-clause can exceed `SQLITE_MAX_VARIABLE_NUMBER` for a public `search(limit)` above ~5.4k (chunk or clamp).

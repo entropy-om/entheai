@@ -35,7 +35,7 @@ git push origin main || { git pull --rebase origin main && git push origin main;
 2. **Pure layer is byte-free for assets.** `render_all` returns `RenderOutput { notes: Vec<VaultNote>, assets: Vec<AssetRef> }`. An `AssetRef { repo_rel, vault_rel }` is a *reference* (image to copy repo→vault), not bytes — keeping the render layer pure. The `VaultWriter` (I/O) does the byte copy.
 3. **`obsidian` does not depend on `entheai-config`.** It defines its own `ObsidianOptions`; the bin maps `entheai_config::ObsidianConfig → obsidian::ObsidianOptions` (mirrors how `bin` maps `MemoryConfig → MemoryRuntimeConfig`). Config → obsidian is one-way and cycle-free.
 4. **Content hash is inline FNV-1a 64** (stable across runs/versions; the manifest persists between sessions). No `sha2`/`blake3` dependency.
-5. **Memory-Highlights is OUT of scope** (v1.1 seam; `crates/memory` is @rahulmranga's). Leave a clearly-marked seam comment where it would plug in; do not build it.
+5. **Memory-Highlights is OUT of scope** (v1.1 seam; `crates/memory` is the memory owner's). Leave a clearly-marked seam comment where it would plug in; do not build it.
 
 ## File structure
 
@@ -854,7 +854,7 @@ pub fn home_moc(ctx: &RepoContext, out: &mut RenderOutput) {
     if has("Research.md") {
         md.push_str("## [[Research]]\n\n");
     }
-    // SEAM(v1.1, @rahulmranga): when the SQLite memory layer is wired, add a
+    // SEAM(v1.1, the memory owner): when the SQLite memory layer is wired, add a
     // "## [[Memory-Highlights]]" section here + a Memory-Highlights.md generator
     // that reads top learnings read-only from crates/memory. Out of scope now.
 
