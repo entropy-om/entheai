@@ -2503,6 +2503,8 @@ name = "entheai-viz"
 version = "4.2.1"
 dependencies = [
  "ratatui",
+ "serde",
+ "toml",
 ]
 
 [[package]]

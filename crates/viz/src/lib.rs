@@ -7,7 +7,6 @@ pub mod brain;
 pub mod model;
 pub mod palette;
 pub mod pomodoro;
-pub mod surface;
 pub mod swarm;
 pub mod term;
 pub mod zen;

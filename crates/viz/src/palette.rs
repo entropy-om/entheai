@@ -144,21 +144,79 @@ pub const VOID: Palette = Palette {
 /// Every theme, in `/theme` cycle order.
 pub const ALL: [&Palette; 4] = [&ENTHEIA, &EMBER, &VERDANT, &VOID];
 
+use std::sync::Mutex;
+static CUSTOM: Mutex<Vec<&'static Palette>> = Mutex::new(Vec::new());
+
 /// Look a theme up by name; unknown names fall back to [`ENTHEIA`] (a typo in
 /// config must never dim the field to nothing).
 pub fn by_name(name: &str) -> &'static Palette {
+    let name = name.trim();
+    if let Ok(g) = CUSTOM.lock() {
+        if let Some(p) = g.iter().find(|p| p.name == name) {
+            return p;
+        }
+    }
     ALL.iter()
-        .find(|p| p.name == name.trim())
+        .find(|p| p.name == name)
         .copied()
         .unwrap_or(&ENTHEIA)
 }
 
 /// The theme after `name` in cycle order (wraps; unknown starts the cycle).
 pub fn next_after(name: &str) -> &'static Palette {
-    let idx = ALL.iter().position(|p| p.name == name.trim());
+    let name = name.trim();
+    let custom = CUSTOM.lock().unwrap_or_else(|e| e.into_inner());
+    let all: Vec<&Palette> = ALL.iter().collect::<Vec<_>>().into_iter().chain(custom.iter().copied()).collect();
+    let idx = all.iter().position(|p| p.name == name);
     match idx {
-        Some(i) => ALL[(i + 1) % ALL.len()],
-        None => ALL[0],
+        Some(i) => all[(i + 1) % all.len()],
+        None => &ALL[0],
+    }
+}
+
+/// Parse `[viz.palette.<name>]` sections from raw TOML and register as runtime
+/// custom themes. Call once at startup before any palette lookup.
+pub fn register_from_toml(raw: &str) {
+    #[derive(serde::Deserialize, Default)]
+    struct Raw {
+        core: Option<[u8; 3]>, aura: Option<[u8; 3]>,
+        faculty_rest: Option<[u8; 3]>, faculty_active: Option<[u8; 3]>,
+        label: Option<[u8; 3]>,
+        frozen_dim: Option<[u8; 3]>, frozen_lit: Option<[u8; 3]>,
+        frozen_label: Option<[u8; 3]>, mote_fallback: Option<[u8; 3]>,
+        title: Option<[u8; 3]>, whisper: Option<[u8; 3]>,
+        legend_label: Option<[u8; 3]>, reveal: Option<[u8; 3]>, kin: Option<[u8; 3]>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Cfg { viz: Option<Viz> }
+    #[derive(serde::Deserialize)]
+    struct Viz { palette: Option<std::collections::BTreeMap<String, Raw>> }
+    let Ok(cfg) = toml::from_str::<Cfg>(raw) else { return };
+    let Some(palettes) = cfg.viz.and_then(|v| v.palette) else { return };
+    let mut loaded = Vec::new();
+    for (name, rp) in palettes {
+        let base = by_name(&name);
+        let p: &'static Palette = Box::leak(Box::new(Palette {
+            name: Box::leak(name.trim().to_string().into_boxed_str()),
+            core: rp.core.unwrap_or(base.core),
+            aura: rp.aura.unwrap_or(base.aura),
+            faculty_rest: rp.faculty_rest.unwrap_or(base.faculty_rest),
+            faculty_active: rp.faculty_active.unwrap_or(base.faculty_active),
+            label: rp.label.unwrap_or(base.label),
+            frozen_dim: rp.frozen_dim.unwrap_or(base.frozen_dim),
+            frozen_lit: rp.frozen_lit.unwrap_or(base.frozen_lit),
+            frozen_label: rp.frozen_label.unwrap_or(base.frozen_label),
+            mote_fallback: rp.mote_fallback.unwrap_or(base.mote_fallback),
+            title: rp.title.unwrap_or(base.title),
+            whisper: rp.whisper.unwrap_or(base.whisper),
+            legend_label: rp.legend_label.unwrap_or(base.legend_label),
+            reveal: rp.reveal.unwrap_or(base.reveal),
+            kin: rp.kin.unwrap_or(base.kin),
+        }));
+        loaded.push(p);
+    }
+    if let Ok(mut g) = CUSTOM.lock() {
+        *g = loaded;
     }
 }
 
