@@ -65,8 +65,8 @@ impl Widget for &TernarySurface {
                         let x = area.x + (px * 2) as u16;
                         let y = area.y + py as u16;
                         if x < area.right() {
-                            buf.get_mut(x, y).set_char(' ').set_bg(color);
-                            buf.get_mut(x + 1, y).set_char(' ').set_bg(color);
+                            buf[(x, y)].set_char(' ').set_bg(color);
+                            buf[(x + 1, y)].set_char(' ').set_bg(color);
                         }
                     }
                 }
