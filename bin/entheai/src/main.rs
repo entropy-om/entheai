@@ -100,20 +100,16 @@ max_parallel = 4
 /// Registers any custom `[viz.palette.*]` themes from the raw TOML before
 /// returning, so palette lookups work from startup.
 fn load_config(path: &str) -> anyhow::Result<Config> {
-    let raw = load_raw_toml(path)?;
-    // Register custom palettes from the raw TOML before parsing config.
-    entheai_viz::palette::register_from_toml(&raw);
-    Ok(Config::from_toml_str(&raw)?)
-}
-
-/// Read the raw TOML bytes from the resolved config path, without parsing.
-fn load_raw_toml(path: &str) -> anyhow::Result<String> {
     if std::path::Path::new(path).exists() {
-        return std::fs::read_to_string(path).with_context(|| format!("reading config {path}"));
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading config {path}"))?;
+        return Ok(Config::from_toml_str(&text)?);
     }
+
     if path != DEFAULT_CONFIG_PATH {
         anyhow::bail!("reading config {path}: No such file or directory (os error 2)");
     }
+
     let global = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
         .join(".config")
         .join("entheai")
@@ -125,8 +121,9 @@ fn load_raw_toml(path: &str) -> anyhow::Result<String> {
             "entheai: no ./{DEFAULT_CONFIG_PATH} — using {}",
             global.display()
         );
-        return Ok(text);
+        return Ok(Config::from_toml_str(&text)?);
     }
+
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| ".".into());
@@ -139,7 +136,7 @@ fn load_raw_toml(path: &str) -> anyhow::Result<String> {
             .map(|p| p.display().to_string())
             .unwrap_or_default(),
     );
-    Ok(DEFAULT_CONFIG_TOML.to_string())
+    Ok(Config::from_toml_str(DEFAULT_CONFIG_TOML)?)
 }
 
 #[tokio::main]
