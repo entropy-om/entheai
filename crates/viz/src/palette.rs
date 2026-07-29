@@ -166,12 +166,15 @@ pub fn by_name(name: &str) -> &'static Palette {
 pub fn next_after(name: &str) -> &'static Palette {
     let name = name.trim();
     let custom = CUSTOM.lock().unwrap_or_else(|e| e.into_inner());
-    let all: Vec<&Palette> = ALL.iter().collect::<Vec<_>>().into_iter().chain(custom.iter().copied()).collect();
-    let idx = all.iter().position(|p| p.name == name);
-    match idx {
-        Some(i) => all[(i + 1) % all.len()],
-        None => &ALL[0],
-    }
+    // Build combined name list: built-in names first, then custom.
+    let mut names: Vec<&str> = ALL.iter().map(|p| p.name).collect();
+    names.extend(custom.iter().map(|p| p.name));
+    let idx = names.iter().position(|n| *n == name);
+    let next_name = match idx {
+        Some(i) => names[(i + 1) % names.len()],
+        None => ALL[0].name,
+    };
+    by_name(next_name)
 }
 
 /// Parse `[viz.palette.<name>]` sections from raw TOML and register as runtime
@@ -196,22 +199,25 @@ pub fn register_from_toml(raw: &str) {
     let mut loaded = Vec::new();
     for (name, rp) in palettes {
         let base = by_name(&name);
+        let map_rgb = |opt: Option<[u8; 3]>, fallback: Rgb| -> Rgb {
+            match opt { Some(a) => (a[0], a[1], a[2]), None => fallback }
+        };
         let p: &'static Palette = Box::leak(Box::new(Palette {
             name: Box::leak(name.trim().to_string().into_boxed_str()),
-            core: rp.core.unwrap_or(base.core),
-            aura: rp.aura.unwrap_or(base.aura),
-            faculty_rest: rp.faculty_rest.unwrap_or(base.faculty_rest),
-            faculty_active: rp.faculty_active.unwrap_or(base.faculty_active),
-            label: rp.label.unwrap_or(base.label),
-            frozen_dim: rp.frozen_dim.unwrap_or(base.frozen_dim),
-            frozen_lit: rp.frozen_lit.unwrap_or(base.frozen_lit),
-            frozen_label: rp.frozen_label.unwrap_or(base.frozen_label),
-            mote_fallback: rp.mote_fallback.unwrap_or(base.mote_fallback),
-            title: rp.title.unwrap_or(base.title),
-            whisper: rp.whisper.unwrap_or(base.whisper),
-            legend_label: rp.legend_label.unwrap_or(base.legend_label),
-            reveal: rp.reveal.unwrap_or(base.reveal),
-            kin: rp.kin.unwrap_or(base.kin),
+            core: map_rgb(rp.core, base.core),
+            aura: map_rgb(rp.aura, base.aura),
+            faculty_rest: map_rgb(rp.faculty_rest, base.faculty_rest),
+            faculty_active: map_rgb(rp.faculty_active, base.faculty_active),
+            label: map_rgb(rp.label, base.label),
+            frozen_dim: map_rgb(rp.frozen_dim, base.frozen_dim),
+            frozen_lit: map_rgb(rp.frozen_lit, base.frozen_lit),
+            frozen_label: map_rgb(rp.frozen_label, base.frozen_label),
+            mote_fallback: map_rgb(rp.mote_fallback, base.mote_fallback),
+            title: map_rgb(rp.title, base.title),
+            whisper: map_rgb(rp.whisper, base.whisper),
+            legend_label: map_rgb(rp.legend_label, base.legend_label),
+            reveal: map_rgb(rp.reveal, base.reveal),
+            kin: map_rgb(rp.kin, base.kin),
         }));
         loaded.push(p);
     }

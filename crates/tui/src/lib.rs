@@ -456,6 +456,10 @@ pub async fn run(
         tokio::sync::mpsc::UnboundedReceiver<entheai_memory_pp::BrainJudgeEvent>,
     )>,
 ) -> anyhow::Result<()> {
+    // Register custom [viz.palette.*] themes from the local config file.
+    if let Ok(raw) = std::fs::read_to_string("entheai.toml") {
+        entheai_viz::palette::register_from_toml(&raw);
+    }
     let mut terminal = init_terminal()?;
     let guard = TerminalGuard;
     let result = event_loop(
