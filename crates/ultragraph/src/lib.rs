@@ -20,6 +20,8 @@ pub mod pack;
 pub mod quant;
 pub mod tokenize;
 pub mod ugm;
+#[cfg(test)]
+mod e2e;
 
 pub use pack::{pack_ternary, unpack_ternary};
 pub use quant::{dequant, quantize_act_int8, quantize_weight_ternary};
