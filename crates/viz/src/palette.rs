@@ -182,25 +182,43 @@ pub fn next_after(name: &str) -> &'static Palette {
 pub fn register_from_toml(raw: &str) {
     #[derive(serde::Deserialize, Default)]
     struct Raw {
-        core: Option<[u8; 3]>, aura: Option<[u8; 3]>,
-        faculty_rest: Option<[u8; 3]>, faculty_active: Option<[u8; 3]>,
+        core: Option<[u8; 3]>,
+        aura: Option<[u8; 3]>,
+        faculty_rest: Option<[u8; 3]>,
+        faculty_active: Option<[u8; 3]>,
         label: Option<[u8; 3]>,
-        frozen_dim: Option<[u8; 3]>, frozen_lit: Option<[u8; 3]>,
-        frozen_label: Option<[u8; 3]>, mote_fallback: Option<[u8; 3]>,
-        title: Option<[u8; 3]>, whisper: Option<[u8; 3]>,
-        legend_label: Option<[u8; 3]>, reveal: Option<[u8; 3]>, kin: Option<[u8; 3]>,
+        frozen_dim: Option<[u8; 3]>,
+        frozen_lit: Option<[u8; 3]>,
+        frozen_label: Option<[u8; 3]>,
+        mote_fallback: Option<[u8; 3]>,
+        title: Option<[u8; 3]>,
+        whisper: Option<[u8; 3]>,
+        legend_label: Option<[u8; 3]>,
+        reveal: Option<[u8; 3]>,
+        kin: Option<[u8; 3]>,
     }
     #[derive(serde::Deserialize)]
-    struct Cfg { viz: Option<Viz> }
+    struct Cfg {
+        viz: Option<Viz>,
+    }
     #[derive(serde::Deserialize)]
-    struct Viz { palette: Option<std::collections::BTreeMap<String, Raw>> }
-    let Ok(cfg) = toml::from_str::<Cfg>(raw) else { return };
-    let Some(palettes) = cfg.viz.and_then(|v| v.palette) else { return };
+    struct Viz {
+        palette: Option<std::collections::BTreeMap<String, Raw>>,
+    }
+    let Ok(cfg) = toml::from_str::<Cfg>(raw) else {
+        return;
+    };
+    let Some(palettes) = cfg.viz.and_then(|v| v.palette) else {
+        return;
+    };
     let mut loaded = Vec::new();
     for (name, rp) in palettes {
         let base = by_name(&name);
         let map_rgb = |opt: Option<[u8; 3]>, fallback: Rgb| -> Rgb {
-            match opt { Some(a) => (a[0], a[1], a[2]), None => fallback }
+            match opt {
+                Some(a) => (a[0], a[1], a[2]),
+                None => fallback,
+            }
         };
         let p: &'static Palette = Box::leak(Box::new(Palette {
             name: Box::leak(name.trim().to_string().into_boxed_str()),

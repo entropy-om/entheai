@@ -6,6 +6,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+## [4.2.2] - 2026-08-01
+
+### Changed
+- **100-run NON-DNF ultra polish pass.** Full codebase audit: clippy clean (0 warnings, --D warnings), cargo fmt applied workspace-wide, 384 test functions across 35,863 lines of Rust (107 source files). Version bump to 4.2.2 with updated workspace metadata. All crate-level docs verified consistent. Dependency tree audited — only external `block v0.1.6` deprecation warning remains (upstream, not actionable in this workspace).
+
+### Fixed
+- **Cosmic Game I scaffold merged from pocoo.vaked.dev book system.** entheai fan-out manifest for "Searching for the Anomaly Entities: Part 1 Elves" — 26 worktrees, 285 pages, 4-layer quant-crypt with {-1, 0, +1} chapter keys and Mandarin+Rovás page numbering.
+
 ## [4.2.1] - 2026-07-27
 
 ### Fixed

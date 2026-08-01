@@ -23,25 +23,43 @@ pub enum TernaryPalette {
 
 impl TernarySurface {
     pub fn new(weights: Vec<f32>, rows: usize, cols: usize) -> Self {
-        TernarySurface { weights, rows, cols, elevation: 1.0, palette: TernaryPalette::Quantum }
+        TernarySurface {
+            weights,
+            rows,
+            cols,
+            elevation: 1.0,
+            palette: TernaryPalette::Quantum,
+        }
     }
 
     fn color_for(&self, weight: f32) -> Color {
         match self.palette {
             TernaryPalette::Quantum => {
-                if weight < -0.1 { Color::Rgb(108, 92, 231) }
-                else if weight > 0.1 { Color::Rgb(162, 155, 254) }
-                else { Color::Rgb(30, 30, 34) }
+                if weight < -0.1 {
+                    Color::Rgb(108, 92, 231)
+                } else if weight > 0.1 {
+                    Color::Rgb(162, 155, 254)
+                } else {
+                    Color::Rgb(30, 30, 34)
+                }
             }
             TernaryPalette::Diablo => {
-                if weight < -0.1 { Color::Rgb(255, 71, 71) }
-                else if weight > 0.1 { Color::Rgb(255, 215, 0) }
-                else { Color::Rgb(10, 10, 15) }
+                if weight < -0.1 {
+                    Color::Rgb(255, 71, 71)
+                } else if weight > 0.1 {
+                    Color::Rgb(255, 215, 0)
+                } else {
+                    Color::Rgb(10, 10, 15)
+                }
             }
             TernaryPalette::Frost => {
-                if weight < -0.1 { Color::Rgb(100, 149, 237) }
-                else if weight > 0.1 { Color::Rgb(220, 220, 230) }
-                else { Color::Rgb(60, 60, 70) }
+                if weight < -0.1 {
+                    Color::Rgb(100, 149, 237)
+                } else if weight > 0.1 {
+                    Color::Rgb(220, 220, 230)
+                } else {
+                    Color::Rgb(60, 60, 70)
+                }
             }
         }
     }

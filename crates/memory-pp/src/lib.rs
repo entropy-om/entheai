@@ -21,7 +21,7 @@ pub use frozen::{activate, FrozenNode, FrozenStore};
 pub use judge::{BrainJudge, BrainJudgeEvent};
 pub use marqant::{KompressMarqant, Marqant, StubMarqant, SubprocessMarqant};
 pub use mesh::{
-    IdentityMesh, MeshSearch, NativeMesh, SidecarMesh, SlowStubMesh, StubMesh, wave_scorer,
+    wave_scorer, IdentityMesh, MeshSearch, NativeMesh, SidecarMesh, SlowStubMesh, StubMesh,
     FEATURE_DIM,
 };
 pub use processor::PromptProcessor;

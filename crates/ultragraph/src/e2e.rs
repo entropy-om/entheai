@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::{pack_ternary, unpack_ternary, quantize_weight_ternary, dequant};
+    use crate::{dequant, pack_ternary, quantize_weight_ternary, unpack_ternary};
 
     /// Quantize → dequantize returns {-scale, 0, +scale}.
     #[test]
@@ -14,7 +14,8 @@ mod tests {
         for (i, &w) in recovered.iter().enumerate() {
             assert!(
                 (w + scale).abs() < 1e-4 || w.abs() < 1e-4 || (w - scale).abs() < 1e-4,
-                "recovered[{i}] = {w} not in {{-{s}, 0, +{s}}}", s = scale
+                "recovered[{i}] = {w} not in {{-{s}, 0, +{s}}}",
+                s = scale
             );
         }
     }

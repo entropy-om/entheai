@@ -343,31 +343,74 @@ pub fn catalogue() -> Vec<Choreography> {
             name: "edesapa".into(),
             description: "For my father. Metallica, Unforgiven trilogy.".into(),
             tracks: vec![
-                Track { title: "The Unforgiven".into(), artist: "Metallica".into(), album: "Metallica".into() },
-                Track { title: "The Unforgiven II".into(), artist: "Metallica".into(), album: "Reload".into() },
-                Track { title: "The Unforgiven III".into(), artist: "Metallica".into(), album: "Death Magnetic".into() },
-                Track { title: "Nothing Else Matters".into(), artist: "Metallica".into(), album: "Metallica".into() },
-                Track { title: "Fade to Black".into(), artist: "Metallica".into(), album: "Ride the Lightning".into() },
-                Track { title: "One".into(), artist: "Metallica".into(), album: "...And Justice for All".into() },
-                Track { title: "Enter Sandman".into(), artist: "Metallica".into(), album: "Metallica".into() },
+                Track {
+                    title: "The Unforgiven".into(),
+                    artist: "Metallica".into(),
+                    album: "Metallica".into(),
+                },
+                Track {
+                    title: "The Unforgiven II".into(),
+                    artist: "Metallica".into(),
+                    album: "Reload".into(),
+                },
+                Track {
+                    title: "The Unforgiven III".into(),
+                    artist: "Metallica".into(),
+                    album: "Death Magnetic".into(),
+                },
+                Track {
+                    title: "Nothing Else Matters".into(),
+                    artist: "Metallica".into(),
+                    album: "Metallica".into(),
+                },
+                Track {
+                    title: "Fade to Black".into(),
+                    artist: "Metallica".into(),
+                    album: "Ride the Lightning".into(),
+                },
+                Track {
+                    title: "One".into(),
+                    artist: "Metallica".into(),
+                    album: "...And Justice for All".into(),
+                },
+                Track {
+                    title: "Enter Sandman".into(),
+                    artist: "Metallica".into(),
+                    album: "Metallica".into(),
+                },
             ],
             current: 1,
         },
         Choreography {
             name: "mem8".into(),
-            description: "The MEM|8 Memory Ocean. Wave = retrieval, memory = islands. By 8BIT-WRAITH.".into(),
-            tracks: vec![
-                Track { title: "The Wave and the Memory".into(), artist: "8BIT-WRAITH".into(), album: "MEM|8".into() },
-            ],
+            description:
+                "The MEM|8 Memory Ocean. Wave = retrieval, memory = islands. By 8BIT-WRAITH.".into(),
+            tracks: vec![Track {
+                title: "The Wave and the Memory".into(),
+                artist: "8BIT-WRAITH".into(),
+                album: "MEM|8".into(),
+            }],
             current: 0,
         },
         Choreography {
             name: "vivaldi-spring".into(),
             description: "Vivaldi Spring downtempo with quant-love salt.".into(),
             tracks: vec![
-                Track { title: "Spring Mvt 1 — Allegro (downtempo)".into(), artist: "Vivaldi".into(), album: "The Four Seasons".into() },
-                Track { title: "Spring Mvt 2 — Largo".into(), artist: "Vivaldi".into(), album: "The Four Seasons".into() },
-                Track { title: "Spring Mvt 3 — Allegro".into(), artist: "Vivaldi".into(), album: "The Four Seasons".into() },
+                Track {
+                    title: "Spring Mvt 1 — Allegro (downtempo)".into(),
+                    artist: "Vivaldi".into(),
+                    album: "The Four Seasons".into(),
+                },
+                Track {
+                    title: "Spring Mvt 2 — Largo".into(),
+                    artist: "Vivaldi".into(),
+                    album: "The Four Seasons".into(),
+                },
+                Track {
+                    title: "Spring Mvt 3 — Allegro".into(),
+                    artist: "Vivaldi".into(),
+                    album: "The Four Seasons".into(),
+                },
             ],
             current: 0,
         },
@@ -377,9 +420,14 @@ pub fn catalogue() -> Vec<Choreography> {
 /// Format a now-playing status string.
 pub fn now_playing(choreo: &Choreography) -> String {
     if let Some(track) = choreo.tracks.get(choreo.current) {
-        format!("{}: {} — {} [{}/{}]",
-            choreo.name, track.title, track.artist,
-            choreo.current + 1, choreo.tracks.len())
+        format!(
+            "{}: {} — {} [{}/{}]",
+            choreo.name,
+            track.title,
+            track.artist,
+            choreo.current + 1,
+            choreo.tracks.len()
+        )
     } else {
         format!("{}: nothing playing", choreo.name)
     }
