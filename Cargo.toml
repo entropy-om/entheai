@@ -8,6 +8,7 @@ members = ["crates/config", "crates/core", "crates/tools", "crates/permission", 
 version = "4.2.2"
 edition = "2021"
 rust-version = "1.94"
+license = "MIT"
 repository = "https://github.com/entropy-om/entheai"
 description = "Autonomous AI coding agent and orchestration engine"
 homepage = "https://github.com/entropy-om/entheai"
