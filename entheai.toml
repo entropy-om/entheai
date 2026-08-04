@@ -5,7 +5,7 @@
 # Add a skill from the web (tries <origin>/.well-known/skills.json, then /llms.txt,
 # then the page), then exit — writes skills/<slug>/SKILL.md, live on the next run:
 #   entheai --skills add https://docs.stripe.com
-default_model = "deepseek/deepseek-chat"
+default_model = "openrouter/deepseek/deepseek-chat"  # DeepSeek via OpenRouter (direct key not provisioned)
 
 # DeepSeek direct API. Models: deepseek-chat (V3), deepseek-reasoner (R1).
 [providers.deepseek]
@@ -44,7 +44,7 @@ base_url = "http://127.0.0.1:1337/v1"
 # `orchestrator`, then `default_model`, when a role is unset). Tier freely across
 # the providers above — cheap/local models for exploration, stronger for review.
 [router]
-orchestrator = "deepseek/deepseek-chat" # DeepSeek V4 Pro via credits: "zen/deepseek-v4-pro"
+orchestrator = "openrouter/deepseek/deepseek-chat" # DeepSeek V4 Pro via credits: "zen/deepseek-v4-pro"
 max_parallel = 4                         # cap on concurrently-running sub-agents
 # max_turns = 200                        # per-task tool-dispatch round cap (default 200; UNLIMITED under --yolo)
 
@@ -56,6 +56,11 @@ max_parallel = 4                         # cap on concurrently-running sub-agent
 # verify = "cargo test"             # explicit gate (overrides auto-detect)
 # verify_required = true            # false = legacy lax mode (integrate unverified)
 # mode = ""                         # "" = inherit parent ceiling; else override: plan | auto | yolo | ask
+# Recursive development path: entheai orchestrates on deepseek (above), each
+# coder sub-agent runs via the Antigravity CLI (agy) on agy's own models.
+[fanout]
+executor = "agy"                        # coder backend: agy (Antigravity CLI)
+agy_model = "gemini-3.6-flash-high"    # model agy runs the coders on
 
 # ── Current-awareness ingestion (Valyu + WorldMonitor → the raw memory soil) ──
 # Fills the brain with the world AS IT IS, under hard daily request budgets
