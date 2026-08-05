@@ -87,7 +87,7 @@ dogfood_repo = "PeetPedro/ultrawhale-dogfood"
 # node per poll) and rendered as the Zen field's outermost ring: flowing kin
 # breathe and carry their names, unreachable kin sit dark. Honest liveness.
 [kin]
-nodes = ["https://riva.vaked.dev/"]
+nodes = ["https://riva.vaked.dev/", "https://pocoo.vaked.dev/babylon/"]
 # poll_secs = 120
 
 # ── Zen field theme ──────────────────────────────────────────────────────────
