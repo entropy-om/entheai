@@ -44,7 +44,7 @@ LAPS = [
 MARKERS = {
     1: ["pub trait Oracle", "pub enum OracleBackend", "oracle_for_config", "OracleConfig"],
     2: ["Oracle G1", "Oracle G2", "Oracle G3", "Phase::Decompose"],
-    3: ["OracleBackend::Hermes", "hermes_alive", "Attestation"],
+    3: ["OracleBackend::Hermes", "hermes_alive", "Attestation", "OracleBackend::OpenClaw", "OracleBackend::AgentField"],
     4: ["native_adjudicate", "parse_verdict", "build_agent"],
     5: ["Oracle review", "P0 fixes", "Trait shape corrected"],
     6: ["would_block", "GateMode::Block", "block_confidence"],

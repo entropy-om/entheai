@@ -96,6 +96,17 @@ pub enum OracleBackend {
     OpenClaw { endpoint: String },
     /// AgentField control-plane (:8080) + its agents.
     AgentField { control: String },
+    /// Any OpenAI-compatible endpoint — coder.vaked.dev, a litellm/quant-lite-prox
+    /// gateway, DeepSeek, etc. This is the "fill the cloud" backend: one seam
+    /// that reaches every OpenAI-compatible model in the constellation.
+    OpenAICompatible {
+        /// base URL, e.g. https://coder.vaked.dev/v1
+        base: String,
+        /// model name on that endpoint
+        model: String,
+        /// env var naming the API key (workspace convention; empty = keyless)
+        key_env: String,
+    },
     /// entheai's own strongest model (router-resolved).
     Native { model: String },
 }
@@ -197,6 +208,7 @@ impl Oracle for FusionOracle {
                 OracleBackend::Hermes { api, .. } => hermes_alive(api).await,
                 OracleBackend::OpenClaw { endpoint } => openclaw_alive(endpoint).await,
                 OracleBackend::AgentField { control } => agentfield_alive(control).await,
+                OracleBackend::OpenAICompatible { base, .. } => http_alive(base, "openai-compatible").await,
                 OracleBackend::Native { model } => {
                     // Native is always "alive"; it IS the fallback.
                     let _ = model;
@@ -298,6 +310,7 @@ fn backend_label(b: &OracleBackend) -> String {
         OracleBackend::Native { model } => format!("native@{}", model),
         OracleBackend::OpenClaw { endpoint } => format!("openclaw@{}", endpoint),
         OracleBackend::AgentField { control } => format!("agentfield@{}", control),
+        OracleBackend::OpenAICompatible { base, model, .. } => format!("openai@{}:{}", base, model),
     }
 }
 
@@ -489,6 +502,29 @@ model = "vaked/qwen3-coder:30b"
         assert!(backend_label(&o.backends[2]).starts_with("agentfield@"));
         assert!(backend_label(&o.backends[0]).starts_with("hermes@"));
         assert!(backend_label(&o.backends[1]).starts_with("openclaw@"));
+    }
+
+    #[test]
+    fn openai_compatible_backend_fills_the_cloud() {
+        // The OpenAI-compatible backend covers coder.vaked.dev / any litellm
+        // gateway — the "fill the cloud" seam. Verify label + registration.
+        let cfg = test_config();
+        let mut o = FusionOracle::new(cfg, "vaked/qwen3-coder:30b", GateMode::Advisory, 0.8);
+        o.register_backend(OracleBackend::OpenAICompatible {
+            base: "https://coder.vaked.dev/v1".into(),
+            model: "qwen3-coder:30b".into(),
+            key_env: String::new(), // keyless
+        });
+        assert_eq!(o.backends.len(), 1);
+        assert_eq!(
+            backend_label(&o.backends[0]),
+            "openai@https://coder.vaked.dev/v1:qwen3-coder:30b"
+        );
+        assert!(o.backends[0] == OracleBackend::OpenAICompatible {
+            base: "https://coder.vaked.dev/v1".into(),
+            model: "qwen3-coder:30b".into(),
+            key_env: String::new(),
+        });
     }
 
     #[test]
