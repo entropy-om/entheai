@@ -44,7 +44,7 @@ base_url = "http://127.0.0.1:1337/v1"
 # `orchestrator`, then `default_model`, when a role is unset). Tier freely across
 # the providers above — cheap/local models for exploration, stronger for review.
 [router]
-orchestrator = "openrouter/deepseek/deepseek-chat" # DeepSeek V4 Pro via credits: "zen/deepseek-v4-pro"
+orchestrator = "vaked/qwen3-coder:30b"   # coder.vaked.dev keyless free tier (OpenRouter credits exhausted)
 max_parallel = 4                         # cap on concurrently-running sub-agents
 # max_turns = 200                        # per-task tool-dispatch round cap (default 200; UNLIMITED under --yolo)
 
