@@ -1,0 +1,45 @@
+name: Blacksmith CI — entheai full
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: blacksmith-entheai-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build_and_test:
+    name: Rust build + clippy + test (quantum + oracle + fusion)
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: useblacksmith/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: blacksmith-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: blacksmith-cargo-
+
+      - name: Build
+        run: |
+          cargo build -p entheai-quantum
+          cargo build -p entheai-orchestrator
+          cargo build -p entheai
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy -p entheai-quantum -p entheai-orchestrator -p entheai --all-targets -- -D warnings
+
+      - name: Test — quantum emulator
+        run: cargo test -p entheai-quantum --lib
+
+      - name: Test — oracle (fusion)
+        run: cargo test -p entheai-orchestrator --lib oracle
+
+      - name: Test — orchestrator
+        run: cargo test -p entheai-orchestrator --lib
