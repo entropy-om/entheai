@@ -411,12 +411,19 @@ pub fn oracle_for_config(config: &Config) -> Option<Arc<dyn Oracle>> {
     } else {
         GateMode::Advisory
     };
-    Some(Arc::new(FusionOracle::new(
+    let mut oracle = FusionOracle::new(
         config.clone(),
         config.oracle.model.clone(),
         gate,
         config.oracle.block_confidence,
-    )))
+    );
+    // The configured model is always registered as the Native backend — the
+    // adjudicator that fires when no fleet backend reports alive. Without this
+    // the enabled Oracle would loop over an empty registry and never adjudicate.
+    oracle.register_backend(OracleBackend::Native {
+        model: config.oracle.model.clone(),
+    });
+    Some(Arc::new(oracle))
 }
 
 #[cfg(test)]
@@ -429,6 +436,32 @@ enabled = true
 model = "vaked/qwen3-coder:30b"
 "#)
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn oracle_for_config_registers_native_backend_when_enabled() {
+        // The configured model must auto-register as the Native backend —
+        // otherwise an enabled Oracle loops an empty registry and never
+        // adjudicates (the bug the live e2e exposed). Verified via a disabled
+        // config returning None (today's behavior) + the enabled path carrying
+        // the model through to the Native backend the same way FusionOracle does.
+        let off = Config::from_toml_str(r#"[oracle]
+enabled = false
+"#)
+        .unwrap();
+        assert!(oracle_for_config(&off).is_none());
+
+        let cfg = test_config();
+        let oracle = oracle_for_config(&cfg).expect("enabled oracle");
+        // The enabled oracle is NOT the no-op — adjudicating must reach a real
+        // dispatch (Native) rather than the empty-registry skeleton.
+        let adj = oracle
+            .adjudicate(Phase::Decompose, &OracleContext::default())
+            .await
+            .expect("adjudicate ok");
+        assert_eq!(adj.verdict, Verdict::Approve);
+        assert_eq!(adj.attestations.len(), 1, "native backend attested");
+        assert!(adj.attestations[0].proc.starts_with("native@"));
     }
 
     #[test]
