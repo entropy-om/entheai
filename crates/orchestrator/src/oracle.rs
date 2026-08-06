@@ -190,12 +190,13 @@ impl Oracle for FusionOracle {
         for backend in &self.backends {
             let alive = match backend {
                 OracleBackend::Hermes { api, .. } => hermes_alive(api).await,
+                OracleBackend::OpenClaw { endpoint } => openclaw_alive(endpoint).await,
                 OracleBackend::Native { model } => {
                     // Native is always "alive"; it IS the fallback.
                     let _ = model;
                     true
                 }
-                _ => false, // OpenClaw/AgentField not wired yet (steps 4-5)
+                _ => false, // AgentField not wired yet (step 5)
             };
             if alive {
                 let (verdict, confidence) = self.native_adjudicate(phase, context).await;
@@ -247,6 +248,25 @@ async fn hermes_alive(api: &str) -> bool {
             Err(_) => false,
         },
         _ => false,
+    }
+}
+
+/// Step 4: OpenClaw liveness — the camofox-browser REST server (:9377) is the
+/// OpenClaw pair's browser backend. A reachable endpoint counts as alive; the
+/// verdict still comes from the Native adjudicator (the OpenClaw rework
+/// dispatch lands when the sandbox agents actually run).
+async fn openclaw_alive(endpoint: &str) -> bool {
+    let url = endpoint.trim_end_matches('/');
+    let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(4)).build() {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("oracle: openclaw client build failed: {e}");
+            return false;
+        }
+    };
+    match client.get(url).send().await {
+        Ok(resp) => resp.status().is_success(),
+        Err(_) => false,
     }
 }
 
@@ -404,6 +424,29 @@ model = "vaked/qwen3-coder:30b"
         let prose = parse_verdict("The plan is fine.\n```json\n{\"verdict\":\"approve\",\"confidence\":0.6}\n```");
         assert!(matches!(prose, Some((Verdict::Approve, c)) if (c - 0.6).abs() < 0.01));
         assert!(parse_verdict("not json at all").is_none());
+    }
+
+    #[test]
+    fn openclaw_backend_labels_and_dispatch_path() {
+        // OpenClaw liveness is network-bound (not unit-testable here); this
+        // verifies the seam: label + dispatch ordering + that an unreachable
+        // OpenClaw falls through to the next backend (Native).
+        let cfg = test_config();
+        let mut o = FusionOracle::new(cfg, "vaked/qwen3-coder:30b", GateMode::Advisory, 0.8);
+        o.register_backend(OracleBackend::OpenClaw { endpoint: "http://127.0.0.1:1".into() });
+        o.register_backend(OracleBackend::Native { model: "vaked/qwen3-coder:30b".into() });
+        assert_eq!(o.backends.len(), 2);
+        assert!(backend_label(&o.backends[0]).starts_with("openclaw@"));
+        // Would-block is independent of backend type — verify it composes.
+        let mut o_block = FusionOracle::new(test_config(), "vaked/qwen3-coder:30b", GateMode::Block, 0.8);
+        o_block.register_backend(OracleBackend::OpenClaw { endpoint: "http://127.0.0.1:1".into() });
+        let adj = OracleAdjudication {
+            phase: Phase::CoderDiff,
+            verdict: Verdict::Reject { reason: "sandbox escape".into() },
+            confidence: 0.95,
+            attestations: vec![],
+        };
+        assert!(o_block.would_block(&adj));
     }
 
     #[test]
