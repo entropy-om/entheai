@@ -20,6 +20,6 @@ log = "0.4"
 anyhow.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# eBPF loading is via libbpf-rs (CO-RE); pinned, not floating.
-libbpf-rs = { version = "0.23", default-features = false }
+# eBPF loading is via libbpf-rs (CO-RE); bleeding edge, not pinned to an old minor.
+libbpf-rs = { version = "0.27", default-features = false }
 libbpf-sys = { version = "1.4", default-features = false }
