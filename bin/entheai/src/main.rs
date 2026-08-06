@@ -303,7 +303,9 @@ async fn main() -> anyhow::Result<()> {
                         as std::sync::Arc<dyn entheai_orchestrator::TrajectorySink>
                 });
                 let answer = entheai_orchestrator::run_fanout(
-                    &cfg, &root, &prompt, events, pool, fed_exec, runtime, scope, sink,
+                    &cfg, &root, &prompt, events, pool, fed_exec,
+                    entheai_orchestrator::oracle_for_config(&cfg),
+                    runtime, scope, sink,
                 )
                 .await?;
                 // Drain + flush the tee before teardown so the final events

@@ -805,6 +805,7 @@ pub async fn run_fanout(
     events: Option<tokio::sync::mpsc::UnboundedSender<FanoutEvent>>,
     pool: Arc<WorkerPool>,
     executor: Option<Arc<dyn CoderExecutor>>,
+    oracle: Option<Arc<dyn Oracle>>,
     memory: Option<Arc<MemoryRuntime>>,
     scope: MemoryScope,
     trajectories: Option<Arc<dyn TrajectorySink>>,
@@ -844,6 +845,24 @@ pub async fn run_fanout(
                 .map(|s| (s.role.clone(), s.task.clone()))
                 .collect(),
         });
+    }
+
+    // ── Oracle G1 (advisory): adjudicate the decompose plan. Never blocks by
+    // default (gate=advisory); records the verdict so it lands in the report.
+    if let Some(o) = &oracle {
+        let ctx = OracleContext {
+            task: task.to_string(),
+            mapped_files: mapped.file_chunks.iter().map(|c| c.path.to_string_lossy().into_owned()).collect(),
+            ..OracleContext::default()
+        };
+        match o.adjudicate(Phase::Decompose, &ctx).await {
+            Ok(adj) => {
+                if let Verdict::Rework { reason, .. } = &adj.verdict {
+                    log::info!("oracle G1 advisory: rework suggested for decompose plan: {reason}");
+                }
+            }
+            Err(e) => log::warn!("oracle G1 failed (advisory, continuing): {e}"),
+        }
     }
 
     let session = uuid::Uuid::new_v4().simple().to_string();
@@ -1043,6 +1062,30 @@ pub async fn run_fanout(
                 status: status.to_string(),
             });
         }
+        // ── Oracle G2 (advisory): adjudicate the coder's diff. ONLY gates
+        // Passed/Skipped coders (NoChanges/Failed/Unverifiable already excluded
+        // downstream). Diff-fallback — never stalls waiting for attestations.
+        // Concurrent: runs inside the coder loop's own task; advisory = log-only.
+        if let Some(o) = &oracle {
+            let ctx = OracleContext {
+                task: run.task.clone(),
+                mapped_files: Vec::new(),
+                diffs: vec![(run.branch.clone(), run.output.clone())],
+                ..OracleContext::default()
+            };
+            match o.adjudicate(Phase::CoderDiff, &ctx).await {
+                Ok(adj) => {
+                    if let Verdict::Reject { reason } = &adj.verdict {
+                        log::info!(
+                            "oracle G2 advisory: coder {} ({}) flagged: {reason}",
+                            run.index,
+                            run.role
+                        );
+                    }
+                }
+                Err(e) => log::warn!("oracle G2 failed (advisory, continuing): {e}"),
+            }
+        }
         let integrated =
             committed && matches!(verify, VerifyStatus::Skipped | VerifyStatus::Passed(_));
         if integrated {
@@ -1069,6 +1112,28 @@ pub async fn run_fanout(
     let integration = if eligible_branches.is_empty() {
         None
     } else {
+        // ── Oracle G3 (advisory): adjudicate the integration candidate set.
+        // Conditional by default — when no Oracle is wired this is a no-op;
+        // advisory mode logs the verdict, never blocks integration.
+        if let Some(o) = &oracle {
+            let ctx = OracleContext {
+                task: task.to_string(),
+                mapped_files: Vec::new(),
+                diffs: eligible_branches
+                    .iter()
+                    .map(|b| (b.clone(), String::new()))
+                    .collect(),
+                ..OracleContext::default()
+            };
+            match o.adjudicate(Phase::Integration, &ctx).await {
+                Ok(adj) => {
+                    if let Verdict::Reject { reason } = &adj.verdict {
+                        log::info!("oracle G3 advisory: integration flagged: {reason}");
+                    }
+                }
+                Err(e) => log::warn!("oracle G3 failed (advisory, continuing): {e}"),
+            }
+        }
         if let Some(tx) = &events {
             let _ = tx.send(FanoutEvent::Integrating {
                 branches: eligible_branches.len(),

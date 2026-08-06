@@ -1028,8 +1028,9 @@ async fn event_loop(
                                 });
                                 run_handle = Some(tokio::spawn(async move {
                                     let res = entheai_orchestrator::run_fanout(
-                                        &config, &root, &text, events, pool, fed_exec, mem, sc,
-                                        sink,
+                                        &config, &root, &text, events, pool, fed_exec,
+                                        entheai_orchestrator::oracle_for_config(&config),
+                                        mem, sc, sink,
                                     )
                                     .await;
                                     // Drain + flush the tee before dropping it so
