@@ -71,6 +71,11 @@ pub struct OracleContext {
     pub mapped_files: Vec<String>,
     /// Coder diffs at G2 (branch name → diff). Empty when no attestation layer.
     pub diffs: Vec<(String, String)>,
+    /// Kernel/attestation claims the eBPF sphere saw — the honesty gate.
+    /// Empty on the local path (diff-fallback); populated when coders=fleet
+    /// and the sphere is running. The Oracle adjudicates on these, not just
+    /// what the coders claimed.
+    pub attestations: Vec<Attestation>,
     /// Prior verdicts in this fan-out session (the dance's memory).
     pub prior: Vec<OracleAdjudication>,
 }
@@ -597,4 +602,37 @@ enabled = false
         };
         assert!(!o.gate_would_block(&adj));
     }
+}
+
+/// Pull the eBPF sphere's latest attestations — kernel truth about what the
+/// fan-out actually touched. Reads the sphere's state file (written by the
+/// entheai-sphere sidecar when coders=fleet). Empty on the local path /
+/// when the sphere isn't running → the Oracle falls back to diff review and
+/// never stalls waiting for attestations (the oracle review's P0-2 rule).
+#[allow(dead_code)]
+pub fn sphere_attestations() -> Vec<Attestation> {
+    let path = std::env::var("ENTHEAI_SPHERE_STATE")
+        .unwrap_or_else(|_| "/tmp/entheai-sphere/attestations.jsonl".to_string());
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in text.lines().rev().take(64) {
+        let Ok(v): Result<serde_json::Value, _> = serde_json::from_str(line) else {
+            continue;
+        };
+        out.push(Attestation {
+            ts: v.get("ts").and_then(|x| x.as_u64()).unwrap_or(0),
+            pid: v.get("pid").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+            proc: v.get("proc").and_then(|x| x.as_str()).unwrap_or("sphere").to_string(),
+            kind: match v.get("kind").and_then(|x| x.as_str()) {
+                Some("egress") => AttestationKind::Egress,
+                Some("merge") => AttestationKind::Merge,
+                _ => AttestationKind::FileOp,
+            },
+            path: v.get("path").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            hash: [0u8; 32],
+        });
+    }
+    out
 }

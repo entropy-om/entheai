@@ -1078,6 +1078,9 @@ pub async fn run_fanout(
                 task: run.task.clone(),
                 mapped_files: Vec::new(),
                 diffs: vec![(run.branch.clone(), run.output.clone())],
+                // The eBPF sphere's kernel truth, if the sidecar is running
+                // (coders=fleet). Empty on the local path → diff-fallback.
+                attestations: oracle::sphere_attestations(),
                 ..OracleContext::default()
             };
             match o.adjudicate(Phase::CoderDiff, &ctx).await {
