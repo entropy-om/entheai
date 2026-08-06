@@ -1,0 +1,11 @@
+[package]
+name = "entheai-quantum"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Quantum emulator + simulator — amplitude-vector qubit simulation (the constellation's 0+1 playground)"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
