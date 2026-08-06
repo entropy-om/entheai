@@ -170,18 +170,94 @@ impl Oracle for FusionOracle {
     async fn adjudicate(
         &self,
         phase: Phase,
-        _context: &OracleContext,
+        context: &OracleContext,
     ) -> anyhow::Result<OracleAdjudication> {
-        // Step 1 skeleton: no backends registered yet → approve everything,
-        // confidence 0.0 (no claims), zero attestations. The gate wiring in
-        // `run_fanout` records this as advisory. When fleet backends land
-        // (steps 3-5), this dispatches to the strongest registered backend.
+        // Step 3: dispatch to the first fleet backend that reports alive.
+        // Hermes's API surface is currently /health-only, so the Hermes
+        // backend attests LIVENESS and defers the verdict to the Native
+        // adjudicator model. Later steps widen Hermes to real adjudication.
+        for backend in &self.backends {
+            let alive = match backend {
+                OracleBackend::Hermes { api, .. } => hermes_alive(api).await,
+                OracleBackend::Native { model } => {
+                    // Native is always "alive"; it IS the fallback.
+                    let _ = model;
+                    true
+                }
+                _ => false, // OpenClaw/AgentField not wired yet (steps 4-5)
+            };
+            if alive {
+                let (verdict, confidence) = self.native_adjudicate(phase, context).await;
+                let mut adj = OracleAdjudication {
+                    phase,
+                    verdict,
+                    confidence,
+                    attestations: Vec::new(),
+                };
+                // Attest the backend that grounded this verdict.
+                adj.attestations.push(Attestation {
+                    ts: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0),
+                    pid: std::process::id(),
+                    proc: backend_label(backend),
+                    kind: AttestationKind::FileOp,
+                    path: None,
+                    hash: [0u8; 32],
+                });
+                return Ok(adj);
+            }
+        }
+        // No live backend → approve with zero confidence (skeleton behavior).
         Ok(OracleAdjudication {
             phase,
             verdict: Verdict::Approve,
             confidence: 0.0,
             attestations: Vec::new(),
         })
+    }
+}
+
+/// Step 3: Hermes liveness check — the fleet runtime's adjudication endpoint
+/// is /health today. Returns true when the API server answers ok.
+async fn hermes_alive(api: &str) -> bool {
+    let url = format!("{}/health", api.trim_end_matches('/'));
+    let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(4)).build() {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("oracle: hermes client build failed: {e}");
+            return false;
+        }
+    };
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => match resp.text().await {
+            Ok(body) => body.contains("ok"),
+            Err(_) => false,
+        },
+        _ => false,
+    }
+}
+
+fn backend_label(b: &OracleBackend) -> String {
+    match b {
+        OracleBackend::Hermes { api, .. } => format!("hermes@{}", api),
+        OracleBackend::Native { model } => format!("native@{}", model),
+        OracleBackend::OpenClaw { endpoint } => format!("openclaw@{}", endpoint),
+        OracleBackend::AgentField { control } => format!("agentfield@{}", control),
+    }
+}
+
+impl FusionOracle {
+    /// Step 3: the verdict comes from the Native adjudicator model. This is a
+    /// stub that approves with 0.5 confidence — wiring an actual model call
+    /// (the router-resolved `[oracle].model`) is the next increment.
+    async fn native_adjudicate(
+        &self,
+        _phase: Phase,
+        _context: &OracleContext,
+    ) -> (Verdict, f32) {
+        (Verdict::Approve, 0.5)
     }
 }
 
@@ -232,6 +308,21 @@ mod tests {
         assert_eq!(adj.verdict, Verdict::Approve);
         assert_eq!(adj.confidence, 0.0);
         assert!(adj.attestations.is_empty());
+    }
+
+    #[test]
+    fn native_backend_is_always_alive_and_attested() {
+        // The Native backend never needs liveness — it IS the fallback. A
+        // FusionOracle with only Native must dispatch (approve, 0.5, one
+        // attestation naming the backend), not return the empty skeleton.
+        let ctx = OracleContext::default();
+        let mut o = FusionOracle::new("vaked/qwen3-coder:30b", GateMode::Advisory, 0.8);
+        o.register_backend(OracleBackend::Native { model: "vaked/qwen3-coder:30b".into() });
+        let adj = futures::executor::block_on(o.adjudicate(Phase::CoderDiff, &ctx)).unwrap();
+        assert_eq!(adj.verdict, Verdict::Approve);
+        assert_eq!(adj.confidence, 0.5);
+        assert_eq!(adj.attestations.len(), 1);
+        assert!(adj.attestations[0].proc.starts_with("native@"));
     }
 
     #[test]
