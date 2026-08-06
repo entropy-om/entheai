@@ -1,0 +1,25 @@
+[package]
+name = "entheai-sphere"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "eBPF observability sphere for entheai — attests the fan-out POST-PRE-process layer"
+
+# The sphere is a LINUX sidecar (eBPF is kernel-level). On darwin the binary
+# compiles as a stub (no eBPF claims) so the workspace stays buildable on the
+# orchestrator's Apple-Silicon host. Runtime gating: [oracle].coders = "fleet".
+[package.metadata]
+platforms = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "aarch64-apple-darwin"]
+
+[dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }
+serde.workspace = true
+serde_json.workspace = true
+log = "0.4"
+anyhow.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# eBPF loading is via libbpf-rs (CO-RE); pinned, not floating.
+libbpf-rs = { version = "0.23", default-features = false }
+libbpf-sys = { version = "1.4", default-features = false }
