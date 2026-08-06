@@ -431,6 +431,37 @@ pub fn oracle_for_config(config: &Config) -> Option<Arc<dyn Oracle>> {
     Some(Arc::new(oracle))
 }
 
+/// Pull the eBPF sphere's latest attestations — kernel truth about what the
+/// fan-out actually touched. Reads the sphere's state file (written by the
+/// entheai-sphere sidecar when coders=fleet). Empty on the local path /
+/// when the sphere isn't running → diff-fallback, never stalls (P0-2).
+pub fn sphere_attestations() -> Vec<Attestation> {
+    let path = std::env::var("ENTHEAI_SPHERE_STATE")
+        .unwrap_or_else(|_| "/tmp/entheai-sphere/attestations.jsonl".to_string());
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in text.lines().rev().take(64) {
+        let Ok(v): Result<serde_json::Value, _> = serde_json::from_str(line) else {
+            continue;
+        };
+        out.push(Attestation {
+            ts: v.get("ts").and_then(|x| x.as_u64()).unwrap_or(0),
+            pid: v.get("pid").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+            proc: v.get("proc").and_then(|x| x.as_str()).unwrap_or("sphere").to_string(),
+            kind: match v.get("kind").and_then(|x| x.as_str()) {
+                Some("egress") => AttestationKind::Egress,
+                Some("merge") => AttestationKind::Merge,
+                _ => AttestationKind::FileOp,
+            },
+            path: v.get("path").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            hash: [0u8; 32],
+        });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -604,35 +635,3 @@ enabled = false
     }
 }
 
-/// Pull the eBPF sphere's latest attestations — kernel truth about what the
-/// fan-out actually touched. Reads the sphere's state file (written by the
-/// entheai-sphere sidecar when coders=fleet). Empty on the local path /
-/// when the sphere isn't running → the Oracle falls back to diff review and
-/// never stalls waiting for attestations (the oracle review's P0-2 rule).
-#[allow(dead_code)]
-pub fn sphere_attestations() -> Vec<Attestation> {
-    let path = std::env::var("ENTHEAI_SPHERE_STATE")
-        .unwrap_or_else(|_| "/tmp/entheai-sphere/attestations.jsonl".to_string());
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for line in text.lines().rev().take(64) {
-        let Ok(v): Result<serde_json::Value, _> = serde_json::from_str(line) else {
-            continue;
-        };
-        out.push(Attestation {
-            ts: v.get("ts").and_then(|x| x.as_u64()).unwrap_or(0),
-            pid: v.get("pid").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
-            proc: v.get("proc").and_then(|x| x.as_str()).unwrap_or("sphere").to_string(),
-            kind: match v.get("kind").and_then(|x| x.as_str()) {
-                Some("egress") => AttestationKind::Egress,
-                Some("merge") => AttestationKind::Merge,
-                _ => AttestationKind::FileOp,
-            },
-            path: v.get("path").and_then(|x| x.as_str()).map(|s| s.to_string()),
-            hash: [0u8; 32],
-        });
-    }
-    out
-}
