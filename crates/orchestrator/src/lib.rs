@@ -783,6 +783,9 @@ pub struct CoderOutcome {
     /// deliberately NOT committed or integrated (Bug 2). Takes precedence over
     /// every other status when the report is rendered.
     pub timed_out: bool,
+    /// The Oracle rejected this coder's diff under gate=block — its branch was
+    /// excluded from integration (kept alive for recovery, like a conflict).
+    pub oracle_rejected: bool,
 }
 
 /// Fan-out entrypoint (v2): decompose → one isolated `git worktree` + coder
@@ -983,6 +986,7 @@ pub async fn run_fanout(
                 integrated: false,
                 conflicted: false,
                 timed_out: true,
+                oracle_rejected: false,
             });
             continue;
         }
@@ -1065,7 +1069,10 @@ pub async fn run_fanout(
         // ── Oracle G2 (advisory): adjudicate the coder's diff. ONLY gates
         // Passed/Skipped coders (NoChanges/Failed/Unverifiable already excluded
         // downstream). Diff-fallback — never stalls waiting for attestations.
-        // Concurrent: runs inside the coder loop's own task; advisory = log-only.
+        // Concurrent: runs inside the coder loop's own task. Under gate=block,
+        // a high-confidence Reject/Rework excludes the branch from integration
+        // (kept alive for recovery, like a conflict).
+        let mut oracle_rejected = false;
         if let Some(o) = &oracle {
             let ctx = OracleContext {
                 task: run.task.clone(),
@@ -1075,9 +1082,20 @@ pub async fn run_fanout(
             };
             match o.adjudicate(Phase::CoderDiff, &ctx).await {
                 Ok(adj) => {
-                    if let Verdict::Reject { reason } = &adj.verdict {
+                    let mut reason = String::new();
+                    if let Verdict::Reject { reason: r } = &adj.verdict {
+                        reason = r.clone();
                         log::info!(
-                            "oracle G2 advisory: coder {} ({}) flagged: {reason}",
+                            "oracle G2 advisory: coder {} ({}) flagged: {}",
+                            run.index,
+                            run.role,
+                            r
+                        );
+                    }
+                    if o.would_block(&adj) {
+                        oracle_rejected = true;
+                        log::warn!(
+                            "oracle G2 BLOCK: coder {} ({}) excluded from integration ({reason})",
                             run.index,
                             run.role
                         );
@@ -1086,8 +1104,9 @@ pub async fn run_fanout(
                 Err(e) => log::warn!("oracle G2 failed (advisory, continuing): {e}"),
             }
         }
-        let integrated =
-            committed && matches!(verify, VerifyStatus::Skipped | VerifyStatus::Passed(_));
+        let integrated = !oracle_rejected
+            && committed
+            && matches!(verify, VerifyStatus::Skipped | VerifyStatus::Passed(_));
         if integrated {
             eligible_branches.push(run.branch.clone());
         }
@@ -1101,6 +1120,7 @@ pub async fn run_fanout(
             verify,
             integrated,
             conflicted: false,
+            oracle_rejected,
             timed_out: false,
         });
     }
@@ -1307,6 +1327,8 @@ pub fn format_v2_report(
         s.push_str(&format!("\n### [{}] {}\n", o.role, o.task));
         let status = if o.timed_out {
             "timed out — not integrated".to_string()
+        } else if o.oracle_rejected {
+            format!("oracle rejected — left on branch {}", o.branch)
         } else if o.conflicted {
             format!("merge conflict — left on branch {}", o.branch)
         } else if !o.committed {
@@ -1606,6 +1628,7 @@ mod tests {
             integrated,
             conflicted: false,
             timed_out: false,
+            oracle_rejected: false,
         }
     }
 
@@ -1865,6 +1888,7 @@ mod tests {
             integrated: false,
             conflicted: false,
             timed_out: true,
+            oracle_rejected: false,
         }];
 
         let report = format_v2_report("Do the thing", "0123456789abcdef", "sess", &outcomes, None);
@@ -1875,6 +1899,38 @@ mod tests {
         );
         assert!(!report.contains("integrated ✓"), "report:\n{report}");
         assert!(report.contains("No changes were integrated."));
+    }
+
+    #[test]
+    fn format_v2_report_marks_oracle_rejected_coder_as_left_on_branch() {
+        // An Oracle-rejected coder (gate=block, high-confidence Reject) must
+        // report as not integrated and left on its branch, like a conflict.
+        let outcomes = vec![CoderOutcome {
+            index: 0,
+            role: "coder".to_string(),
+            task: "risky task".to_string(),
+            branch: "entheai/sess/coder-0".to_string(),
+            output: "done".to_string(),
+            committed: true,
+            verify: VerifyStatus::Passed(MergeSeal {
+                diff_sha256: "b".repeat(64),
+                log_sha256: "c".repeat(64),
+                seal: "a".repeat(64),
+                verify_cmd: "cargo test".to_string(),
+            }),
+            integrated: false,
+            conflicted: false,
+            timed_out: false,
+            oracle_rejected: true,
+        }];
+
+        let report = format_v2_report("Do the thing", "0123456789abcdef", "sess", &outcomes, None);
+
+        assert!(
+            report.contains("oracle rejected — left on branch entheai/sess/coder-0"),
+            "report:\n{report}"
+        );
+        assert!(!report.contains("integrated ✓"), "report:\n{report}");
     }
 
     #[test]

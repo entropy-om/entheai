@@ -110,6 +110,11 @@ pub trait Oracle: Send + Sync {
         phase: Phase,
         context: &OracleContext,
     ) -> anyhow::Result<OracleAdjudication>;
+
+    /// Whether this adjudication should block the run under this Oracle's gate.
+    /// Only high-confidence Reject/Rework may block; Approve-confidence never
+    /// does. A disabled/no-op Oracle always returns false (today's behavior).
+    fn would_block(&self, adjudication: &OracleAdjudication) -> bool;
 }
 
 /// Concrete Oracle owning the fleet-backend registry + config.
@@ -165,7 +170,7 @@ impl FusionOracle {
     }
 
     /// Would this adjudication block the run under the current gate?
-    pub fn would_block(&self, adjudication: &OracleAdjudication) -> bool {
+    pub fn gate_would_block(&self, adjudication: &OracleAdjudication) -> bool {
         if self.gate != GateMode::Block {
             return false;
         }
@@ -228,6 +233,10 @@ impl Oracle for FusionOracle {
             confidence: 0.0,
             attestations: Vec::new(),
         })
+    }
+
+    fn would_block(&self, adjudication: &OracleAdjudication) -> bool {
+        self.gate_would_block(adjudication)
     }
 }
 
@@ -373,6 +382,10 @@ impl Oracle for NoOpOracle {
             attestations: Vec::new(),
         })
     }
+
+    fn would_block(&self, _adjudication: &OracleAdjudication) -> bool {
+        false // no-op Oracle never blocks — today's behavior unchanged
+    }
 }
 
 /// Resolve the Oracle instance for a run from config.
@@ -459,7 +472,7 @@ model = "vaked/qwen3-coder:30b"
             confidence: 0.95,
             attestations: vec![],
         };
-        assert!(o_block.would_block(&adj));
+        assert!(o_block.gate_would_block(&adj));
     }
 
     #[test]
@@ -499,9 +512,9 @@ model = "vaked/qwen3-coder:30b"
             confidence: 0.95,
             attestations: vec![],
         };
-        assert!(!o.would_block(&low));
-        assert!(o.would_block(&high));
-        assert!(!o.would_block(&approve)); // Approve-confidence never blocks
+        assert!(!o.gate_would_block(&low));
+        assert!(o.gate_would_block(&high));
+        assert!(!o.gate_would_block(&approve)); // Approve-confidence never blocks
     }
 
     #[test]
@@ -513,6 +526,6 @@ model = "vaked/qwen3-coder:30b"
             confidence: 1.0,
             attestations: vec![],
         };
-        assert!(!o.would_block(&adj));
+        assert!(!o.gate_would_block(&adj));
     }
 }
