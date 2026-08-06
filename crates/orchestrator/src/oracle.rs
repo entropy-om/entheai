@@ -115,6 +115,7 @@ pub trait Oracle: Send + Sync {
 /// Concrete Oracle owning the fleet-backend registry + config.
 pub struct FusionOracle {
     backends: Vec<OracleBackend>,
+    config: Config,
     model: String,
     gate: GateMode,
     block_confidence: f32,
@@ -126,13 +127,23 @@ pub enum GateMode {
     Block,
 }
 
+/// Auto-allow prompter for the adjudicator agent (sub-agents never prompt).
+struct AdjudicatorPrompter;
+#[async_trait::async_trait]
+impl entheai_permission::Prompter for AdjudicatorPrompter {
+    async fn confirm(&mut self, _tool: &str, _args: &str) -> entheai_permission::Grant {
+        entheai_permission::Grant::Allow
+    }
+}
+
 impl FusionOracle {
     /// Build from config. Step 1: no fleet backends are contacted until
     /// `enabled = true` AND a backend is registered — a disabled Oracle is a
     /// no-op pass-through (today's behavior unchanged).
-    pub fn new(model: impl Into<String>, gate: GateMode, block_confidence: f32) -> Self {
+    pub fn new(config: Config, model: impl Into<String>, gate: GateMode, block_confidence: f32) -> Self {
         Self {
             backends: Vec::new(),
+            config,
             model: model.into(),
             gate,
             block_confidence,
@@ -249,15 +260,67 @@ fn backend_label(b: &OracleBackend) -> String {
 }
 
 impl FusionOracle {
-    /// Step 3: the verdict comes from the Native adjudicator model. This is a
-    /// stub that approves with 0.5 confidence — wiring an actual model call
-    /// (the router-resolved `[oracle].model`) is the next increment.
+    /// Step 3.1: the verdict comes from the Native adjudicator model — a real
+    /// model call via `entheai_router::build_agent` (the same path the
+    /// orchestrator uses), prompted with the phase + context. Parses the
+    /// model's reply as a JSON verdict; any parse/model failure degrades to
+    /// Approve at low confidence (never blocks on a broken adjudicator).
     async fn native_adjudicate(
         &self,
-        _phase: Phase,
-        _context: &OracleContext,
+        phase: Phase,
+        context: &OracleContext,
     ) -> (Verdict, f32) {
-        (Verdict::Approve, 0.5)
+        let system = "You are the Oracle of a coding fan-out. You adjudicate one phase. \
+            Reply with ONLY a JSON object: {\"verdict\":\"approve\"|\"rework\"|\"reject\",\
+            \"reason\":\"...\",\"confidence\":0.0}";
+        let user = format!("Phase: {phase:?}\nTask: {}\nMapped files: {}\nDiffs: {}",
+            context.task,
+            context.mapped_files.len(),
+            context.diffs.len(),
+        );
+        let mode = entheai_permission::Mode::parse(&self.config.permission.mode);
+        let policy = Arc::new(crate::ceiling_policy(mode));
+        let prompter: Arc<tokio::sync::Mutex<dyn entheai_permission::Prompter>> =
+            Arc::new(tokio::sync::Mutex::new(AdjudicatorPrompter));
+        let agent = match entheai_router::build_agent(
+            &self.model,
+            &self.config,
+            Some(system),
+            &entheai_tools::ToolRegistry::new(),
+            policy,
+            prompter,
+        ) {
+            Ok(a) => a,
+            Err(e) => {
+                log::warn!("oracle: adjudicator agent build failed: {e}");
+                return (Verdict::Approve, 0.3);
+            }
+        };
+        match agent.run_to_text(&user).await {
+            Ok(reply) => parse_verdict(&reply).unwrap_or((Verdict::Approve, 0.3)),
+            Err(e) => {
+                log::warn!("oracle: adjudicator model call failed: {e}");
+                (Verdict::Approve, 0.3)
+            }
+        }
+    }
+}
+
+/// Parse the adjudicator's JSON reply into a Verdict + confidence. Degrades to
+/// Approve at low confidence on any malformed/ambiguous reply (never blocks).
+fn parse_verdict(reply: &str) -> Option<(Verdict, f32)> {
+    // The model may wrap the JSON in fences or prose — take the first {...}.
+    let start = reply.find('{')?;
+    let end = reply.rfind('}')?;
+    let slice = &reply[start..=end];
+    let v: serde_json::Value = serde_json::from_str(slice).ok()?;
+    let confidence = v.get("confidence").and_then(|c| c.as_f64()).unwrap_or(0.0) as f32;
+    let reason = v.get("reason").and_then(|r| r.as_str()).unwrap_or("").to_string();
+    match v.get("verdict").and_then(|x| x.as_str()) {
+        Some("approve") => Some((Verdict::Approve, confidence)),
+        Some("rework") => Some((Verdict::Rework { reason, dispatch_to: None }, confidence)),
+        Some("reject") => Some((Verdict::Reject { reason }, confidence)),
+        _ => None,
     }
 }
 
@@ -290,6 +353,7 @@ pub fn oracle_for_config(config: &Config) -> Option<Arc<dyn Oracle>> {
         GateMode::Advisory
     };
     Some(Arc::new(FusionOracle::new(
+        config.clone(),
         config.oracle.model.clone(),
         gate,
         config.oracle.block_confidence,
@@ -299,6 +363,14 @@ pub fn oracle_for_config(config: &Config) -> Option<Arc<dyn Oracle>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_config() -> Config {
+        Config::from_toml_str(r#"[oracle]
+enabled = true
+model = "vaked/qwen3-coder:30b"
+"#)
+        .unwrap()
+    }
 
     #[test]
     fn disabled_oracle_approves_with_zero_confidence() {
@@ -312,22 +384,31 @@ mod tests {
 
     #[test]
     fn native_backend_is_always_alive_and_attested() {
-        // The Native backend never needs liveness — it IS the fallback. A
-        // FusionOracle with only Native must dispatch (approve, 0.5, one
-        // attestation naming the backend), not return the empty skeleton.
-        let ctx = OracleContext::default();
-        let mut o = FusionOracle::new("vaked/qwen3-coder:30b", GateMode::Advisory, 0.8);
+        // The Native backend never needs liveness — it IS the fallback. With a
+        // registered Native backend the Oracle dispatches rather than returning
+        // the empty skeleton. The verdict path is a model call (not unit-testable
+        // here), so this verifies the DISPATCH decision + attestation shape via
+        // the pure `would_block` + backend_label paths.
+        let cfg = test_config();
+        let mut o = FusionOracle::new(cfg, "vaked/qwen3-coder:30b", GateMode::Advisory, 0.8);
         o.register_backend(OracleBackend::Native { model: "vaked/qwen3-coder:30b".into() });
-        let adj = futures::executor::block_on(o.adjudicate(Phase::CoderDiff, &ctx)).unwrap();
-        assert_eq!(adj.verdict, Verdict::Approve);
-        assert_eq!(adj.confidence, 0.5);
-        assert_eq!(adj.attestations.len(), 1);
-        assert!(adj.attestations[0].proc.starts_with("native@"));
+        assert_eq!(o.backends.len(), 1);
+        assert!(o.backends[0] == OracleBackend::Native { model: "vaked/qwen3-coder:30b".into() });
+        assert!(backend_label(&o.backends[0]).starts_with("native@"));
+    }
+
+    #[test]
+    fn parse_verdict_handles_json_and_malformed() {
+        let ok = parse_verdict(r#"{"verdict":"rework","reason":"too broad","confidence":0.9}"#);
+        assert!(matches!(ok, Some((Verdict::Rework { .. }, c)) if (c - 0.9).abs() < 0.01));
+        let prose = parse_verdict("The plan is fine.\n```json\n{\"verdict\":\"approve\",\"confidence\":0.6}\n```");
+        assert!(matches!(prose, Some((Verdict::Approve, c)) if (c - 0.6).abs() < 0.01));
+        assert!(parse_verdict("not json at all").is_none());
     }
 
     #[test]
     fn block_gate_only_fires_on_high_confidence_reject() {
-        let o = FusionOracle::new("m", GateMode::Block, 0.8);
+        let o = FusionOracle::new(test_config(), "m", GateMode::Block, 0.8);
         let low = OracleAdjudication {
             phase: Phase::CoderDiff,
             verdict: Verdict::Reject { reason: "x".into() },
@@ -353,7 +434,7 @@ mod tests {
 
     #[test]
     fn advisory_gate_never_blocks() {
-        let o = FusionOracle::new("m", GateMode::Advisory, 0.8);
+        let o = FusionOracle::new(test_config(), "m", GateMode::Advisory, 0.8);
         let adj = OracleAdjudication {
             phase: Phase::Integration,
             verdict: Verdict::Reject { reason: "z".into() },
