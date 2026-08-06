@@ -191,12 +191,12 @@ impl Oracle for FusionOracle {
             let alive = match backend {
                 OracleBackend::Hermes { api, .. } => hermes_alive(api).await,
                 OracleBackend::OpenClaw { endpoint } => openclaw_alive(endpoint).await,
+                OracleBackend::AgentField { control } => agentfield_alive(control).await,
                 OracleBackend::Native { model } => {
                     // Native is always "alive"; it IS the fallback.
                     let _ = model;
                     true
                 }
-                _ => false, // AgentField not wired yet (step 5)
             };
             if alive {
                 let (verdict, confidence) = self.native_adjudicate(phase, context).await;
@@ -234,6 +234,8 @@ impl Oracle for FusionOracle {
 /// Step 3: Hermes liveness check — the fleet runtime's adjudication endpoint
 /// is /health today. Returns true when the API server answers ok.
 async fn hermes_alive(api: &str) -> bool {
+    // Hermes's /health answers {"status":"ok",...} — the fleet runtime's
+    // adjudication surface. Reuse the shared probe but verify the body says ok.
     let url = format!("{}/health", api.trim_end_matches('/'));
     let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(4)).build() {
         Ok(c) => c,
@@ -256,11 +258,22 @@ async fn hermes_alive(api: &str) -> bool {
 /// verdict still comes from the Native adjudicator (the OpenClaw rework
 /// dispatch lands when the sandbox agents actually run).
 async fn openclaw_alive(endpoint: &str) -> bool {
-    let url = endpoint.trim_end_matches('/');
+    http_alive(endpoint, "openclaw").await
+}
+
+/// Step 5: AgentField liveness — the control-plane (:8080) is the AF swarm's
+/// front. Reachable = alive; verdict still from the Native adjudicator.
+async fn agentfield_alive(control: &str) -> bool {
+    http_alive(control, "agentfield").await
+}
+
+/// Shared 4s-timeout liveness probe for a fleet backend endpoint.
+async fn http_alive(url: &str, who: &str) -> bool {
+    let url = url.trim_end_matches('/');
     let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(4)).build() {
         Ok(c) => c,
         Err(e) => {
-            log::warn!("oracle: openclaw client build failed: {e}");
+            log::warn!("oracle: {who} client build failed: {e}");
             return false;
         }
     };
@@ -447,6 +460,22 @@ model = "vaked/qwen3-coder:30b"
             attestations: vec![],
         };
         assert!(o_block.would_block(&adj));
+    }
+
+    #[test]
+    fn agentfield_backend_labels_with_hermes_and_openclaw() {
+        // All three fleet backends label correctly + an unreachable AgentField
+        // falls through to Native (dispatch order preserved).
+        let cfg = test_config();
+        let mut o = FusionOracle::new(cfg, "vaked/qwen3-coder:30b", GateMode::Advisory, 0.8);
+        o.register_backend(OracleBackend::Hermes { api: "http://127.0.0.1:1".into(), key_env: "X".into() });
+        o.register_backend(OracleBackend::OpenClaw { endpoint: "http://127.0.0.1:1".into() });
+        o.register_backend(OracleBackend::AgentField { control: "http://127.0.0.1:1".into() });
+        o.register_backend(OracleBackend::Native { model: "vaked/qwen3-coder:30b".into() });
+        assert_eq!(o.backends.len(), 4);
+        assert!(backend_label(&o.backends[2]).starts_with("agentfield@"));
+        assert!(backend_label(&o.backends[0]).starts_with("hermes@"));
+        assert!(backend_label(&o.backends[1]).starts_with("openclaw@"));
     }
 
     #[test]
