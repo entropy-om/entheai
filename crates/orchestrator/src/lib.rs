@@ -28,12 +28,18 @@ use serde::Deserialize;
 
 pub mod agy;
 pub mod copilot;
+pub mod oracle;
 pub mod pool;
 pub mod repair_stop;
 pub mod worktree;
 
 pub use agy::AgyExecutor;
 pub use copilot::CopilotExecutor;
+
+pub use oracle::{
+    Attestation, AttestationKind, FusionOracle, GateMode, NoOpOracle, Oracle, OracleAdjudication,
+    OracleBackend, OracleContext, Phase, Verdict, oracle_for_config,
+};
 
 pub use pool::{WorkerId, WorkerPool, WorkerStatus, WorkerSummary};
 pub use repair_stop::{Attempt, RepairDecision, RepairLedger, StopReason};

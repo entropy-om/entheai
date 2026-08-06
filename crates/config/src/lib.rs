@@ -21,6 +21,9 @@ pub struct Config {
     pub agents: HashMap<String, AgentConfig>,
     #[serde(default)]
     pub fanout: FanoutConfig,
+    /// The Oracle — the fused-fleet adjudication seam (step 1: advisory, off).
+    #[serde(default)]
+    pub oracle: OracleConfig,
     #[serde(default)]
     pub mcp: std::collections::HashMap<String, McpServerConfig>,
     #[serde(default)]
@@ -208,6 +211,48 @@ pub struct FanoutConfig {
     #[serde(default)]
     pub mode: String,
 }
+
+/// The Oracle — entheai's single adjudication seam over the fused fleet.
+/// Step 1 skeleton: advisory-only, disabled by default, darwin-safe.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OracleConfig {
+    /// Master switch. Default OFF — today's fan-out behavior is unchanged.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Where coders run: "local" (darwin, today's path) | "fleet" (Linux host —
+    /// required for the eBPF sphere to attest). Default "local".
+    #[serde(default = "default_oracle_coders")]
+    pub coders: String,
+    /// Gate mode: "advisory" (log + record, never blocks) | "block" (block on
+    /// high-confidence Reject/Rework). Default "advisory".
+    #[serde(default = "default_oracle_gate")]
+    pub gate: String,
+    /// Confidence threshold (0..1) above which Reject/Rework may block when
+    /// gate = "block". Default 0.8.
+    #[serde(default = "default_oracle_block_confidence")]
+    pub block_confidence: f32,
+    /// The Oracle's adjudication model (router-resolved). Defaults to the
+    /// coder.vaked.dev free tier — the fleet's keyless gateway.
+    #[serde(default = "default_oracle_model")]
+    pub model: String,
+}
+
+impl Default for OracleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            coders: default_oracle_coders(),
+            gate: default_oracle_gate(),
+            block_confidence: default_oracle_block_confidence(),
+            model: default_oracle_model(),
+        }
+    }
+}
+
+fn default_oracle_coders() -> String { "local".to_string() }
+fn default_oracle_gate() -> String { "advisory".to_string() }
+fn default_oracle_block_confidence() -> f32 { 0.8 }
+fn default_oracle_model() -> String { "vaked/qwen3-coder:30b".to_string() }
 
 impl Default for FanoutConfig {
     fn default() -> Self {
