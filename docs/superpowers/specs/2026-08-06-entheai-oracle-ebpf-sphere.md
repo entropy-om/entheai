@@ -233,11 +233,98 @@ Linux-only and needs `registry.tail2870dc.ts.net` running (the fleet registry).
 
 ---
 
-## 8. What needs a decision before code
+## 8. Oracle review (2026-08-06) — folded into this spec
 
-- [ ] Oracle = one model vs one interface (spec assumes interface)
-- [ ] eBPF sphere on dev-cx53 first, or defer to a Linux-only follow-up?
-- [ ] Gate mode default: `advisory` (safe) — confirm
-- [ ] Does the fleet registry need standing up as a prerequisite?
+Verdict: **sound to start step 1** after two P0 seam fixes; the sphere needs
+reframing before step 6. Decisions below are the resolved version.
+
+### P0 fixes (accepted)
+
+1. **Trait shape corrected.** `OracleBackend` now carries **rework dispatch** so
+   "merge the fleet" is real: the enum is the seam, not just a judgment wrapper.
+   `register_backend` removed from the trait (unusable through `Arc<dyn Oracle>`);
+   registration lives on the concrete `FusionOracle` struct. `model(&self)` replaced
+   by `adjudicator_id` on the adjudication result (lifetime-free identity).
+
+```rust
+pub trait Oracle: Send + Sync {
+    async fn adjudicate(&self, phase: Phase, ctx: OracleContext)
+        -> anyhow::Result<OracleAdjudication>;
+    // no &mut self, no lifetime-bound identity
+}
+
+pub struct FusionOracle {
+    backends: Vec<OracleBackend>,   // concrete struct owns the registry
+    router: RouterConfig,           // model resolution via [oracle] config
+}
+
+pub enum OracleBackend {
+    Hermes { api: Url, key_env: String },        // key via api_key_env (workspace convention)
+    OpenClaw { endpoint: Url },                  // camofox + nemoclaw
+    AgentField { control: Url },
+    Native { model: String },                    // entheai's own strongest model
+}
+
+pub struct OracleAdjudication {
+    pub verdict: Verdict,               // Approve | Rework{reason, dispatch_to: Option<OracleBackend>} | Reject{reason}
+    pub confidence: f32,
+    pub attestations: Vec<Attestation>,
+}
+```
+
+2. **Sphere premise fixed.** Ground truth: coders run **locally on darwin** unless a
+   fleet executor is wired AND `workers_available()` (lib.rs:846-852). The sphere is
+   Linux-only ⇒ on the primary path it attests nothing. Resolution:
+   - **Where coders run** is now an explicit `[oracle].coders` decision
+     (`local` | `fleet`). The sphere only enters the loop when `coders = fleet`.
+   - **G2 without attestations is defined**: fall back to diff-vs-task review (git
+     diff + MergeSeal, lib.rs:643), **never stall** waiting for a sidecar.
+   - The §5 diagram now states this honestly.
+
+### P1 fixes (accepted)
+
+- **G2 rework loop** reuses `RepairLedger` (lib.rs:987-993 — the designated loop
+  governor) + extends `WorktreePool` for late spawns. G2 gates ONLY Passed/Skipped
+  coders (NoChanges/Failed/Unverifiable already excluded) and runs **concurrently**
+  (doesn't serialize the fanout tail).
+- **Block semantics defined**: blocking triggers only on `Reject`/`Rework` above a
+  confidence threshold (Approve-confidence never blocks). G3-blocked outcome =
+  leave branches unintegrated (guard already keeps them), surfaced in
+  `format_v2_report`. Adjudications appear in the report (advisory verdicts visible).
+- **Trust boundary stated**: NATS attestation subjects need per-host nkeys/JWT auth;
+  eBPF moves trust from coder-process to host-root — a root-compromised coder host
+  controls the sidecar too. "Kernel truth" is exactly that far, no further.
+- **Key handling**: `key_env` names an env var (workspace convention, config/src/lib.rs:126).
+- **Sphere reframed (step 6 shrinks)**: `git diff` + MergeSeal already answer
+  "what the coder wrote". eBPF's REAL wins: (1) sandbox-escape/external-write
+  detection, (2) **per-PROCESS egress attribution** (squid can't attribute to pid
+  behind NAT — eBPF's unique value), (3) mapper-read grounding for MappedInput.
+  Implementation: **fanotify/fsnotify watching worktree roots** for file ops
+  (portable, no BTF, darwin-capable via FSEvents) + **eBPF only for egress**.
+  BTF confirmed present on dev-cx53 (`/sys/kernel/btf/vmlinux`, 7.2.0-cachyos).
+- **G3 conditional**: skip the model call when no merge conflicts + all seals pass.
+- **G1 hook** bound (re-decompose retry via RepairLedger/VRR-stop, re-run
+  ensure_coder, re-emit Decomposed). Advisory records → `TrajectorySink`.
+- **Darwin shim**: FSEvents/filesystem-watch (not DTrace — no entitlements).
+- **OracleBackend asymmetry** flagged: Hermes doesn't expose its model, Native does —
+  no model-aware routing across backends yet (documented limitation).
+
+### Open questions — resolved
+
+- One-model vs interface: **interface, because it now carries rework** (P0-1).
+- eBPF dev-cx53 vs defer: **defer, but "where coders run" answered now** (`fleet`).
+- Gate default advisory: **confirmed** (safe).
+- Registry prerequisite: **required before step 4** (openclaw images), soft for 3
+  (hermes API is live — curl :8642 confirms). Stand up independently.
+
+---
+
+## 9. What needs a decision before code
+
+- [x] Oracle = one interface with rework dispatch (RESOLVED by oracle review)
+- [x] eBPF on dev-cx53: BTF confirmed; sphere = fanotify + eBPF-egress (RESOLVED)
+- [x] Gate default: advisory, block on high-confidence Reject/Rework (RESOLVED)
+- [x] Registry prerequisite: required for step 4 only (RESOLVED)
+- [ ] Where coders run: `[oracle].coders = "local" | "fleet"` — confirm the default
 
 *Signed — peter · for the constellation · the Oracle and the sphere dance together*
