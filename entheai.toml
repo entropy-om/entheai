@@ -221,3 +221,14 @@ model = ["deepseek/deepseek-chat"]
 
 [agents.docs]
 model = ["deepseek/deepseek-chat"]
+
+# ── The Oracle (fused-fleet adjudication seam — steps 1-2: advisory, disabled) ──
+# Merges the assistant fleet (hermes / openclaw / agentfield) into entheai as
+# one adjudication role that dances with the fan-out orchestrator. Spec:
+# docs/superpowers/specs/2026-08-06-entheai-oracle-ebpf-sphere.md
+# [oracle]
+# enabled = false          # OFF = today's fan-out behavior, unchanged
+# coders = "local"         # "local" (darwin) | "fleet" (Linux, for the eBPF sphere)
+# gate = "advisory"        # "advisory" (log-only) | "block" (high-confidence Reject/Rework)
+# block_confidence = 0.8   # only Reject/Rework ≥ this may block under gate="block"
+# model = "vaked/qwen3-coder:30b"
