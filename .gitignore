@@ -21,3 +21,5 @@ public/llms-full.txt
 target-repro-a/
 target-repro-b/
 .entheai/
+
+working_memory.md
