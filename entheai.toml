@@ -161,7 +161,7 @@ mode = "prompt-processing"        # the raw soil is ON — /freeze, /thaw, [curr
 # these env vars (populated from the gitignored .env) — never inline secrets in
 # this tracked file.
 [nats]
-enabled = false
+enabled = true
 url_env = "NATS_URL"       # e.g. nats://entheai-nats.tail2870dc.ts.net:4222
 token_env = "NATS_TOKEN"
 
@@ -174,7 +174,7 @@ token_env = "NATS_TOKEN"
 # (Landlock + seccomp on Linux, `sandbox` knob below) narrows but does not close
 # this gate — no egress allow-list or resource caps yet.
 [federation]
-enabled = false
+enabled = true
 role = "auto"              # "auto" | "worker" | "dispatch"
 deadline_secs = 600
 sandbox = "permissive"     # coder confinement: "strict" | "permissive" | "off"
