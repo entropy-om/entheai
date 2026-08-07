@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/config", "crates/core", "crates/tools", "crates/permission", "crates/tui", "crates/memory", "crates/memory-pp", "crates/brain", "crates/current", "crates/radio", "crates/tts", "crates/companion", "crates/router", "crates/orchestrator", "crates/mapper", "crates/mcp", "crates/skills", "crates/viz", "crates/launcher", "crates/obsidian", "crates/bus", "crates/federation", "crates/sandbox", "crates/ultragraph", "crates/kompress-core", "crates/quantum", "bin/entheai", "bin/entheai-worker", "bin/entheai-launch", "bin/entheai-beacon", "bin/entheai-sphere"]
+members = ["crates/config", "crates/core", "crates/tools", "crates/permission", "crates/tui", "crates/memory", "crates/memory-pp", "crates/brain", "crates/current", "crates/radio", "crates/tts", "crates/companion", "crates/router", "crates/orchestrator", "crates/mapper", "crates/mcp", "crates/skills", "crates/viz", "crates/launcher", "crates/obsidian", "crates/bus", "crates/federation", "crates/sandbox", "crates/ultragraph", "crates/kompress-core", "crates/quantum", "crates/ternary", "bin/entheai", "bin/entheai-worker", "bin/entheai-launch", "bin/entheai-beacon", "bin/entheai-sphere"]
 
 [workspace.package]
 # Single source of truth for every crate's version (all inherit via
 # `version.workspace = true`). Bump per strict SemVer — see VERSIONING.md.
-version = "42.1.6"
+version = "42.1.7"
 edition = "2021"
 rust-version = "1.94"
 license = "MIT"
@@ -45,6 +45,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # NATS client for the federation event bus (F1). rustls-based (no system
 # OpenSSL) so it preserves the portable/headless build.
 async-nats = "0.49"
+# Data-parallel row loops for pure-Rust ternary GEMM (crates/ternary).
+rayon = "1"
 
 # Perf-first (spec §9): optimize release builds hard. NOTE: do NOT set panic="abort"
 # — sub-agents (later plans) run as tokio tasks and we must catch their panics.
