@@ -50,6 +50,15 @@ struct Cli {
     /// `--relay <text...>`.
     #[arg(long = "relay", num_args = 1.., value_name = "TEXT")]
     relay: Option<Vec<String>>,
+    /// Analyze an image and print the answer, then exit: `--image <path>`
+    /// (or `--image -` to read pasted/piped bytes from stdin). The positional
+    /// prompt, if given, is the instruction ("what error is shown here?");
+    /// with none, a generic description is requested. Prefers the `agy`
+    /// (Antigravity CLI / Gemini) backend, falling back to `--model` (point
+    /// it at a vision-capable model, e.g. a local Gemma/hf-mac endpoint, when
+    /// not relying on agy).
+    #[arg(long = "image", value_name = "PATH")]
+    image: Option<String>,
 }
 
 /// The `--config` default; only this filename falls through to the global /
@@ -160,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
         && cli.memory.is_empty()
         && cli.skills.is_none()
         && cli.relay.is_none()
+        && cli.image.is_none()
         && !cli.app
         && !cli.doctor;
     logging::init(interactive);
@@ -199,6 +209,12 @@ async fn main() -> anyhow::Result<()> {
     // and exits — needs neither the tool registry nor the companion.
     if let Some(relay_args) = cli.relay.as_ref() {
         return run_relay_cmd(&cfg, cli.model.as_deref(), relay_args).await;
+    }
+
+    // `--image <path>` runs the image post-prompt-processing layer and exits
+    // — needs neither the tool registry nor the companion.
+    if let Some(image_arg) = cli.image.as_ref() {
+        return run_vision_cmd(&cfg, cli.model.as_deref(), image_arg, cli.prompt.as_deref()).await;
     }
 
     // Tool registry (built-ins + skills + MCP servers) + the skills system prompt.
@@ -839,6 +855,44 @@ async fn run_relay_cmd(
     println!("lovari:      {}", relayed.lovari);
     println!("english:     {}", relayed.english);
     println!("mandarin:    {}", relayed.mandarin);
+    Ok(())
+}
+
+/// `entheai --image <path>` — analyze an image and print the answer, then
+/// exit. `path == "-"` reads pasted/piped bytes from stdin instead (the CLI
+/// equivalent of a paste: `pbpaste | entheai --image -`); MIME type is
+/// sniffed from the bytes since stdin has no filename. `instruction` is the
+/// positional prompt if one was given, else a generic description is
+/// requested. Prefers the `agy` (Antigravity CLI / Gemini) backend —
+/// `[fanout].agy_model`, the same model fan-out's recursive-dev path already
+/// uses — falling back to the model backend (same resolution as `--relay`)
+/// on any failure.
+async fn run_vision_cmd(
+    cfg: &Config,
+    cli_model: Option<&str>,
+    path_or_dash: &str,
+    instruction: Option<&str>,
+) -> anyhow::Result<()> {
+    let image = if path_or_dash == "-" {
+        use tokio::io::AsyncReadExt;
+        let mut bytes = Vec::new();
+        tokio::io::stdin().read_to_end(&mut bytes).await?;
+        entheai_vision::ImageInput::sniffed(bytes)?
+    } else {
+        entheai_vision::ImageInput::path(path_or_dash)
+    };
+    let instruction = instruction.unwrap_or("Describe this image in detail.");
+
+    let model_id = cli_model
+        .map(str::to_string)
+        .or_else(|| cfg.default_model.clone())
+        .unwrap_or_else(|| entheai_router::DEFAULT_ORCHESTRATOR.to_string());
+    let (llm, model) = resolve_bare_model_llm(&model_id, cfg)?;
+    let processor =
+        entheai_vision::VisionProcessor::new(llm, model).with_agy(cfg.fanout.agy_model.clone());
+
+    let answer = processor.process(&image, instruction).await?;
+    println!("{answer}");
     Ok(())
 }
 

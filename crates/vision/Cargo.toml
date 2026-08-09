@@ -1,0 +1,17 @@
+[package]
+name = "entheai-vision"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+adk-rust = { workspace = true }
+futures = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["process", "fs", "time", "io-util"] }
+tempfile = "3"
+log = "0.4"
+
+[dev-dependencies]
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "time", "fs", "process"] }

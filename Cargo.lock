@@ -2214,6 +2214,7 @@ dependencies = [
  "entheai-skills",
  "entheai-tools",
  "entheai-tui",
+ "entheai-vision",
  "log",
  "mimalloc",
  "sentry",
@@ -2627,6 +2628,19 @@ name = "entheai-ultragraph"
 version = "42.1.11"
 dependencies = [
  "serde_json",
+]
+
+[[package]]
+name = "entheai-vision"
+version = "42.1.7"
+dependencies = [
+ "adk-rust",
+ "async-trait",
+ "futures",
+ "log",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
