@@ -165,6 +165,42 @@ api_key_env = "OPENCODE_API_KEY"
 
 Run the checks: `./scripts/check.sh` (fmt + clippy `-D warnings` + tests).
 
+## Usage
+
+One-shot, interactive, and fleet modes:
+
+```bash
+entheai "explain the Rust borrow checker in one line"   # one-shot → answer to stdout
+entheai                                                # interactive TUI session
+entheai --fanout "add a CONTRIBUTING.md and .editorconfig"  # parallel worktree coders, verify + MergeSeal
+entheai --yolo "run the refactor, no permission prompts"    # auto-approve (use with care)
+```
+
+Model routing is `<provider>/<model>` (split on the first `/`):
+
+```bash
+entheai --model vaked/qwen3-coder:30b "reply with pong"   # pin a specific model
+entheai --model quantal/quantal "…"                        # (ternary native backend — see below)
+```
+
+Fleet & federation:
+
+```bash
+entheai-worker --serve        # run as a worker: pull coder tasks off the NATS JetStream queue
+entheai-worker --dispatch --task "fix the flaky test"   # dispatch a task to the worker fleet
+```
+
+Skills, memory, app:
+
+```bash
+entheai --skills add https://docs.stripe.com   # install a skill from the web
+entheai --skills list
+entheai --memory stats                         # inspect the 5-namespace memory store
+entheai --app                                  # native Ghostty window (rain shader)
+```
+
+Run the checks: `./scripts/check.sh` (fmt + clippy `-D warnings` + tests).
+
 ### Verification Gate & SHA-256 MergeSeal
 
 `entheai` strictly enforces empirical verification before fan-out branches integrate into main:
