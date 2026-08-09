@@ -1,13 +1,20 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use adk_rust::model::openai::{OpenAIClient, OpenAIConfig};
 use anyhow::{anyhow, Context};
 use entheai_config::ProviderConfig;
 
+use crate::ternary_llm::TernaryLlm;
+
 /// Resolve a `"<provider>/<model>"` spec (e.g. `"osaurus/qwen3-coder"`) into a
 /// live adk-rust model client, using the same `[providers.<name>]` config
 /// shape entheai already reads (`base_url` + optional `api_key_env`).
+///
+/// A provider with `kind = "ternary"` (oracle review #4) bypasses the OpenAI
+/// endpoint entirely and builds the native `TernaryLlm` over `model_dir`
+/// (ayeOS matrices + embeddings + norms + vendored tokenizer).
 pub fn resolve_model(
     spec: &str,
     providers: &HashMap<String, ProviderConfig>,
@@ -18,6 +25,50 @@ pub fn resolve_model(
     let pc = providers
         .get(provider_name)
         .ok_or_else(|| anyhow!("unknown provider {provider_name:?} in model spec {spec:?}"))?;
+
+    match pc.kind.as_deref() {
+        Some("ternary") => resolve_ternary(provider_name, model_name, pc),
+        Some(other) => Err(anyhow!(
+            "provider {provider_name:?} has unknown kind {other:?} (expected \"openai\" or \"ternary\")"
+        )),
+        None => resolve_openai(provider_name, model_name, pc),
+    }
+}
+
+/// Build the native ternary runner from a provider config's `model_dir`.
+fn resolve_ternary(
+    provider_name: &str,
+    model_name: &str,
+    pc: &ProviderConfig,
+) -> anyhow::Result<Arc<dyn adk_rust::Llm>> {
+    let model_dir = pc
+        .model_dir
+        .as_ref()
+        .ok_or_else(|| {
+            anyhow!(
+                "provider {provider_name:?} has kind=\"ternary\" but no model_dir set"
+            )
+        })?
+        .clone();
+    let dir = Path::new(&model_dir);
+    anyhow::ensure!(
+        dir.is_dir(),
+        "provider {provider_name:?} model_dir {} is not a directory",
+        dir.display()
+    );
+    let model = ternary::model::TernaryModel::load(dir)
+        .with_context(|| format!("loading ternary model from {}", dir.display()))?;
+    let tokenizer = ternary::tokenizer::ChatTokenizer::load(dir)
+        .with_context(|| format!("loading tokenizer from {}", dir.display()))?;
+    Ok(Arc::new(TernaryLlm::new(model, tokenizer, model_name.to_string())))
+}
+
+/// Existing OpenAI-compatible client path (`base_url` + optional `api_key_env`).
+fn resolve_openai(
+    provider_name: &str,
+    model_name: &str,
+    pc: &ProviderConfig,
+) -> anyhow::Result<Arc<dyn adk_rust::Llm>> {
     let api_key = match &pc.api_key_env {
         Some(env_var) => std::env::var(env_var).with_context(|| {
             format!("env var {env_var:?} not set for provider {provider_name:?}")
@@ -34,22 +85,60 @@ pub fn resolve_model(
 mod tests {
     use super::*;
 
-    #[test]
-    fn resolves_provider_slash_model_into_a_client() {
+    fn providers_with(
+        base_url: &str,
+        kind: Option<&str>,
+        model_dir: Option<&str>,
+    ) -> HashMap<String, ProviderConfig> {
         let mut providers = HashMap::new();
         providers.insert(
             "osaurus".to_string(),
             ProviderConfig {
-                base_url: "http://localhost:8000/v1".to_string(),
+                base_url: base_url.to_string(),
                 api_key_env: None,
+                model_dir: model_dir.map(String::from),
+                kind: kind.map(String::from),
             },
         );
+        providers
+    }
+
+    #[test]
+    fn resolves_provider_slash_model_into_a_client() {
+        let providers = providers_with("http://localhost:8000/v1", None, None);
         let client = resolve_model("osaurus/qwen3-coder", &providers);
         assert!(
             client.is_ok(),
             "expected a resolved client: {:?}",
             client.err()
         );
+    }
+
+    #[test]
+    fn ternary_kind_without_model_dir_errors() {
+        let providers = providers_with("", Some("ternary"), None);
+        let err = resolve_model("osaurus/quantal", &providers).unwrap_err();
+        assert!(
+            err.to_string().contains("no model_dir"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn ternary_kind_with_missing_model_dir_errors() {
+        let providers = providers_with("", Some("ternary"), Some("/nonexistent/quantal"));
+        let err = resolve_model("osaurus/quantal", &providers).unwrap_err();
+        assert!(
+            err.to_string().contains("is not a directory"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_kind_errors() {
+        let providers = providers_with("", Some("banana"), None);
+        let err = resolve_model("osaurus/x", &providers).unwrap_err();
+        assert!(err.to_string().contains("unknown kind"), "unexpected error: {err}");
     }
 
     #[test]

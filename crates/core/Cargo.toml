@@ -10,12 +10,14 @@ entheai-permission = { path = "../permission" }
 entheai-memory = { path = "../memory" }
 entheai-memory-pp = { path = "../memory-pp" }
 entheai-config = { path = "../config" }
+ternary = { path = "../ternary" }
 adk-rust = { workspace = true }
 anyhow = { workspace = true }
 async-trait.workspace = true
 futures.workspace = true
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["sync", "macros"] }
+tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4"] }
 log = "0.4"
 

@@ -3,6 +3,7 @@ pub mod entheai_agent;
 pub mod event_bridge;
 pub mod memory_callbacks;
 pub mod model_resolve;
+pub mod ternary_llm;
 
 pub use entheai_agent::EntheaiAgent;
 

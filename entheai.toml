@@ -37,6 +37,16 @@ base_url = "https://coder.vaked.dev/v1"
 [providers.osaurus]
 base_url = "http://127.0.0.1:1337/v1"
 
+# Native ternary (BitNet b1.58) inference — e.g. --model "quantal/qwen2.5-0.5b-quantal"
+# Runs fully offline in Rust: no Python, no MLX, no network. `model_dir` must
+# hold the ayeOS matrices (index.json + m*.json), embeddings.f16, norms.f32 and
+# a vendored tokenizer.json. `kind = "ternary"` routes resolve_model to the
+# native TernaryLlm; `base_url` is ignored for this provider.
+[providers.quantal]
+base_url = ""
+model_dir = "/Users/lodripeter/workspace/peterlodri-sec/pocoo.vaked.dev/demos/quantal"
+kind = "ternary"
+
 # ── Fan-out routing (used by `entheai --fanout "<task>"`) ─────────────────────
 # The orchestrator decomposes the task into role-tagged sub-tasks, runs them in
 # parallel (coders in isolated git worktrees), and synthesizes/integrates the

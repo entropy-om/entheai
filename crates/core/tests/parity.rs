@@ -73,6 +73,7 @@ fn providers(base_url: String) -> HashMap<String, ProviderConfig> {
         ProviderConfig {
             base_url,
             api_key_env: None,
+            ..Default::default()
         },
     );
     m

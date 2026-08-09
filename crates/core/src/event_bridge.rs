@@ -265,6 +265,7 @@ mod tests {
             ProviderConfig {
                 base_url: server.uri(),
                 api_key_env: None,
+                ..Default::default()
             },
         );
         let mut registry = entheai_tools::ToolRegistry::new();

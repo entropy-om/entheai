@@ -366,6 +366,7 @@ mod tests {
             ProviderConfig {
                 base_url: server.uri(),
                 api_key_env: None,
+                ..Default::default()
             },
         );
 
@@ -427,6 +428,7 @@ mod tests {
             ProviderConfig {
                 base_url: server.uri(),
                 api_key_env: None,
+                ..Default::default()
             },
         );
 

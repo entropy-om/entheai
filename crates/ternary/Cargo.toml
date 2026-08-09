@@ -4,9 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Native ternary (BitNet b1.58) matrix support — ayeOS loading, packed 2-bit decode, pure-Rust ternary GEMM (Phase 1, no entheai wiring)"
+description = "Native ternary (BitNet b1.58) matrix support — ayeOS loading, packed 2-bit decode, pure-Rust ternary GEMM, and a Qwen2.5 transformer runner + chat tokenizer (Phase 2, standalone crate)"
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 rayon.workspace = true
+anyhow.workspace = true
+half = "2.7"
+tokenizers = "0.21"

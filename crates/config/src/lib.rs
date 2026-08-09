@@ -127,6 +127,28 @@ pub struct ProviderConfig {
     pub base_url: String,
     #[serde(default)]
     pub api_key_env: Option<String>,
+    /// Directory of a self-contained native model (ternary/quantal): the
+    /// ayeOS `m*.json` + `index.json` matrices, `embeddings.f16`, `norms.f32`
+    /// and a vendored `tokenizer.json`. Only read when `kind = "ternary"`.
+    /// Deliberately NOT overloading `base_url` as a directory (oracle review
+    /// correction #4).
+    #[serde(default)]
+    pub model_dir: Option<String>,
+    /// Provider backend: `"openai"` (default; `base_url` + `api_key_env`) or
+    /// `"ternary"` (native `model_dir` runner).
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            api_key_env: None,
+            model_dir: None,
+            kind: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -566,6 +588,8 @@ impl Config {
             .or_insert_with(|| ProviderConfig {
                 base_url: VAKED_BASE_URL.to_string(),
                 api_key_env: None,
+                model_dir: None,
+                kind: None,
             });
     }
 }
@@ -632,6 +656,42 @@ mod tests {
             cfg.providers[VAKED_PROVIDER].api_key_env.as_deref(),
             Some("MY_KEY")
         );
+    }
+
+    #[test]
+    fn parses_ternary_provider_kind_and_model_dir() {
+        let cfg = Config::from_toml_str(
+            r#"
+            default_model = "quantal/qwen2.5-0.5b-quantal"
+
+            [providers.quantal]
+            base_url = ""
+            model_dir = "/Users/lodripeter/workspace/peterlodri-sec/pocoo.vaked.dev/demos/quantal"
+            kind = "ternary"
+            "#,
+        )
+        .unwrap();
+        let q = &cfg.providers["quantal"];
+        assert_eq!(q.kind.as_deref(), Some("ternary"));
+        assert_eq!(
+            q.model_dir.as_deref(),
+            Some("/Users/lodripeter/workspace/peterlodri-sec/pocoo.vaked.dev/demos/quantal")
+        );
+        assert_eq!(cfg.default_model.as_deref(), Some("quantal/qwen2.5-0.5b-quantal"));
+    }
+
+    #[test]
+    fn openai_provider_defaults_to_no_kind() {
+        let cfg = Config::from_toml_str(
+            r#"
+            [providers.osaurus]
+            base_url = "http://127.0.0.1:1337/v1"
+            "#,
+        )
+        .unwrap();
+        let o = &cfg.providers["osaurus"];
+        assert_eq!(o.kind, None, "plain providers default to the openai path");
+        assert_eq!(o.model_dir, None);
     }
 
     #[test]
