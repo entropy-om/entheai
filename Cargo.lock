@@ -2209,6 +2209,7 @@ dependencies = [
  "entheai-obsidian",
  "entheai-orchestrator",
  "entheai-permission",
+ "entheai-relay",
  "entheai-router",
  "entheai-skills",
  "entheai-tools",
@@ -2500,6 +2501,17 @@ name = "entheai-radio"
 version = "42.1.11"
 dependencies = [
  "rodio",
+ "tokio",
+]
+
+[[package]]
+name = "entheai-relay"
+version = "42.1.7"
+dependencies = [
+ "adk-rust",
+ "async-trait",
+ "futures",
+ "thiserror 2.0.18",
  "tokio",
 ]
 

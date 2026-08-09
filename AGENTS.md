@@ -52,7 +52,8 @@ Cargo.toml                          # workspace root (resolver=2)
 ├── crates/sandbox/                 # entheai-sandbox: isolated execution
 ├── crates/ultragraph/              # entheai-ultragraph: graph data structure (Rust port)
 ├── crates/tantra-agent/            # tantra-agent: tantric board control CLI + adk-rust agent (mlxquantlovefrom.com)
-└── crates/kompress-core/           # kompress-core: context-pruning pipeline (vendored from kompress-ultra)
+├── crates/kompress-core/           # kompress-core: context-pruning pipeline (vendored from kompress-ultra)
+└── crates/relay/                   # entheai-relay: post-prompt-processing language chain (hu slang -> Lovari -> English -> Mandarin)
 ```
 
 Crate names use dashes (`entheai-core`) but Rust module names use underscores (`entheai_core`). Workspace version: see `Cargo.toml`'s `[workspace.package]`.

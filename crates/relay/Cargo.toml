@@ -1,0 +1,15 @@
+[package]
+name = "entheai-relay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+adk-rust = { workspace = true }
+futures = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "time"] }

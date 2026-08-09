@@ -6,6 +6,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/); versioning: strict
 
 ## [Unreleased]
 
+### Added
+- **`entheai-relay` — a post-prompt-processing language chain.** New crate relaying a prompt through Hungarian slang -> Lovari (Vlax Romani) -> English -> Mandarin, each hop a single LLM completion that translates by meaning rather than by sound (no pinyin sound-alike hanzi). Exposed via `entheai --relay <text...>`, printing every hop; reuses the same model resolution as the main run (`--model`, else `[default_model]`, else the built-in orchestrator).
+
 ## [4.2.2] - 2026-08-01
 
 ### Changed
