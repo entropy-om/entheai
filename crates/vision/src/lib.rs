@@ -1,6 +1,8 @@
-//! entheai-vision: an image post-processing layer. A pasted image (bytes
-//! already in hand — e.g. from a clipboard) or a file path gets analyzed by
-//! whichever backend is available:
+//! entheai-vision: an image post-processing layer, exposed on the CLI as
+//! "caligraph" mode (`entheai --caligraph <path>`) — an opt-in, exit-early
+//! mode alongside `--relay`; it never runs as part of, or changes, the
+//! default prompt path. A pasted image (bytes already in hand — e.g. from a
+//! clipboard) or a file path gets analyzed by whichever backend is available:
 //!
 //! 1. **The Antigravity CLI (`agy`, Google's Gemini)** — preferred when
 //!    configured, mirroring `crates/orchestrator`'s `AgyExecutor`: shell out,
