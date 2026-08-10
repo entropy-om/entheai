@@ -51,6 +51,7 @@ Cargo.toml                          # workspace root (resolver=2)
 ├── crates/federation/              # entheai-federation: remote fleet dispatch
 ├── crates/sandbox/                 # entheai-sandbox: isolated execution
 ├── crates/ultragraph/              # entheai-ultragraph: graph data structure (Rust port)
+├── crates/tantra-agent/            # tantra-agent: tantric board control CLI + adk-rust agent (mlxquantlovefrom.com)
 └── crates/kompress-core/           # kompress-core: context-pruning pipeline (vendored from kompress-ultra)
 ```
 

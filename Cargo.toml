@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/config", "crates/core", "crates/tools", "crates/permission", "crates/tui", "crates/memory", "crates/memory-pp", "crates/brain", "crates/current", "crates/radio", "crates/tts", "crates/companion", "crates/router", "crates/orchestrator", "crates/mapper", "crates/mcp", "crates/skills", "crates/viz", "crates/launcher", "crates/obsidian", "crates/bus", "crates/federation", "crates/sandbox", "crates/ultragraph", "crates/kompress-core", "crates/quantum", "crates/ternary", "crates/mcp-server", "bin/entheai", "bin/entheai-worker", "bin/entheai-launch", "bin/entheai-beacon", "bin/entheai-sphere"]
+members = ["crates/config", "crates/core", "crates/tools", "crates/permission", "crates/tui", "crates/memory", "crates/memory-pp", "crates/brain", "crates/current", "crates/radio", "crates/tts", "crates/companion", "crates/router", "crates/orchestrator", "crates/mapper", "crates/mcp", "crates/skills", "crates/viz", "crates/launcher", "crates/obsidian", "crates/bus", "crates/federation", "crates/sandbox", "crates/ultragraph", "crates/kompress-core", "crates/quantum", "crates/ternary", "crates/mcp-server", "crates/tantra-agent", "bin/entheai", "bin/entheai-worker", "bin/entheai-launch", "bin/entheai-beacon", "bin/entheai-sphere"]
 
 [workspace.package]
 # Single source of truth for every crate's version (all inherit via

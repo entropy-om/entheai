@@ -9,6 +9,7 @@ use std::pin::Pin;
 
 use serde_json::{json, Value};
 
+use crate::board_tools;
 use crate::dispatch_tool;
 use crate::fanout_tool;
 use crate::fleet_tool;
@@ -184,6 +185,30 @@ pub fn all() -> Vec<ToolDef> {
                 &[],
             ),
             handler: handler!(skills_tools::entheai_skills_list),
+        },
+        ToolDef {
+            name: "entheai_board_list",
+            description: "Read the tantric board (mlxquantlovefrom.com, GitHub-issues-backed in peterlodri-sec/mlxquantlovefrom.com): all lanes (backlog/burning/tantra/done) and their cards. Card = GitHub issue with a lane label. Public read; a TANTRIC_TOKEN_* env var is used when present.",
+            input_schema: schema(
+                json!({
+                    "cwd": cwd_prop(),
+                }),
+                &[],
+            ),
+            handler: handler!(board_tools::entheai_board_list),
+        },
+        ToolDef {
+            name: "entheai_board_add",
+            description: "Create a card on the tantric board (mlxquantlovefrom.com): a GitHub issue with the lane label. Write access is restricted to the three board collaborators (peterlodri-sec, 8bit-wraith, standardgalactic), each with their own TANTRIC_TOKEN_PETER / TANTRIC_TOKEN_8BIT / TANTRIC_TOKEN_SG env var — errors clearly if none is set.",
+            input_schema: schema(
+                json!({
+                    "title": {"type": "string", "description": "The card title."},
+                    "lane": {"type": "string", "enum": ["backlog", "burning", "tantra", "done"], "description": "Lane to put the card in (default tantra)."},
+                    "cwd": cwd_prop(),
+                }),
+                &["title"],
+            ),
+            handler: handler!(board_tools::entheai_board_add),
         },
     ]
 }

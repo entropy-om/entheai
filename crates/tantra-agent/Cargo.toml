@@ -1,0 +1,23 @@
+[package]
+name = "tantra-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Board-control agent for the tantric board (mlxquantlovefrom.com, GitHub-issues-backed) — CLI + thin adk-rust agent wrapper"
+homepage.workspace = true
+
+[dependencies]
+adk-rust.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+reqwest.workspace = true
+clap.workspace = true
+async-trait.workspace = true
+dotenvy.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }

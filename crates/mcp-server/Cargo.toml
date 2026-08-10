@@ -25,6 +25,7 @@ entheai-skills = { path = "../skills" }
 entheai-tools = { path = "../tools" }
 entheai-permission = { path = "../permission" }
 entheai-router = { path = "../router" }
+tantra-agent = { path = "../tantra-agent" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-std", "io-util", "fs", "process", "sync", "time"] }
 serde = { workspace = true }
 serde_json.workspace = true

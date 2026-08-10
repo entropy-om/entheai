@@ -8,6 +8,7 @@
 //! own `crates/mcp` client speaks), so `command: ["entheai-mcp"]` works from
 //! opencode, Claude, and entheai's own `[mcp.*]` config alike.
 
+mod board_tools;
 mod dispatch_tool;
 mod engine;
 mod fanout_tool;

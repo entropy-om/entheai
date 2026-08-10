@@ -2393,6 +2393,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "tantra-agent",
  "tempfile",
  "tokio",
  "uuid",
@@ -6635,6 +6636,21 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "tantra-agent"
+version = "42.1.11"
+dependencies = [
+ "adk-rust",
+ "anyhow",
+ "async-trait",
+ "clap",
+ "dotenvy",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
