@@ -146,7 +146,10 @@ mod tests {
         let ids = tok.encode(&text).unwrap();
         // The template's literal <|im_start|> / <|im_end|> must tokenize to the
         // reserved ids (151644 / 151645), and generation must stop on the latter.
-        assert!(ids.contains(&IM_START), "template must contain <|im_start|> id");
+        assert!(
+            ids.contains(&IM_START),
+            "template must contain <|im_start|> id"
+        );
         assert!(
             ids.contains(&STOP_IM_END),
             "template must contain <|im_end|> id"
@@ -160,7 +163,9 @@ mod tests {
     #[test]
     fn encode_decode_round_trips() {
         let tok = ChatTokenizer::load(data_dir()).unwrap();
-        let ids = tok.encode("The quick brown fox jumps over the lazy dog.").unwrap();
+        let ids = tok
+            .encode("The quick brown fox jumps over the lazy dog.")
+            .unwrap();
         assert!(!ids.is_empty());
         assert!(ids.iter().all(|id| !tok.is_stop(*id)));
         let text = tok.decode(&ids).unwrap();

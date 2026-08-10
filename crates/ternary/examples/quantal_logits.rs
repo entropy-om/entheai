@@ -40,10 +40,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut results = Vec::new();
     for (i, (system, user)) in GATE_PROMPTS.iter().enumerate() {
-        let prompt = tokenizer.apply_chat_template(&[
-            ("system", *system),
-            ("user", *user),
-        ]);
+        let prompt = tokenizer.apply_chat_template(&[("system", *system), ("user", *user)]);
         let ids = tokenizer.encode(&prompt)?;
         let logits = model.logits_last(&ids)?;
         println!(

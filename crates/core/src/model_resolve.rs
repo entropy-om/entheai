@@ -45,9 +45,7 @@ fn resolve_ternary(
         .model_dir
         .as_ref()
         .ok_or_else(|| {
-            anyhow!(
-                "provider {provider_name:?} has kind=\"ternary\" but no model_dir set"
-            )
+            anyhow!("provider {provider_name:?} has kind=\"ternary\" but no model_dir set")
         })?
         .clone();
     let dir = Path::new(&model_dir);
@@ -60,7 +58,11 @@ fn resolve_ternary(
         .with_context(|| format!("loading ternary model from {}", dir.display()))?;
     let tokenizer = ternary::tokenizer::ChatTokenizer::load(dir)
         .with_context(|| format!("loading tokenizer from {}", dir.display()))?;
-    Ok(Arc::new(TernaryLlm::new(model, tokenizer, model_name.to_string())))
+    Ok(Arc::new(TernaryLlm::new(
+        model,
+        tokenizer,
+        model_name.to_string(),
+    )))
 }
 
 /// Existing OpenAI-compatible client path (`base_url` + optional `api_key_env`).
@@ -117,7 +119,9 @@ mod tests {
     #[test]
     fn ternary_kind_without_model_dir_errors() {
         let providers = providers_with("", Some("ternary"), None);
-        let err = resolve_model("osaurus/quantal", &providers).unwrap_err();
+        let err = resolve_model("osaurus/quantal", &providers)
+            .err()
+            .expect("kind=ternary without model_dir must error");
         assert!(
             err.to_string().contains("no model_dir"),
             "unexpected error: {err}"
@@ -127,7 +131,9 @@ mod tests {
     #[test]
     fn ternary_kind_with_missing_model_dir_errors() {
         let providers = providers_with("", Some("ternary"), Some("/nonexistent/quantal"));
-        let err = resolve_model("osaurus/quantal", &providers).unwrap_err();
+        let err = resolve_model("osaurus/quantal", &providers)
+            .err()
+            .expect("kind=ternary with missing model_dir must error");
         assert!(
             err.to_string().contains("is not a directory"),
             "unexpected error: {err}"
@@ -137,8 +143,13 @@ mod tests {
     #[test]
     fn unknown_kind_errors() {
         let providers = providers_with("", Some("banana"), None);
-        let err = resolve_model("osaurus/x", &providers).unwrap_err();
-        assert!(err.to_string().contains("unknown kind"), "unexpected error: {err}");
+        let err = resolve_model("osaurus/x", &providers)
+            .err()
+            .expect("unknown kind must error");
+        assert!(
+            err.to_string().contains("unknown kind"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -165,7 +176,8 @@ mod tests {
         if let Ok(dir) = std::env::var("AYEOS_DATA_DIR") {
             return std::path::PathBuf::from(dir);
         }
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../pocoo.vaked.dev/demos/quantal")
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../pocoo.vaked.dev/demos/quantal")
     }
 
     #[test]

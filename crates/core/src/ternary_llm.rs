@@ -24,10 +24,10 @@ use adk_rust::{
     LlmResponseStream, Part,
 };
 use async_trait::async_trait;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 use ternary::model::TernaryModel;
 use ternary::tokenizer::ChatTokenizer;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
 /// Hard cap on generated tokens for a single call (a 0.5B ternary model is
 /// slow; refuse unbounded requests).
@@ -43,7 +43,11 @@ pub struct TernaryLlm {
 
 impl TernaryLlm {
     /// Wrap a loaded model + tokenizer under the given model id.
-    pub fn new(model: TernaryModel, tokenizer: ChatTokenizer, model_name: impl Into<String>) -> Self {
+    pub fn new(
+        model: TernaryModel,
+        tokenizer: ChatTokenizer,
+        model_name: impl Into<String>,
+    ) -> Self {
         Self {
             model: Arc::new(model),
             tokenizer: Arc::new(tokenizer),

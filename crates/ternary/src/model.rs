@@ -381,9 +381,7 @@ impl TernaryModel {
             let hidden = self.forward_hidden(&mut cache, &[last])?;
             let logits = self.lm_head(&hidden);
             let next = argmax(&logits);
-            if next == crate::tokenizer::STOP_END_OF_TEXT
-                || next == crate::tokenizer::STOP_IM_END
-            {
+            if next == crate::tokenizer::STOP_END_OF_TEXT || next == crate::tokenizer::STOP_IM_END {
                 break;
             }
             out.push(next);
@@ -506,12 +504,18 @@ mod tests {
         let denom0 = (30.0f32 / HIDDEN as f32 + RMS_EPS).sqrt();
         for (i, v) in out.iter().take(4).enumerate() {
             let expected = rows[i] * 0.5 / denom0;
-            assert!((v - expected).abs() < 1e-6, "row0 idx {i}: {v} vs {expected}");
+            assert!(
+                (v - expected).abs() < 1e-6,
+                "row0 idx {i}: {v} vs {expected}"
+            );
         }
         let denom1 = ((1.0 + 0.25 + 0.0625 + 0.015625) / HIDDEN as f32 + RMS_EPS).sqrt();
         for (i, v) in out.iter().enumerate().take(HIDDEN + 4).skip(HIDDEN) {
             let expected = rows[i] * 0.5 / denom1;
-            assert!((v - expected).abs() < 1e-6, "row1 idx {i}: {v} vs {expected}");
+            assert!(
+                (v - expected).abs() < 1e-6,
+                "row1 idx {i}: {v} vs {expected}"
+            );
         }
     }
 
@@ -549,8 +553,8 @@ mod tests {
         // acceptance test; this just pins shape + finiteness + determinism.
         let m = TernaryModel::load(data_dir()).unwrap();
         let tok = crate::tokenizer::ChatTokenizer::load(data_dir()).unwrap();
-        let prompt = tok
-            .apply_chat_template(&[("system", "You are a helpful assistant."), ("user", "Hi.")]);
+        let prompt =
+            tok.apply_chat_template(&[("system", "You are a helpful assistant."), ("user", "Hi.")]);
         let ids = tok.encode(&prompt).unwrap();
         assert!(!ids.is_empty());
         let logits = m.logits_last(&ids).unwrap();
@@ -574,16 +578,10 @@ mod tests {
     ///                          145139=38.695, 146656=38.402
     /// prompt 2 (40 tok) top-5: 72612=19.159, 33298=19.024, 41585=18.198,
     ///                          89417=17.906, 40330=17.672
-    const GOLDEN_GATE_TOP3_P1: [(u32, f32); 3] = [
-        (145216, 43.4608),
-        (81129, 39.4597),
-        (143145, 39.1882),
-    ];
-    const GOLDEN_GATE_TOP3_P2: [(u32, f32); 3] = [
-        (72612, 19.1590),
-        (33298, 19.0239),
-        (41585, 18.1981),
-    ];
+    const GOLDEN_GATE_TOP3_P1: [(u32, f32); 3] =
+        [(145216, 43.4608), (81129, 39.4597), (143145, 39.1882)];
+    const GOLDEN_GATE_TOP3_P2: [(u32, f32); 3] =
+        [(72612, 19.1590), (33298, 19.0239), (41585, 18.1981)];
     /// Gate tolerance: the gate's ~1e-2 with a 4× margin for the pinned values
     /// (observed max_abs was 1.3e-3).
     const GOLDEN_GATE_TOL: f32 = 5e-3;
@@ -609,7 +607,11 @@ mod tests {
             "You are a helpful assistant.",
             "What is the capital of France? Answer in one word.",
         );
-        assert_eq!(p1.len(), 31, "prompt 1 must tokenize to 31 ids (sync with Python gate)");
+        assert_eq!(
+            p1.len(),
+            31,
+            "prompt 1 must tokenize to 31 ids (sync with Python gate)"
+        );
         let l1 = m.logits_last(&p1).unwrap();
         let (ref_best1, ref_top1) = GOLDEN_GATE_TOP3_P1[0];
         assert_eq!(argmax(&l1), ref_best1, "prompt 1 argmax token");
@@ -627,7 +629,11 @@ mod tests {
             "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
             "Explain the concept of recursion in one short paragraph.",
         );
-        assert_eq!(p2.len(), 40, "prompt 2 must tokenize to 40 ids (sync with Python gate)");
+        assert_eq!(
+            p2.len(),
+            40,
+            "prompt 2 must tokenize to 40 ids (sync with Python gate)"
+        );
         let l2 = m.logits_last(&p2).unwrap();
         let (ref_best2, _) = GOLDEN_GATE_TOP3_P2[0];
         assert_eq!(argmax(&l2), ref_best2, "prompt 2 argmax token");
