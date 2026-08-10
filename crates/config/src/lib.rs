@@ -122,7 +122,7 @@ pub const VAKED_PROVIDER: &str = "vaked";
 /// Base URL for the built-in [`VAKED_PROVIDER`] free tier.
 pub const VAKED_BASE_URL: &str = "https://coder.vaked.dev/v1";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ProviderConfig {
     pub base_url: String,
     #[serde(default)]
@@ -138,17 +138,6 @@ pub struct ProviderConfig {
     /// `"ternary"` (native `model_dir` runner).
     #[serde(default)]
     pub kind: Option<String>,
-}
-
-impl Default for ProviderConfig {
-    fn default() -> Self {
-        Self {
-            base_url: String::new(),
-            api_key_env: None,
-            model_dir: None,
-            kind: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
