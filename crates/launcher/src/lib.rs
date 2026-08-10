@@ -1,5 +1,5 @@
 //! entheai native-app launcher: materialize the bundled rain-on-glass shader +
-//! minimalist terminal configs (WezTerm primary, Ghostty fallback), resolve the
+//! minimalist terminal configs (NasTTY primary — the 8b-is WezTerm fork,
 //! installed terminal, and open one branded window.
 
 use std::path::{Path, PathBuf};
