@@ -29,10 +29,12 @@ struct Cli {
     /// Disable the companion window for this session.
     #[arg(long)]
     no_companion: bool,
-    /// Open entheai in a dedicated minimalist Ghostty window (the native-app experience).
+    /// Open entheai in a dedicated minimalist WezTerm window (the 8b-is fork;
+    /// Ghostty fallback) — the native-app experience.
     #[arg(long)]
     app: bool,
-    /// Install the rain-on-glass shader into your own Ghostty config, then exit.
+    /// Install the rain-on-glass shader into your own WezTerm (preferred) or
+    /// Ghostty config, then exit.
     #[arg(long)]
     doctor: bool,
     /// Inspect memory then exit: `--memory stats`, `--memory list <namespace>`,
@@ -156,15 +158,17 @@ async fn main() -> anyhow::Result<()> {
         && !cli.doctor;
     logging::init(interactive);
 
-    // `--app` opens a dedicated minimalist Ghostty window running plain `entheai`
-    // (no `--app`, so no recursion). Short-circuit before any config-file read so
-    // launching the native app never requires an `entheai.toml`.
+    // `--app` opens a dedicated minimalist window — WezTerm (the 8b-is fork)
+    // when installed, else Ghostty — running plain `entheai` (no `--app`, so no
+    // recursion). Short-circuit before any config-file read so launching the
+    // native app never requires an `entheai.toml`.
     if cli.app {
         return entheai_launcher::launch();
     }
 
-    // `--doctor` installs the rain-on-glass shader into the user's own Ghostty
-    // config and exits — needs no config file, agent, or companion.
+    // `--doctor` installs the rain-on-glass shader into the user's own terminal
+    // config (WezTerm `wezterm.lua` when WezTerm is installed, else Ghostty
+    // `config`) and exits — needs no config file, agent, or companion.
     if cli.doctor {
         return run_doctor_cmd();
     }
@@ -455,13 +459,16 @@ fn init_telemetry(config_dsn: Option<String>) -> sentry::ClientInitGuard {
 }
 
 /// `entheai --doctor`: install the rain-on-glass shader into the user's own
-/// Ghostty config (viz Slice 2b, Path A) and print a health summary. Reuses the
-/// launcher's bundled shader — one shader, one canonical location.
+/// terminal config — WezTerm `wezterm.lua` (`config.shaders`, the 8b-is fork is
+/// the primary window layer) when WezTerm is installed, else Ghostty `config`
+/// (viz Slice 2b, Path A) — and print a health summary. Reuses the launcher's
+/// bundled shader — one shader, one canonical location.
 fn run_doctor_cmd() -> anyhow::Result<()> {
     use entheai_launcher::ConfigAction;
     let home = entheai_launcher::entheai_config_dir();
-    let cfg = entheai_launcher::ghostty_config_path();
-    let r = entheai_launcher::run_doctor(&home, &cfg)?;
+    let ghostty_cfg = entheai_launcher::ghostty_config_path();
+    let wezterm_cfg = entheai_launcher::wezterm_config_path();
+    let r = entheai_launcher::run_doctor(&home, &ghostty_cfg, &wezterm_cfg)?;
 
     let tilde = |p: &Path| -> String {
         match std::env::var("HOME") {
@@ -473,12 +480,18 @@ fn run_doctor_cmd() -> anyhow::Result<()> {
         }
     };
 
-    println!("entheai doctor — rain-on-glass shader (Ghostty)\n");
-    if r.is_ghostty_term {
-        println!("  terminal        Ghostty ✓  (the shader renders here)");
+    let term = r.terminal.name();
+    println!("entheai doctor — rain-on-glass shader ({term})\n");
+    if r.is_active_term {
+        println!("  terminal        {term} ✓  (the shader renders here)");
     } else {
-        println!("  terminal        not Ghostty — the shader only renders inside Ghostty");
-        println!("                  (the ANSI ambient fallback, Path C, isn't built yet)");
+        println!("  terminal        {term} configured — you're in another terminal;");
+        println!("                  the shader renders inside {term} only");
+    }
+    if r.wezterm_installed {
+        println!("  wezterm binary  found ✓");
+    } else {
+        println!("  wezterm binary  not found — install: brew install --cask wezterm");
     }
     if r.ghostty_installed {
         println!("  ghostty binary  found ✓");
@@ -491,10 +504,13 @@ fn run_doctor_cmd() -> anyhow::Result<()> {
         ConfigAction::Added => "added shader block ✓",
         ConfigAction::Updated => "updated shader block (path changed) ✓",
         ConfigAction::AlreadyCurrent => "already configured ✓ (no change)",
+        ConfigAction::NeedsManual => {
+            "wezterm.lua returns an inline table — add the shaders key by hand ✓"
+        }
     };
     println!("  config          {}", tilde(&r.config_path));
     println!("                  {act}");
-    println!("\n  → restart Ghostty (or reload its config) to see the rain-on-glass effect.");
+    println!("\n  → restart {term} (or reload its config) to see the rain-on-glass effect.");
     Ok(())
 }
 
