@@ -788,6 +788,23 @@ pub struct CoderOutcome {
     pub oracle_rejected: bool,
 }
 
+/// A structured fan-out run: the human-readable report PLUS the per-coder
+/// outcomes (which carry the full [`MergeSeal`] — `diff_sha256`/`log_sha256`/
+/// `seal` — something the text report only fingerprints) and the run identity.
+/// This is what makes library consumers (e.g. the `entheai-mcp` bridge) able to
+/// return the full MergeSeal instead of shelling out + parsing text.
+pub struct FanoutRun {
+    /// The rendered markdown report ([`format_v2_report`] output).
+    pub report: String,
+    /// The run's session id (also the worktree/`fanout/<session>/<n>` prefix).
+    pub session: String,
+    /// The base commit every coder branched from (and the seal's diff base).
+    pub base: String,
+    /// One entry per decomposed sub-task, in order; `VerifyStatus::Passed`
+    /// entries carry the deterministic SHA-256 seal over their diff + verify log.
+    pub outcomes: Vec<CoderOutcome>,
+}
+
 /// Fan-out entrypoint (v2): decompose → one isolated `git worktree` + coder
 /// sub-agent per sub-task, run in parallel (≤ `router.max_parallel`) → commit +
 /// optionally verify each worktree → integrate the eligible branches onto a
@@ -800,6 +817,11 @@ pub struct CoderOutcome {
 /// (sub-agent or coder) pre-task retrieval/frozen-node injection and
 /// post-task trajectory recording under a per-leaf [`leaf_scope`] — the
 /// `orchestrate_once` decompose/synthesis meta-calls stay memory-free.
+///
+/// The detailed variant ([`run_fanout_detailed`]) returns the same report plus
+/// the structured outcomes (full MergeSeal); library consumers that need the
+/// seal use that. This thin wrapper keeps the `anyhow::Result<String>` contract
+/// the CLI/TUI callers rely on.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_fanout(
     config: &Config,
@@ -813,12 +835,41 @@ pub async fn run_fanout(
     scope: MemoryScope,
     trajectories: Option<Arc<dyn TrajectorySink>>,
 ) -> anyhow::Result<String> {
+    Ok(run_fanout_detailed(
+        config, root, task, events, pool, executor, oracle, memory, scope, trajectories,
+    )
+    .await?
+    .report)
+}
+
+/// The structured fan-out entrypoint: identical execution to [`run_fanout`],
+/// but returns the report together with the run identity and the per-coder
+/// outcomes — so callers get the full [`MergeSeal`] per verified coder, not
+/// just the 12-hex fingerprint the report renders.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_fanout_detailed(
+    config: &Config,
+    root: &Path,
+    task: &str,
+    events: Option<tokio::sync::mpsc::UnboundedSender<FanoutEvent>>,
+    pool: Arc<WorkerPool>,
+    executor: Option<Arc<dyn CoderExecutor>>,
+    oracle: Option<Arc<dyn Oracle>>,
+    memory: Option<Arc<MemoryRuntime>>,
+    scope: MemoryScope,
+    trajectories: Option<Arc<dyn TrajectorySink>>,
+) -> anyhow::Result<FanoutRun> {
     if !worktree::is_git_repo(root).await {
         if let Some(tx) = &events {
             let _ = tx.send(FanoutEvent::Fallback);
         }
         let out = run_fanout_readonly(config, root, task, memory, &scope).await?;
-        return Ok(format!("(not a git repo — read-only fan-out)\n\n{out}"));
+        return Ok(FanoutRun {
+            report: format!("(not a git repo — read-only fan-out)\n\n{out}"),
+            session: String::new(),
+            base: String::new(),
+            outcomes: Vec::new(),
+        });
     }
 
     let orch_model =
@@ -1218,7 +1269,12 @@ pub async fn run_fanout(
         }
     }
 
-    Ok(report)
+    Ok(FanoutRun {
+        report,
+        session,
+        base,
+        outcomes,
+    })
 }
 
 /// Transparent recursion ledger (roadmap 5.1): when entheai develops entheai

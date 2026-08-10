@@ -1,0 +1,42 @@
+[package]
+name = "entheai-mcp-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description.workspace = true
+homepage.workspace = true
+
+# Package `entheai-mcp-server` but ship the binary as `entheai-mcp` — the
+# stdio MCP server any host (opencode, entheai's own client) spawns.
+# NOTE: the package name must NOT be `entheai-mcp` — that name is taken by the
+# client-side crate at crates/mcp (MCP client + server supervisor).
+[[bin]]
+name = "entheai-mcp"
+path = "src/main.rs"
+
+[dependencies]
+entheai-config = { path = "../config" }
+entheai-core = { path = "../core" }
+entheai-orchestrator = { path = "../orchestrator" }
+entheai-federation = { path = "../federation" }
+entheai-memory = { path = "../memory" }
+entheai-skills = { path = "../skills" }
+entheai-tools = { path = "../tools" }
+entheai-permission = { path = "../permission" }
+entheai-router = { path = "../router" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-std", "io-util", "fs", "process", "sync", "time"] }
+serde = { workspace = true }
+serde_json.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+uuid = { version = "1", features = ["v4"] }
+dotenvy = { workspace = true }
+tempfile = "3"
+log = "0.4"
+env_logger = "0.11"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }
+tempfile = "3"
