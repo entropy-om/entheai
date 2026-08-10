@@ -563,4 +563,103 @@ mod tests {
         let best = argmax(&logits);
         assert!((best as usize) < VOCAB);
     }
+
+    /// Golden-logits gate (pinned regression): the final-token logits for the
+    /// two fixed gate prompts MUST match the MLX-QUANT fork reference within
+    /// ~1e-2. Values below were captured 2026-08-10 from
+    /// `quantal_golden_logits.py` (mlx 0.32.1.dev, vanilla forward); the full
+    /// acceptance run lives in `MLX-QUANT/scripts/quantal_compare_logits.py`.
+    ///
+    /// prompt 1 (31 tok) top-5: 145216=43.461, 81129=39.460, 143145=39.188,
+    ///                          145139=38.695, 146656=38.402
+    /// prompt 2 (40 tok) top-5: 72612=19.159, 33298=19.024, 41585=18.198,
+    ///                          89417=17.906, 40330=17.672
+    const GOLDEN_GATE_TOP3_P1: [(u32, f32); 3] = [
+        (145216, 43.4608),
+        (81129, 39.4597),
+        (143145, 39.1882),
+    ];
+    const GOLDEN_GATE_TOP3_P2: [(u32, f32); 3] = [
+        (72612, 19.1590),
+        (33298, 19.0239),
+        (41585, 18.1981),
+    ];
+    /// Gate tolerance: the gate's ~1e-2 with a 4× margin for the pinned values
+    /// (observed max_abs was 1.3e-3).
+    const GOLDEN_GATE_TOL: f32 = 5e-3;
+
+    fn gate_prompt_tokens(
+        tok: &crate::tokenizer::ChatTokenizer,
+        system: &str,
+        user: &str,
+    ) -> Vec<u32> {
+        let prompt = tok.apply_chat_template(&[("system", system), ("user", user)]);
+        tok.encode(&prompt).unwrap()
+    }
+
+    #[test]
+    fn golden_logits_gate_matches_mlx_reference() {
+        // The acceptance gate for the whole native-ternary effort: Rust runner
+        // vs the MLX-QUANT fork ternary forward on the two fixed prompts.
+        let m = TernaryModel::load(data_dir()).unwrap();
+        let tok = crate::tokenizer::ChatTokenizer::load(data_dir()).unwrap();
+
+        let p1 = gate_prompt_tokens(
+            &tok,
+            "You are a helpful assistant.",
+            "What is the capital of France? Answer in one word.",
+        );
+        assert_eq!(p1.len(), 31, "prompt 1 must tokenize to 31 ids (sync with Python gate)");
+        let l1 = m.logits_last(&p1).unwrap();
+        let (ref_best1, ref_top1) = GOLDEN_GATE_TOP3_P1[0];
+        assert_eq!(argmax(&l1), ref_best1, "prompt 1 argmax token");
+        for (tid, ref_val) in GOLDEN_GATE_TOP3_P1 {
+            let got = l1[tid as usize];
+            assert!(
+                (got - ref_val).abs() <= GOLDEN_GATE_TOL,
+                "prompt 1 token {tid}: got {got}, ref {ref_val}"
+            );
+        }
+        assert!((l1[ref_best1 as usize] - ref_top1).abs() <= GOLDEN_GATE_TOL);
+
+        let p2 = gate_prompt_tokens(
+            &tok,
+            "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
+            "Explain the concept of recursion in one short paragraph.",
+        );
+        assert_eq!(p2.len(), 40, "prompt 2 must tokenize to 40 ids (sync with Python gate)");
+        let l2 = m.logits_last(&p2).unwrap();
+        let (ref_best2, _) = GOLDEN_GATE_TOP3_P2[0];
+        assert_eq!(argmax(&l2), ref_best2, "prompt 2 argmax token");
+        for (tid, ref_val) in GOLDEN_GATE_TOP3_P2 {
+            let got = l2[tid as usize];
+            assert!(
+                (got - ref_val).abs() <= GOLDEN_GATE_TOL,
+                "prompt 2 token {tid}: got {got}, ref {ref_val}"
+            );
+        }
+    }
+
+    #[test]
+    fn generate_decodes_deterministically_and_stops() {
+        // Greedy decode smoke over the real model: deterministic output, never
+        // emits a stop token, honors the requested max_new length.
+        let m = TernaryModel::load(data_dir()).unwrap();
+        let tok = crate::tokenizer::ChatTokenizer::load(data_dir()).unwrap();
+        let ids = gate_prompt_tokens(&tok, "You are a helpful assistant.", "Hi.");
+
+        let out = m.generate(&ids, 6).unwrap();
+        assert!(out.len() <= 6, "must not exceed max_new");
+        assert!(
+            out.iter().all(|t| !tok.is_stop(*t)),
+            "generated tokens must never include a stop token: {out:?}"
+        );
+        assert!(
+            out.iter().all(|t| (*t as usize) < VOCAB),
+            "generated tokens must be valid vocab ids"
+        );
+        // Deterministic: same seed state → identical output.
+        let again = m.generate(&ids, 6).unwrap();
+        assert_eq!(out, again);
+    }
 }

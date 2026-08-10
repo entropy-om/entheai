@@ -30,7 +30,7 @@ api_key_env = "OPENCODE_API_KEY"
 
 # Free community node (no API key required) — e.g. --model "vaked/coder"
 [providers.vaked]
-base_url = "https://coder.vaked.dev/v1"
+base_url = "https://nixai-base.tail2870dc.ts.net/v1"
 
 # Local (private) via Osaurus — e.g. --model "osaurus/gemma-4-e2b-it-4bit"
 # See docs/osaurus-setup.md and docs/osaurus-opencode-provider.md.
@@ -242,3 +242,12 @@ model = ["deepseek/deepseek-chat"]
 # gate = "advisory"        # "advisory" (log-only) | "block" (high-confidence Reject/Rework)
 # block_confidence = 0.8   # only Reject/Rework ≥ this may block under gate="block"
 # model = "vaked/qwen3-coder:30b"
+
+# coder.vaked.dev — a premium tier (DeepSeek-V4-Flash-0731) + free (qwen3-coder)
+[providers.coder]
+base_url = "https://nixai-base.tail2870dc.ts.net/v1"
+api_key_env = "CODER_VAKED_PETER_KEY"
+
+[providers.coder-premium]
+base_url = "https://nixai-base.tail2870dc.ts.net/v1"
+api_key_env = "CODER_VAKED_PETER_KEY"

@@ -154,4 +154,43 @@ mod tests {
         let client = resolve_model("no-slash-here", &providers);
         assert!(client.is_err());
     }
+
+    /// Real-model happy path: `kind = "ternary"` + `model_dir` resolves to a
+    /// live `TernaryLlm` whose name is the model half of the spec.
+    ///
+    /// Uses the same `AYEOS_DATA_DIR` convention as `crates/ternary` (else the
+    /// workspace-relative quantal dir); skips gracefully when the model dir is
+    /// not present so the core suite stays green without the ~400 MiB model.
+    fn data_dir() -> std::path::PathBuf {
+        if let Ok(dir) = std::env::var("AYEOS_DATA_DIR") {
+            return std::path::PathBuf::from(dir);
+        }
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../pocoo.vaked.dev/demos/quantal")
+    }
+
+    #[test]
+    fn ternary_kind_with_model_dir_resolves_ternary_llm() {
+        let dir = data_dir();
+        if !dir.is_dir() {
+            eprintln!("skipping: model dir {dir:?} not present (set AYEOS_DATA_DIR)");
+            return;
+        }
+        let mut providers = HashMap::new();
+        providers.insert(
+            "quantal".to_string(),
+            ProviderConfig {
+                base_url: "unused".to_string(),
+                api_key_env: None,
+                model_dir: Some(dir.display().to_string()),
+                kind: Some("ternary".to_string()),
+            },
+        );
+        let llm = resolve_model("quantal/quantal", &providers)
+            .unwrap_or_else(|e| panic!("resolve failed: {e}"));
+        assert_eq!(
+            llm.name(),
+            "quantal",
+            "ternary Llm name must be the model half of the spec"
+        );
+    }
 }
