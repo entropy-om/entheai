@@ -13,7 +13,11 @@ concurrency:
 jobs:
   build_and_test:
     name: Rust build + clippy + test (quantum + oracle + fusion)
-    runs-on: blacksmith-4vcpu-ubuntu-2204
+    # Was ubuntu-2204, which sat queued for hours on 2026-08-12 while every
+    # 2404 workflow in this repo ran fine. 2204 is not deprecated (it ran on
+    # 08-10) but it is not being served reliably; the rest of the repo is on
+    # 2404 already, so this is now the one label instead of the odd one out.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v7
 
