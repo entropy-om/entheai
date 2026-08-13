@@ -84,7 +84,7 @@ agy_model = "gemini-3.6-flash-high"    # model agy runs the coders on
 # (~/.entheai/current.env): VALYU_API_KEY, WORLDMONITOR_API_KEY.
 [current]
 enabled = true
-topics = ["AI coding agents and LLM security this week"]  # one Valyu request per topic per pulse
+topics = ["AI coding agents and LLM security this week", "multi-agent reasoning architectures"]  # one Valyu request per topic per pulse
 refresh_minutes = 120               # auto-pulse cadence in the TUI (36 WM req/day)
 # The genetic corpus — how entheai was born. The ultrawhale dogfeed loop's
 # self-generated Q&A pairs, gated on HuggingFace (HF_TOKEN from the env). She
