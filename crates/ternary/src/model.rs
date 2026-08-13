@@ -120,6 +120,14 @@ pub struct TernaryModel {
     /// `norms.f32`, `[49 × HIDDEN]`: layers 0..23 input_layernorm then
     /// post_attention_layernorm, row 48 = final norm.
     norms: Vec<f32>,
+    /// `gains.f32` (optional, faithful BitLinear forward): per-layer
+    /// concatenation of the 7 per-projection RMSNorm gains
+    /// (q,k,v,o,up,gate: `[HIDDEN]` each, down: `[INTERMEDIATE]`). Absent for
+    /// deployed-forward checkpoints.
+    gains: Option<Vec<f32>>,
+    /// `biases.f32` (optional, faithful BitLinear forward): per-layer
+    /// q/k/v projection biases, `[HIDDEN] + [KV_HEADS*HEAD_DIM]*2` per layer.
+    biases: Option<Vec<f32>>,
     rope: RoPECache,
 }
 
@@ -168,16 +176,66 @@ impl TernaryModel {
             (2 * LAYERS + 1) * HIDDEN
         );
 
+        // Optional faithful-BitLinear sidecars. Deployed-forward checkpoints
+        // have neither; legacy checkpoints carry both. When present they are
+        // size-checked to the architecture and applied per projection.
+        let read_sidecar = |fname: &str| -> anyhow::Result<Option<Vec<f32>>> {
+            let p = dir.join(fname);
+            if !p.exists() {
+                return Ok(None);
+            }
+            let bytes = fs::read(&p).map_err(|e| anyhow::anyhow!("cannot read {fname}: {e}"))?;
+            let vals: Vec<f32> = bytes
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            Ok(Some(vals))
+        };
+
+        let gains = read_sidecar("gains.f32")?;
+        if let Some(g) = &gains {
+            anyhow::ensure!(
+                g.len() == LAYERS * (6 * HIDDEN + INTERMEDIATE),
+                "gains.f32 has {} elements, expected {} (L x (6*HIDDEN + INTERMEDIATE))",
+                g.len(),
+                LAYERS * (6 * HIDDEN + INTERMEDIATE)
+            );
+        }
+
+        let biases = read_sidecar("biases.f32")?;
+        if let Some(b) = &biases {
+            anyhow::ensure!(
+                b.len() == LAYERS * (HIDDEN + 2 * KV_ROWS),
+                "biases.f32 has {} elements, expected {} (L x (HIDDEN + 2*KV_ROWS))",
+                b.len(),
+                LAYERS * (HIDDEN + 2 * KV_ROWS)
+            );
+        }
+        if gains.is_some() != biases.is_some() {
+            anyhow::bail!(
+                "gains.f32 and biases.f32 must come together (found gains={}, biases={})",
+                gains.is_some(),
+                biases.is_some()
+            );
+        }
+
         Ok(Self {
             weights,
             matrix_idx,
             embeddings,
             norms,
+            gains,
+            biases,
             rope: RoPECache::new(ROPE_THETA),
         })
     }
 
     /// Batch matmul `x` (S×K) against matrix `proj` of `layer`.
+    ///
+    /// Applies the faithful-BitLinear per-projection RMSNorm + int8
+    /// activation_quant (+ q/k/v bias) when the `gains.f32`/`biases.f32`
+    /// sidecars are present; otherwise it is the plain weight-quant-only
+    /// matmul the deployed forward implements.
     fn matmul(&self, x: &[f32], layer: usize, proj: &str) -> anyhow::Result<Vec<f32>> {
         let name = format!("model.layers.{layer}.{proj}");
         let idx = *self
@@ -185,9 +243,26 @@ impl TernaryModel {
             .get(&name)
             .ok_or_else(|| anyhow::anyhow!("missing matrix {name}"))?;
         let m = &self.weights[idx];
-        let batch = x.len() / m.in_features;
+
+        let input = if let Some(gain) = self.gain_slice(layer, proj) {
+            let width = m.in_features;
+            let normed = self.rmsnorm_rows_w(x, gain, width);
+            self.activation_quant_rows(&normed, width)
+        } else {
+            x.to_vec()
+        };
+
+        let batch = input.len() / m.in_features;
         let mut out = vec![0.0f32; batch * m.dim];
-        ternary_matmul_batch(x, m, &mut out);
+        ternary_matmul_batch(&input, m, &mut out);
+
+        if let Some(bias) = self.bias_slice(layer, proj) {
+            for row in 0..batch {
+                for d in 0..m.dim {
+                    out[row * m.dim + d] += bias[d];
+                }
+            }
+        }
         Ok(out)
     }
 
@@ -208,6 +283,87 @@ impl TernaryModel {
             }
         }
         out
+    }
+
+    /// General-width RMSNorm rows (S×W) with per-row normalization; `w` is
+    /// `[W]`. Used for the faithful-forward per-projection gains (down_proj
+    /// operates on `[S × INTERMEDIATE]`).
+    fn rmsnorm_rows_w(&self, rows: &[f32], w: &[f32], width: usize) -> Vec<f32> {
+        let s = rows.len() / width;
+        let mut out = vec![0.0f32; rows.len()];
+        for i in 0..s {
+            let x = &rows[i * width..(i + 1) * width];
+            let o = &mut out[i * width..(i + 1) * width];
+            let mut ss = 0.0f32;
+            for v in x {
+                ss += v * v;
+            }
+            let inv = 1.0 / (ss / width as f32 + RMS_EPS).sqrt();
+            for d in 0..width {
+                o[d] = x[d] * w[d] * inv;
+            }
+        }
+        out
+    }
+
+    /// int8-simulated activation quantization (BitLinear faithful forward).
+    /// Per-row scale = 127 / max(|x|), round-half-to-even + clip to
+    /// [-128, 127], divide back. Mirrors `activation_quant` in the MLX
+    /// reference — MLX `mx.round` is banker's rounding (round-ties-even),
+    /// NOT `f32::round()` (round-half-away-from-zero), so the ties must use
+    /// `round_ties_even`.
+    fn activation_quant_rows(&self, rows: &[f32], width: usize) -> Vec<f32> {
+        let s = rows.len() / width;
+        let mut out = vec![0.0f32; rows.len()];
+        for i in 0..s {
+            let x = &rows[i * width..(i + 1) * width];
+            let o = &mut out[i * width..(i + 1) * width];
+            let mut max_abs = 1e-5f32;
+            for v in x {
+                max_abs = max_abs.max(v.abs());
+            }
+            let scale = 127.0 / max_abs;
+            for d in 0..width {
+                let q = (x[d] * scale).round_ties_even().clamp(-128.0, 127.0) / scale;
+                o[d] = q;
+            }
+        }
+        out
+    }
+
+    /// Per-layer slice into `gains` for a projection, if the faithful
+    /// sidecars are present.
+    ///
+    /// gains layout per layer: q,k,v,o,up,gate each `[HIDDEN]`, then down
+    /// `[INTERMEDIATE]`.
+    fn gain_slice(&self, layer: usize, proj: &str) -> Option<&[f32]> {
+        let gains = self.gains.as_ref()?;
+        let base = layer * (6 * HIDDEN + INTERMEDIATE);
+        let (off, len) = match proj {
+            "self_attn.q_proj" => (0, HIDDEN),
+            "self_attn.k_proj" => (HIDDEN, HIDDEN),
+            "self_attn.v_proj" => (2 * HIDDEN, HIDDEN),
+            "self_attn.o_proj" => (3 * HIDDEN, HIDDEN),
+            "mlp.up_proj" => (4 * HIDDEN, HIDDEN),
+            "mlp.gate_proj" => (5 * HIDDEN, HIDDEN),
+            "mlp.down_proj" => (6 * HIDDEN, INTERMEDIATE),
+            _ => return None,
+        };
+        Some(&gains[base + off..base + off + len])
+    }
+
+    /// Per-layer slice into `biases` for a projection (q/k/v only), if the
+    /// faithful sidecars are present.
+    fn bias_slice(&self, layer: usize, proj: &str) -> Option<&[f32]> {
+        let biases = self.biases.as_ref()?;
+        let base = layer * (HIDDEN + 2 * KV_ROWS);
+        let (off, len) = match proj {
+            "self_attn.q_proj" => (0, HIDDEN),
+            "self_attn.k_proj" => (HIDDEN, KV_ROWS),
+            "self_attn.v_proj" => (HIDDEN + KV_ROWS, KV_ROWS),
+            _ => return None,
+        };
+        Some(&biases[base + off..base + off + len])
     }
 
     /// Embed `tokens` into f32 rows (S×HIDDEN) from the fp16 embedding table.

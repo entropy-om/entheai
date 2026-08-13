@@ -243,6 +243,7 @@ enabled = true
 coders = "local"
 gate = "advisory"
 block_confidence = 0.8
+model = "openai/gpt-4o-mini"
 openclaw_url = "https://do-openclaw.tail2870dc.ts.net"
 
 # OpenClaw Gateway on DigitalOcean Droplet (Tailnet-only HTTPS ingress)

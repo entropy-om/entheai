@@ -1,4 +1,5 @@
 pub mod fs;
+pub mod openclaw;
 pub mod search;
 pub mod shell;
 pub mod todo;
@@ -104,6 +105,7 @@ pub fn register_builtins(reg: &mut ToolRegistry, root: &Path, limits: BuiltinLim
     reg.register(Box::new(search));
 
     reg.register(Box::new(todo::TodoTool));
+    reg.register(Box::new(openclaw::OpenClawProbe::default()));
 }
 
 #[cfg(test)]
