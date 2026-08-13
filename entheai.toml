@@ -5,7 +5,7 @@
 # Add a skill from the web (tries <origin>/.well-known/skills.json, then /llms.txt,
 # then the page), then exit — writes skills/<slug>/SKILL.md, live on the next run:
 #   entheai --skills add https://docs.stripe.com
-default_model = "openrouter/deepseek/deepseek-chat"  # DeepSeek via OpenRouter (direct key not provisioned)
+default_model = "openai/gpt-4o-mini"
 
 # DeepSeek direct API. Models: deepseek-chat (V3), deepseek-reasoner (R1).
 [providers.deepseek]
@@ -59,7 +59,7 @@ kind = "ternary"
 # `orchestrator`, then `default_model`, when a role is unset). Tier freely across
 # the providers above — cheap/local models for exploration, stronger for review.
 [router]
-orchestrator = "openrouter/deepseek/deepseek-chat"
+orchestrator = "openai/gpt-4o-mini"
 max_parallel = 4                         # cap on concurrently-running sub-agents
 # max_turns = 200                        # per-task tool-dispatch round cap (default 200; UNLIMITED under --yolo)
 
@@ -223,19 +223,19 @@ command = "rmcp-sensors"
 args = []
 
 [agents.explore]
-model = ["deepseek/deepseek-chat"] # local instead: ["osaurus/<your-local-model>"]
+model = ["openai/gpt-4o-mini"]
 
 [agents.coder]
-model = ["deepseek/deepseek-chat"]
+model = ["openai/gpt-4o-mini"]
 
 [agents.reviewer]
-model = ["deepseek/deepseek-reasoner"] # R1 — stronger reasoning for review
+model = ["openai/gpt-4o"]
 
 [agents.test]
-model = ["deepseek/deepseek-chat"]
+model = ["openai/gpt-4o-mini"]
 
 [agents.docs]
-model = ["deepseek/deepseek-chat"]
+model = ["openai/gpt-4o-mini"]
 
 # ── The Oracle (fused-fleet adjudication seam — steps 1-2: advisory, disabled) ──
 # Merges the assistant fleet (hermes / openclaw / agentfield) into entheai as
