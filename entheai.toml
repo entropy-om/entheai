@@ -17,6 +17,11 @@ api_key_env = "DEEPSEEK_API_KEY"
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 
+# OpenAI direct API — e.g. --model "openai/gpt-4o"
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
 # Hugging Face Inference router (OpenAI-compatible); model ids are HF repo paths.
 # e.g. --model "hf/deepseek-ai/DeepSeek-V3-0324"
 [providers.hf]
@@ -54,7 +59,7 @@ kind = "ternary"
 # `orchestrator`, then `default_model`, when a role is unset). Tier freely across
 # the providers above — cheap/local models for exploration, stronger for review.
 [router]
-orchestrator = "vaked/qwen3-coder:30b"   # coder.vaked.dev keyless free tier (OpenRouter credits exhausted)
+orchestrator = "openrouter/deepseek/deepseek-chat"
 max_parallel = 4                         # cap on concurrently-running sub-agents
 # max_turns = 200                        # per-task tool-dispatch round cap (default 200; UNLIMITED under --yolo)
 
