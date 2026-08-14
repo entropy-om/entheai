@@ -37,12 +37,19 @@ const LICENSE_GROUP_LEN = 4;
 const LICENSE_BODY_LEN = LICENSE_GROUPS * LICENSE_GROUP_LEN;
 
 export function generateLicenseKey() {
-  const bytes = crypto.getRandomValues(new Uint8Array(LICENSE_BODY_LEN));
+  const alphabetLen = LICENSE_ALPHABET.length;
+  const maxUnbiased = Math.floor(256 / alphabetLen) * alphabetLen;
   let key = "ENTH-";
-  for (let i = 0; i < LICENSE_BODY_LEN; i++) {
-    if (i > 0 && i % LICENSE_GROUP_LEN === 0) key += "-";
-    key += LICENSE_ALPHABET[bytes[i] % LICENSE_ALPHABET.length];
+  let produced = 0;
+
+  while (produced < LICENSE_BODY_LEN) {
+    const byte = crypto.getRandomValues(new Uint8Array(1))[0];
+    if (byte >= maxUnbiased) continue;
+    if (produced > 0 && produced % LICENSE_GROUP_LEN === 0) key += "-";
+    key += LICENSE_ALPHABET[byte % alphabetLen];
+    produced++;
   }
+
   return key;
 }
 
