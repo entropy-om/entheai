@@ -490,12 +490,14 @@ enabled = false
         let cfg = test_config();
         let oracle = oracle_for_config(&cfg).expect("enabled oracle");
         // The enabled oracle is NOT the no-op — adjudicating must reach a real
-        // dispatch (Native) rather than the empty-registry skeleton.
+        // dispatch (Native) rather than the empty-registry skeleton. The verdict
+        // itself comes from the adjudicator model (or degrades to Approve when
+        // that call fails), so it is not asserted here — the attestation is the
+        // dispatch proof: the skeleton path returns zero attestations.
         let adj = oracle
             .adjudicate(Phase::Decompose, &OracleContext::default())
             .await
             .expect("adjudicate ok");
-        assert_eq!(adj.verdict, Verdict::Approve);
         assert_eq!(adj.attestations.len(), 1, "native backend attested");
         assert!(adj.attestations[0].proc.starts_with("native@"));
     }
