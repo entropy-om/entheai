@@ -55,14 +55,31 @@ impl TernaryLlm {
         }
     }
 
-    /// Collect `(role, text)` messages from a request's contents (text parts
-    /// only; function/tool parts are dropped by the template mapping).
+    /// Collect `(role, text)` messages from a request's contents. Tool
+    /// round-trips are preserved as plain-text `[call …]` / `[result] …` turns
+    /// so the ternary model sees what it asked for and what came back — the
+    /// tokenizer's role mapping drops `function`/`tool` roles entirely, so
+    /// without this the model re-calls blindly until `max_iterations`.
     fn messages_from_request(req: &LlmRequest) -> Vec<(String, String)> {
         let mut messages = Vec::new();
         for content in &req.contents {
             for part in &content.parts {
-                if let Part::Text { text } = part {
-                    messages.push((content.role.clone(), text.clone()));
+                match part {
+                    Part::Text { text } => {
+                        messages.push((content.role.clone(), text.clone()));
+                    }
+                    Part::FunctionCall { name, args, .. } => {
+                        let args_str = serde_json::to_string(args).unwrap_or_default();
+                        messages.push(("model".to_string(), format!("[call {name} {args_str}]")));
+                    }
+                    Part::FunctionResponse {
+                        function_response, ..
+                    } => {
+                        let preview =
+                            crate::truncate_preview(&function_response.response.to_string(), 400);
+                        messages.push(("user".to_string(), format!("[result] {preview}")));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -181,5 +198,68 @@ impl Llm for TernaryLlm {
         });
 
         Ok(Box::pin(ReceiverStream::new(rx)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use adk_rust::FunctionResponseData;
+
+    /// Regression: a tool call/result round-trip must survive into the prompt
+    /// as plain text — before this fix the `function`/tool parts were dropped
+    /// and the ternary model re-called blindly until `max_iterations`.
+    #[test]
+    fn messages_from_request_preserves_tool_round_trips_as_text() {
+        let req = LlmRequest {
+            model: "quantal".to_string(),
+            contents: vec![
+                Content::new("user").with_text("please echo hi"),
+                Content {
+                    role: "model".to_string(),
+                    parts: vec![Part::FunctionCall {
+                        name: "echo".into(),
+                        args: serde_json::json!({"text": "hi"}),
+                        id: Some("call_1".into()),
+                        thought_signature: None,
+                    }],
+                },
+                Content {
+                    role: "function".to_string(),
+                    parts: vec![Part::FunctionResponse {
+                        function_response: FunctionResponseData::new(
+                            "echo",
+                            serde_json::json!({"result": "echoed: hi"}),
+                        ),
+                        id: Some("call_1".into()),
+                    }],
+                },
+            ],
+            config: None,
+            tools: Default::default(),
+            previous_response_id: None,
+        };
+
+        let messages = TernaryLlm::messages_from_request(&req);
+        assert_eq!(messages.len(), 3, "expected user + call + result turns");
+        assert_eq!(messages[0].0, "user");
+        assert_eq!(
+            messages[1].0, "model",
+            "function call maps to the model role"
+        );
+        assert_eq!(
+            messages[2].0, "user",
+            "function result maps to the user role"
+        );
+        assert!(
+            messages[1].1.contains("[call echo") && messages[1].1.contains("hi"),
+            "call turn must carry name + args, got {:?}",
+            messages[1].1
+        );
+        assert!(
+            messages[2].1.contains("[result]") && messages[2].1.contains("echoed: hi"),
+            "result turn must carry the tool response, got {:?}",
+            messages[2].1
+        );
     }
 }
