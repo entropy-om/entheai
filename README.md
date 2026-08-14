@@ -57,6 +57,7 @@ Built fresh in **Rust**, taking the best ideas from [Crush](https://github.com/c
 - **Visual by design** — a `ratatui` TUI (streaming chat, inline tool progress, permission modal, interactive `/config` & `/setup` wizards, a live **swarm graph** during fan-out, and an always-on **brain panel** — a rotating faculties+fleet graph with `wk N · nats ●/○ · ctx %`), a session **companion** beacon you can scan to pair a device over your tailnet, and a minimalist **native app** (`--app`) with a rain-on-glass shader behind the text.
 - **Self-improving** — a low-overhead flywheel feeds real agent trajectories to a growing dataset.
 - **macOS / Apple Silicon only** — and it leans all the way into it (mimalloc, native codegen, Seatbelt, terminal graphics).
+- **Post-prompt-processing modes** *(opt-in, additive — see [CHANGELOG.md](CHANGELOG.md))* — `--relay` walks a prompt through Hungarian slang → Lovari → English → Mandarin, one [adk-rust](https://github.com/zavora-ai/adk-rust) completion per hop, translating by *meaning* rather than by sound; `--caligraph` mode analyzes a pasted or path-based image, preferring the Antigravity CLI (Gemini) and falling back to a configured vision-capable model (e.g. local Gemma/hf-mac). Neither ever runs as part of, or changes, the default prompt path.
 
 ## Philosophy: Frozen Nodes & Prompt-Processing
 
@@ -94,6 +95,55 @@ Instead of compressing early into lossy vector embeddings (where subtle nuances 
 - [Prompt-Processing Design Spec](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/docs/superpowers/specs/2026-07-22-prompt-processing-design.md) · [crates/memory-pp](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/crates/memory-pp)
 - [Rustybox Sandboxed Workers Spec](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/docs/superpowers/specs/2026-07-22-rustybox-workers-design.md)
 - [ADK Rust Core Migration Spec](file:///Users/peter.lodri/workspace/peterlodri-sec/entheai/docs/superpowers/specs/2026-07-22-adk-rust-core-migration-design.md)
+
+### Post-Prompt-Processing Modes — `--relay` & `--caligraph` (opt-in)
+
+Two more processing layers sit *beside* the default prompt path, each its own small crate: neither runs unless invoked by flag, and neither changes what a plain `entheai "..."` does. The diagrams below follow the repo's own [PURE ASCII](PURE_ASCII.md) protocol — 7-bit characters only, no box-drawing Unicode, no emoji in the art itself.
+
+**`--relay`** ([`crates/relay`](crates/relay/src/lib.rs)) relays a prompt through a fixed language chain, one [adk-rust](https://github.com/zavora-ai/adk-rust) `Llm` completion per hop, translating by *meaning* at every step (never a pinyin sound-alike):
+
+```
++----------------------------------------------------------------------+
+|  entheai --relay "<hungarian slang>"                                 |
++----------------------------------------------------------------------+
+
+  [ hu slang ] --> [ Lovari ] --> [ English ] --> [ Mandarin ]
+     input           hop 1          hop 2           hop 3
+   (Hungarian)   (Vlax Romani /                   (hanzi by MEANING,
+                   "Lovari" dialect)                 never by sound)
+
+  each hop = one adk_rust::Llm completion (crates/relay/src/lib.rs)
+  any hop failing --> RelayError::{Timeout,Failed,Empty}, named by hop
+```
+
+**`--caligraph`** ([`crates/vision`](crates/vision/src/lib.rs)) analyzes a pasted image (raw bytes, MIME-sniffed) or a file path (MIME by extension, falling back to sniffing), preferring the Antigravity CLI (`agy`, Gemini) and falling back to a configured vision-capable model on any failure:
+
+```
++----------------------------------------------------------------------+
+|  entheai --caligraph <path | ->                                      |
++----------------------------------------------------------------------+
+
+  image (path, or pasted/piped stdin bytes)
+       |
+       v
+  agy CLI (Gemini) -------------- ok --------------> answer printed
+       |
+       |  missing binary / non-zero exit / empty / timeout
+       v
+  vision-capable model (--model;
+  e.g. local Gemma/hf-mac endpoint) -- ok ---------> answer printed
+
+  exactly one backend answers -- crates/vision/src/lib.rs
+```
+
+*Specification & Implementation Links:*
+- [`crates/relay/src/lib.rs`](crates/relay/src/lib.rs) — the language-chain hop logic + `RelayError`.
+- [`crates/vision/src/lib.rs`](crates/vision/src/lib.rs) · [`crates/vision/src/format.rs`](crates/vision/src/format.rs) — the agy/model dispatch + MIME sniffing.
+- [`crates/orchestrator/src/agy.rs`](crates/orchestrator/src/agy.rs) — the `agy` subprocess pattern both crates mirror (fan-out's own recursive-development executor).
+- CLI wiring: [`bin/entheai/src/main.rs`](bin/entheai/src/main.rs) (`run_relay_cmd`, `run_caligraph_cmd`).
+- [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md) — where `agy` (Antigravity CLI) and `hf-mac` sit in the wider ecosystem map (neither has a public repo to link — internal 8b-is/entropy-om tooling).
+- [`PURE_ASCII.md`](PURE_ASCII.md) — the ASCII-diagram protocol the illustrations above follow.
+- External tools/specs mentioned above: [Gemini](https://gemini.google.com) · [Gemma](https://ai.google.dev/gemma) · [Vlax Romani / Lovari dialect](https://en.wikipedia.org/wiki/Lovari_dialect) · [adk-rust](https://github.com/zavora-ai/adk-rust).
 
 ## Gallery
 
@@ -218,6 +268,9 @@ entheai --skills remove stripe-documentation   # remove skill by slug
 entheai --memory stats                         # inspect 5-namespace memory store (also: list / search)
 entheai --app                                  # launch native minimalist Ghostty window with rain shader
 entheai --doctor                               # install rain-on-glass shader to ~/.config/ghostty/config
+entheai --relay "haver, ez most tök necces"    # relay a HU-slang prompt: Lovari -> English -> Mandarin
+entheai --caligraph screenshot.png "what error is this?"   # analyze an image (agy/Gemini, falls back to --model)
+entheai --caligraph -                          # analyze pasted/piped image bytes from stdin
 ```
 
 In the interactive TUI:
@@ -306,6 +359,8 @@ A Rust workspace of small, focused crates.
 | `skills` | `SKILL.md` discovery + the `skill` tool; `--skills add <url>` installs a skill from the web. |
 | `memory` | 5-namespace SQLite + vector store, wired into the loop. |
 | `memory-pp` | Prompt-processing: raw store → mesh search → marqant compression, frozen nodes, `BrainJudge`, and **MEM8 wave interference** (NativeMesh fallback, aligned with HF-MAC Swift). |
+| [`relay`](crates/relay/src/lib.rs) | Post-prompt-processing language chain (`--relay`, opt-in) — Hungarian slang → [Lovari](https://en.wikipedia.org/wiki/Lovari_dialect) → English → Mandarin, one [adk-rust](https://github.com/zavora-ai/adk-rust) completion per hop, translated by meaning. |
+| [`vision`](crates/vision/src/lib.rs) | Image post-processing, "caligraph" mode (`--caligraph`, opt-in) — pasted or path-based image via the Antigravity CLI (Gemini) or a configured vision-capable model (e.g. local [Gemma](https://ai.google.dev/gemma)/hf-mac), falling back cleanly. |
 | `obsidian` | Per-session wiki-sync of the repo into an Obsidian vault (docs mirror + architecture generator + MCP nudge). |
 | `viz` | Live `ratatui` swarm graph rendered during fan-out. |
 | `launcher` | The native `--app` window — bundled Ghostty shader/config + the `--doctor` installer. |

@@ -21,6 +21,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Linux-only system libraries for the -sys crates in the `entheai`
+      # binary's default (desktop) feature set: alsa-sys (radio -> rodio ->
+      # cpal), speech-dispatcher-sys (tts) and x11 (tui -> user-idle). clang
+      # provides the libclang that bindgen needs (sqlite-vec, speech-dispatcher-sys).
+      # macOS builds use CoreAudio/AVFoundation/IOKit instead and need none of these.
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libspeechd-dev libx11-dev libxss-dev libclang-dev pkg-config
+
       - uses: useblacksmith/cache@v5
         with:
           path: |

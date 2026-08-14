@@ -45,6 +45,22 @@ struct Cli {
     /// <origin>/.well-known/skills.json, then /llms.txt, then the page.
     #[arg(long = "skills", num_args = 1.., value_name = "ARGS")]
     skills: Option<Vec<String>>,
+    /// Relay a Hungarian-slang prompt through Lovari -> English -> Mandarin
+    /// (translated by meaning, not by sound) and print every hop, then exit:
+    /// `--relay <text...>`.
+    #[arg(long = "relay", num_args = 1.., value_name = "TEXT")]
+    relay: Option<Vec<String>>,
+    /// "caligraph" mode: analyze a pasted or path-based image and print the
+    /// answer, then exit: `--caligraph <path>` (or `--caligraph -` to read
+    /// pasted/piped bytes from stdin). The positional prompt, if given, is
+    /// the instruction ("what error is shown here?"); with none, a generic
+    /// description is requested. Prefers the `agy` (Antigravity CLI /
+    /// Gemini) backend, falling back to `--model` (point it at a
+    /// vision-capable model, e.g. a local Gemma/hf-mac endpoint, when not
+    /// relying on agy). Purely additive — an opt-in exit-early mode, same
+    /// shape as `--relay`; the default prompt path (no flag) is unchanged.
+    #[arg(long = "caligraph", value_name = "PATH")]
+    caligraph: Option<String>,
 }
 
 /// The `--config` default; only this filename falls through to the global /
@@ -154,6 +170,8 @@ async fn main() -> anyhow::Result<()> {
     let interactive = cli.prompt.is_none()
         && cli.memory.is_empty()
         && cli.skills.is_none()
+        && cli.relay.is_none()
+        && cli.caligraph.is_none()
         && !cli.app
         && !cli.doctor;
     logging::init(interactive);
@@ -187,6 +205,21 @@ async fn main() -> anyhow::Result<()> {
     // discovery, then exits before the tool registry or companion are built.
     if let Some(skills_args) = cli.skills.as_ref() {
         return run_skills_cmd(skills_args, &cfg, &root).await;
+    }
+
+    // `--relay <text...>` runs the language-chain post-prompt-processing layer
+    // and exits — needs neither the tool registry nor the companion.
+    if let Some(relay_args) = cli.relay.as_ref() {
+        return run_relay_cmd(&cfg, cli.model.as_deref(), relay_args).await;
+    }
+
+    // `--caligraph <path>` runs the image post-prompt-processing layer and
+    // exits — needs neither the tool registry nor the companion. An opt-in
+    // mode alongside the default flow, not a replacement for it: the
+    // `cli.prompt`-driven run below is untouched by this branch.
+    if let Some(image_arg) = cli.caligraph.as_ref() {
+        return run_caligraph_cmd(&cfg, cli.model.as_deref(), image_arg, cli.prompt.as_deref())
+            .await;
     }
 
     // Tool registry (built-ins + skills + MCP servers) + the skills system prompt.
@@ -400,7 +433,7 @@ async fn main() -> anyhow::Result<()> {
             // BrainJudge (BRAIN v1 Slice 2): proactive frozen-node surfacing from
             // ambient tool activity. A second FrozenStore load (cheap — 11 small
             // markdown files) since PromptProcessor doesn't expose its own.
-            let brain_judge = match build_brain_judge_llm(&model_id, &cfg) {
+            let brain_judge = match resolve_bare_model_llm(&model_id, &cfg) {
                 Ok((llm, judge_model)) => {
                     let frozen = entheai_memory_pp::frozen::FrozenStore::load(
                         std::path::Path::new("frozen"),
@@ -785,12 +818,13 @@ fn build_prompt_processor(
 /// Cooldown between BrainJudge proactive-surfacing checks (BRAIN v1 Slice 2).
 const BRAIN_JUDGE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Build the adk-rust `Llm` client BrainJudge uses to judge ambient-activity
-/// relevance, and the bare (provider-prefix-stripped) model name for the
-/// `LlmRequest` it sends. Reuses `entheai_core::model_resolve::resolve_model`
-/// (built for `EntheaiAgent`) since BrainJudge is a background, low-stakes
-/// judgment call, not a reason to introduce a second model-selection path.
-fn build_brain_judge_llm(
+/// Build a raw adk-rust `Llm` client plus the bare (provider-prefix-stripped)
+/// model name an `LlmRequest` expects. Reuses
+/// `entheai_core::model_resolve::resolve_model` (built for `EntheaiAgent`) for
+/// every caller that wants a tool-free, session-free completion — BrainJudge's
+/// ambient-relevance checks and the `--relay` language chain — rather than
+/// introducing a second model-selection path per caller.
+fn resolve_bare_model_llm(
     model_id: &str,
     cfg: &Config,
 ) -> anyhow::Result<(std::sync::Arc<dyn adk_rust::Llm>, String)> {
@@ -799,6 +833,72 @@ fn build_brain_judge_llm(
         .split_once('/')
         .ok_or_else(|| anyhow::anyhow!("model must be '<provider>/<model>': {model_id}"))?;
     Ok((llm, model.to_string()))
+}
+
+/// `entheai --relay <text...>` — relay a Hungarian-slang prompt through
+/// Lovari -> English -> Mandarin (translating by meaning, never by sound) and
+/// print every hop, then exit. Args are joined into one prompt (mirrors
+/// `--memory search <ns> <query...>`'s joining). Model resolution matches the
+/// main run: `--model`, else `[default_model]`, else the built-in orchestrator.
+async fn run_relay_cmd(
+    cfg: &Config,
+    cli_model: Option<&str>,
+    args: &[String],
+) -> anyhow::Result<()> {
+    let text = args.join(" ");
+    if text.trim().is_empty() {
+        anyhow::bail!("usage: --relay <hungarian slang prompt...>");
+    }
+    let model_id = cli_model
+        .map(str::to_string)
+        .or_else(|| cfg.default_model.clone())
+        .unwrap_or_else(|| entheai_router::DEFAULT_ORCHESTRATOR.to_string());
+    let (llm, model) = resolve_bare_model_llm(&model_id, cfg)?;
+    let relayed = entheai_relay::Relay::new(llm, model).run(&text).await?;
+
+    println!("hu (slang):  {}", relayed.hungarian_slang);
+    println!("lovari:      {}", relayed.lovari);
+    println!("english:     {}", relayed.english);
+    println!("mandarin:    {}", relayed.mandarin);
+    Ok(())
+}
+
+/// `entheai --caligraph <path>` — analyze an image and print the answer,
+/// then exit. `path == "-"` reads pasted/piped bytes from stdin instead (the
+/// CLI equivalent of a paste: `pbpaste | entheai --caligraph -`); MIME type
+/// is sniffed from the bytes since stdin has no filename. `instruction` is
+/// the positional prompt if one was given, else a generic description is
+/// requested. Prefers the `agy` (Antigravity CLI / Gemini) backend —
+/// `[fanout].agy_model`, the same model fan-out's recursive-dev path already
+/// uses — falling back to the model backend (same resolution as `--relay`)
+/// on any failure.
+async fn run_caligraph_cmd(
+    cfg: &Config,
+    cli_model: Option<&str>,
+    path_or_dash: &str,
+    instruction: Option<&str>,
+) -> anyhow::Result<()> {
+    let image = if path_or_dash == "-" {
+        use tokio::io::AsyncReadExt;
+        let mut bytes = Vec::new();
+        tokio::io::stdin().read_to_end(&mut bytes).await?;
+        entheai_vision::ImageInput::sniffed(bytes)?
+    } else {
+        entheai_vision::ImageInput::path(path_or_dash)
+    };
+    let instruction = instruction.unwrap_or("Describe this image in detail.");
+
+    let model_id = cli_model
+        .map(str::to_string)
+        .or_else(|| cfg.default_model.clone())
+        .unwrap_or_else(|| entheai_router::DEFAULT_ORCHESTRATOR.to_string());
+    let (llm, model) = resolve_bare_model_llm(&model_id, cfg)?;
+    let processor =
+        entheai_vision::VisionProcessor::new(llm, model).with_agy(cfg.fanout.agy_model.clone());
+
+    let answer = processor.process(&image, instruction).await?;
+    println!("{answer}");
+    Ok(())
 }
 
 /// Inspect the memory store and exit. Namespaces: codebase, learnings,
