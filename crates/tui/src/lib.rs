@@ -39,6 +39,8 @@ use entheai_radio::{Command as RadioCommand, Event as RadioEvent, Radio};
 use entheai_tools::ToolRegistry;
 use entheai_tts::Voice;
 
+use crate::progression::{Progression, ProgressionEvent};
+
 /// Spinner animation frames for the live progress line (Charm/Bubbletea-style
 /// braille spinner), advanced on each animation tick while a run is in flight.
 const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -201,6 +203,7 @@ impl Prompter for TuiPrompter {
 }
 
 mod chenno;
+pub mod progression;
 
 /// Display name of a kin node from its status URL: the host's first label
 /// (`https://riva.vaked.dev/` → "riva"). Falls back to the trimmed input.
@@ -361,6 +364,21 @@ struct App {
     policy: Arc<Policy>,
     /// Selected index in the slash commands menu, if any.
     slash_index: Option<usize>,
+    /// Player-style progression (xp, level, badges) backing the dashboard.
+    progression: Progression,
+    /// Dashboard worker board: snapshot of the fan-out `WorkerPool`, refreshed
+    /// per `FanoutEvent` and per tick while a run is in flight.
+    // # Stream N lands here: on-disk session history (workers + reports per run) replaces the in-memory dash_workers snapshot.
+    dash_workers: Vec<entheai_orchestrator::WorkerSummary>,
+    /// Start instants of workers first seen `Running` — lets the board show an
+    /// elapsed time even for workers the pool has already reaped.
+    dash_started: std::collections::HashMap<usize, Instant>,
+    /// 12-hex seal fingerprint of the last fan-out, if the report carried one.
+    last_seal: Option<String>,
+    /// Cumulative time spent in the Zen field, driving ZenTick awards.
+    zen_accum: Duration,
+    /// Set by any `Progression::award`; the ticker flushes the file when set.
+    prog_dirty: bool,
 }
 
 /// Probes the local Osaurus (OpenAI-compatible) endpoint for connectivity and served models.
@@ -412,6 +430,9 @@ enum ViewMode {
     /// The full-canvas living field: one message box, the rest is entheai
     /// alive (brain faculties, frozen constellation, current-awareness motes).
     Zen,
+    /// The live fan-out dashboard: progression banner, worker board, and the
+    /// always-on summary of the current (or last) run.
+    Dashboard,
 }
 
 /// What a key press asked the loop to do.
@@ -427,6 +448,8 @@ enum Action {
     ViewToggle,
     /// Ctrl-G: toggle the full-canvas Zen field.
     ZenToggle,
+    /// Ctrl-D: toggle the live fan-out dashboard view.
+    DashboardToggle,
     /// Esc pressed twice while a run is in flight: abort it and return to idle.
     CancelRun,
     /// The run task panicked; recover the UI from the stuck Working state.
@@ -660,6 +683,12 @@ async fn event_loop(
         mode,
         policy: Arc::clone(&policy),
         slash_index: None,
+        progression: progression::load(),
+        dash_workers: Vec::new(),
+        dash_started: std::collections::HashMap::new(),
+        last_seal: None,
+        zen_accum: Duration::ZERO,
+        prog_dirty: false,
     };
 
     let fanout_status = if fanout { "ON" } else { "OFF" };
@@ -799,6 +828,9 @@ async fn event_loop(
     // at ~1 Hz — only when this digit changes — so the timer stays live without the
     // per-frame idle cost the brain panel incurs.
     let mut last_pomo_sec = app.pomodoro_started.elapsed().as_secs();
+    // Last Pomodoro phase, for detecting the Work → Break flip (one
+    // `PomodoroCompleted` progression award per completed work block).
+    let mut last_pomo_phase = entheai_viz::PomoPhase::Work;
 
     loop {
         if dirty {
@@ -873,6 +905,13 @@ async fn event_loop(
                                 ViewMode::Zen
                             };
                         }
+                        Action::DashboardToggle => {
+                            app.view = if app.view == ViewMode::Dashboard {
+                                ViewMode::Chat
+                            } else {
+                                ViewMode::Dashboard
+                            };
+                        }
                         Action::CancelRun => {
                             // Abort the in-flight run task; its result_tx is
                             // dropped, so we reset run state here rather than
@@ -928,6 +967,9 @@ async fn event_loop(
                         }
                         Action::Submit(text) if is_zen_command(&text) => {
                             handle_zen_command(&mut app, &text);
+                        }
+                        Action::Submit(text) if is_dashboard_command(&text) => {
+                            handle_dashboard_command(&mut app, &text);
                         }
                         Action::Submit(text) if is_theme_command(&text) => {
                             handle_theme_command(&mut app, &text);
@@ -991,6 +1033,11 @@ async fn event_loop(
                             app.out_tokens = 0;
                             app.verb_idx = app.verb_idx.wrapping_add(1);
                             app.plan.clear();
+
+                            // Player progression: a real prompt (not a slash
+                            // command) earns xp on the dashboard.
+                            let _ = app.progression.award(ProgressionEvent::PromptSubmitted);
+                            app.prog_dirty = true;
 
                             if app.fanout {
                                 let pool = entheai_orchestrator::WorkerPool::new(
@@ -1119,6 +1166,13 @@ async fn event_loop(
                 dirty = true;
                 match result {
                     Some(Ok(answer)) => {
+                        // A fan-out report carries `seal <12-hex>` lines — keep
+                        // the last one for the dashboard board.
+                        if app.worker_pool.is_some() {
+                            if let Some(seal) = seal_from_report(&answer) {
+                                app.last_seal = Some(seal);
+                            }
+                        }
                         if app.speak_enabled {
                             voice.speak(&answer);
                         }
@@ -1256,6 +1310,13 @@ async fn event_loop(
                             text: format!("◇ decomposed into {count} sub-task(s)"),
                         });
                         app.current_action = "fanning out".to_string();
+                        // Dashboard: a new run replaces the previous board.
+                        app.dash_workers.clear();
+                        app.dash_started.clear();
+                        refresh_dash_workers(&mut app);
+                        let _ =
+                            app.progression.award(ProgressionEvent::FanoutDecomposed(count as u32));
+                        app.prog_dirty = true;
                     }
                     Some(entheai_orchestrator::FanoutEvent::CoderStarted { index, role, task }) => {
                         app.swarm.coder_started(index, &role, &task);
@@ -1267,6 +1328,7 @@ async fn event_loop(
                             text: format!("▸ [{role} #{index}] {}", truncate(&task, 80)),
                         });
                         app.current_action = "running coders".to_string();
+                        refresh_dash_workers(&mut app);
                     }
                     Some(entheai_orchestrator::FanoutEvent::CoderFinished { index, committed, status }) => {
                         app.swarm.coder_finished(index, committed, &status);
@@ -1281,6 +1343,19 @@ async fn event_loop(
                             role: Role::Tool,
                             text: format!("  #{index}: {status}"),
                         });
+                        // Dashboard: finished workers get reaped from the pool,
+                        // so carry their final state over in the retained board.
+                        let final_state = if status.contains("timed out") {
+                            entheai_orchestrator::WorkerStatus::TimedOut
+                        } else {
+                            entheai_orchestrator::WorkerStatus::Done
+                        };
+                        if let Some(w) = app.dash_workers.iter_mut().find(|w| w.id == index) {
+                            w.status = final_state;
+                        }
+                        refresh_dash_workers(&mut app);
+                        let _ = app.progression.award(ProgressionEvent::CoderFinished);
+                        app.prog_dirty = true;
                     }
                     Some(entheai_orchestrator::FanoutEvent::Integrating { branches }) => {
                         app.swarm.integrating(branches);
@@ -1289,6 +1364,9 @@ async fn event_loop(
                             text: format!("⧉ integrating {branches} branch(es)…"),
                         });
                         app.current_action = "integrating".to_string();
+                        refresh_dash_workers(&mut app);
+                        let _ = app.progression.award(ProgressionEvent::Integrating);
+                        app.prog_dirty = true;
                     }
                     Some(entheai_orchestrator::FanoutEvent::Done { integration_branch, merged, conflicted }) => {
                         app.swarm.done(integration_branch.clone(), merged, conflicted);
@@ -1299,6 +1377,22 @@ async fn event_loop(
                                 integration_branch.map(|b| format!(" · branch {b}")).unwrap_or_default()
                             ),
                         });
+                        // Dashboard snapshot is retained after Done (the pool
+                        // reaps its workers); the level-up toast wins over the
+                        // badge toast when both land in this frame.
+                        let award =
+                            app.progression.award(ProgressionEvent::FanoutDone { merged });
+                        app.prog_dirty = true;
+                        if let Some((lvl, title)) = award.level_up {
+                            app.notice = Some(format!("🜂 lvl {lvl} — {title}"));
+                        } else if !award.unlocked.is_empty() {
+                            let names: Vec<&str> = award
+                                .unlocked
+                                .iter()
+                                .map(|b| progression::badge_name(*b))
+                                .collect();
+                            app.notice = Some(format!("🏅 {}", names.join(", ")));
+                        }
                     }
                     None => {
                         fanout_rx = None; // sender dropped -> run finished
@@ -1367,6 +1461,30 @@ async fn event_loop(
                     });
                     dirty = true;
                 }
+                // Zen-field time accrues toward ZenTick (one award per full
+                // cumulative minute spent in the field).
+                if app.view == ViewMode::Zen {
+                    app.zen_accum += Duration::from_millis(tick_ms);
+                    if app.zen_accum >= Duration::from_secs(60) {
+                        app.zen_accum -= Duration::from_secs(60);
+                        let _ = app.progression.award(ProgressionEvent::ZenTick);
+                        app.prog_dirty = true;
+                    }
+                }
+                // Keep the dashboard worker board live while a fan-out runs.
+                if app.worker_pool.is_some() {
+                    refresh_dash_workers(&mut app);
+                    dirty = true;
+                }
+                // Flush a dirty progression file on the next tick (never blocks
+                // the UI loop — fire-and-forget on a spawned task).
+                if app.prog_dirty {
+                    let data = app.progression.clone();
+                    tokio::spawn(async move {
+                        let _ = data.save().await;
+                    });
+                    app.prog_dirty = false;
+                }
                 // Keep the always-on Pomodoro countdown live at ~1 Hz even when
                 // idle and the brain panel is hidden: repaint only when the shown
                 // second changes, never busy-repaint.
@@ -1374,6 +1492,16 @@ async fn event_loop(
                 if pomo_sec != last_pomo_sec {
                     last_pomo_sec = pomo_sec;
                     dirty = true;
+                    // A completed work block (Work → Break flip) earns a
+                    // PomodoroCompleted progression award.
+                    let pv = entheai_viz::Pomodoro::default().at(pomo_sec);
+                    if matches!(pv.phase, entheai_viz::PomoPhase::Break)
+                        && matches!(last_pomo_phase, entheai_viz::PomoPhase::Work)
+                    {
+                        let _ = app.progression.award(ProgressionEvent::PomodoroCompleted);
+                        app.prog_dirty = true;
+                    }
+                    last_pomo_phase = pv.phase;
                     // Roadmap 1.2: stream the live entropy field over the bus
                     // at the same ~1 Hz cadence — glow intensities, frozen wake
                     // glows, pomodoro tick, worker count. Fire-and-forget on a
@@ -1463,6 +1591,11 @@ async fn event_loop(
                 app.brain.set_idle_seconds(poll_idle_seconds());
             }
         }
+    }
+
+    // Flush a dirty progression file on graceful exit (e.g. Ctrl-C ×2).
+    if app.prog_dirty {
+        let _ = app.progression.save().await;
     }
 
     Ok(())
@@ -1701,6 +1834,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             return Action::ZenToggle;
         }
+        // Ctrl-D toggles the live fan-out dashboard, idle or mid-run.
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return Action::DashboardToggle;
+        }
         // Ctrl-C twice quits (any state): the first press arms + hints, a
         // second within the double-tap window exits.
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1794,6 +1931,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 || is_workers_command(trimmed)
                 || is_viz_command(trimmed)
                 || is_zen_command(trimmed)
+                || is_dashboard_command(trimmed)
                 || is_theme_command(trimmed)
                 || is_brain_command(trimmed)
                 || is_help_command(trimmed)
@@ -2164,7 +2302,15 @@ fn handle_workers_command(app: &mut App, text: &str) {
             }
             (Some("stop"), Some(id_str)) => {
                 match id_str.parse::<entheai_orchestrator::WorkerId>() {
-                    Ok(id) if pool.stop(id) => format!("stopped worker {id}"),
+                    Ok(id) if pool.stop(id) => {
+                        // The dashboard keeps killed workers visible on the board.
+                        if let Some(w) = app.dash_workers.iter_mut().find(|w| w.id == id) {
+                            w.status = entheai_orchestrator::WorkerStatus::Killed;
+                        }
+                        let _ = app.progression.award(ProgressionEvent::WorkerKilled);
+                        app.prog_dirty = true;
+                        format!("stopped worker {id}")
+                    }
                     Ok(id) => format!("no such worker {id}"),
                     Err(_) => format!("invalid worker id: {id_str}"),
                 }
@@ -2215,6 +2361,7 @@ fn handle_viz_command(app: &mut App, text: &str) {
         ViewMode::Chat => "chat view",
         ViewMode::Swarm => "swarm view",
         ViewMode::Zen => "zen field",
+        ViewMode::Dashboard => "dashboard view",
     };
     app.messages.push(Msg {
         role: Role::Tool,
@@ -2251,6 +2398,36 @@ fn handle_zen_command(app: &mut App, text: &str) {
     app.messages.push(Msg {
         role: Role::Tool,
         text: word.to_string(),
+    });
+    app.follow = true;
+}
+
+/// True when the submitted input is the local `/dashboard` toggle.
+fn is_dashboard_command(text: &str) -> bool {
+    text.trim() == "/dashboard"
+}
+
+/// Toggle the live fan-out dashboard in response to `/dashboard` (mirror of
+/// Ctrl-D), echoing the switch into history.
+fn handle_dashboard_command(app: &mut App, text: &str) {
+    app.messages.push(Msg {
+        role: Role::User,
+        text: text.to_string(),
+    });
+    app.view = if app.view == ViewMode::Dashboard {
+        ViewMode::Chat
+    } else {
+        ViewMode::Dashboard
+    };
+    let where_now = match app.view {
+        ViewMode::Chat => "chat view",
+        ViewMode::Swarm => "swarm view",
+        ViewMode::Zen => "zen field",
+        ViewMode::Dashboard => "dashboard",
+    };
+    app.messages.push(Msg {
+        role: Role::Tool,
+        text: format!("◈ switched to {where_now} (Ctrl-D to toggle)"),
     });
     app.follow = true;
 }
@@ -2800,6 +2977,14 @@ fn render_status_bar(frame: &mut Frame, app: &App, env_line: &str, status_area: 
             )),
             row2,
         );
+        // The progression readout (level bar + next badge) right-aligned after
+        // the env line, hidden on narrow terminals.
+        if let Some(segment) = progression_segment(app, status_area.width) {
+            frame.render_widget(
+                Paragraph::new(segment).alignment(ratatui::layout::Alignment::Right),
+                row2,
+            );
+        }
     }
 }
 
@@ -2916,6 +3101,28 @@ fn render(
             ratatui::symbols::Marker::HalfBlock,
             app.spinner_frame as u64,
         );
+        render_input(frame, app, input_area);
+        render_slash_menu(frame, app, input_area);
+        return;
+    }
+
+    // Full-screen dashboard (Ctrl-D / /dashboard): status bar on top, the live
+    // fan-out board (banner · summary · worker rows) filling the content area,
+    // and the input box at the bottom. Returns before the normal chat layout.
+    if app.view == ViewMode::Dashboard {
+        let [status_area, main_area, input_area] = Layout::vertical([
+            Constraint::Length(STATUS_ROWS),
+            Constraint::Min(1),
+            Constraint::Length(INPUT_ROWS),
+        ])
+        .areas(area);
+        render_status_bar(frame, app, env_line, status_area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" dashboard — Ctrl-D to exit ");
+        let dash_area = block.inner(main_area);
+        frame.render_widget(block, main_area);
+        render_dashboard(frame, app, dash_area);
         render_input(frame, app, input_area);
         render_slash_menu(frame, app, input_area);
         return;
@@ -3183,6 +3390,335 @@ fn render(
     }
 }
 
+/// The dashboard banner, with `{title}` / `{level}` / `{xp}` / `{next}`
+/// placeholders filled in by [`dash_banner`].
+const DASHBOARD_BANNER: &str = r#"┌─ entheai ─────────────────────────────────────────────── 🜂 ─┐
+│                                                              │
+│   █████ █   █ █████ █   █  ███   ████ █████                  │
+│   █     ██  █   █   █   █ █   █ █   █   █                    │
+│   █████ █ █ █   █   █████ █████ █████   █                    │
+│   █     █  ██   █   █   █ █   █ █   █   █                    │
+│   █████ █   █   █   █   █ █   █ █   █  ███                   │
+│                                                              │
+│   {title} · lvl {level} · {xp} xp          next: {next}       │
+└──────────────────────────────────────────────────────────────┘"#;
+
+/// Fill the banner's progression placeholders from the current level/xp/badges.
+fn dash_banner(app: &App) -> String {
+    let p = &app.progression;
+    let level = Progression::level_of(p.xp);
+    DASHBOARD_BANNER
+        .replace("{title}", Progression::level_title(level))
+        .replace("{level}", &level.to_string())
+        .replace("{xp}", &p.xp.to_string())
+        .replace("{next}", &p.next_badge_label())
+}
+
+/// Render the dashboard content area: banner (when tall enough), summary line,
+/// then worker rows or the empty-state hint before the first fan-out.
+fn render_dashboard(frame: &mut Frame, app: &App, dash_area: Rect) {
+    let mut content = dash_area;
+    if dash_area.height >= 14 {
+        let banner_h = DASHBOARD_BANNER.lines().count() as u16 + 1;
+        let [banner_area, rest] =
+            Layout::vertical([Constraint::Length(banner_h), Constraint::Min(1)]).areas(dash_area);
+        frame.render_widget(Paragraph::new(dash_banner(app)), banner_area);
+        content = rest;
+    }
+    let [summary_area, rows_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(content);
+    frame.render_widget(Paragraph::new(dash_summary_line(app)), summary_area);
+    if app.dash_workers.is_empty() {
+        render_dash_empty(frame, rows_area);
+    } else {
+        render_dash_rows(frame, app, rows_area);
+    }
+}
+
+/// The empty-state hint, centered in the rows area.
+fn render_dash_empty(frame: &mut Frame, rows_area: Rect) {
+    let lines = vec![
+        Line::from("◈ no fan-out yet — submit a prompt and workers will land here"),
+        Line::from("  your last run stays on this board until you quit · /dashboard"),
+        Line::styled(
+            "  Ctrl-D / /dashboard toggles back to chat",
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+    ];
+    let h = lines.len() as u16;
+    let top = rows_area.y + rows_area.height.saturating_sub(h).saturating_div(2);
+    let area = Rect {
+        x: rows_area.x,
+        y: top,
+        width: rows_area.width,
+        height: h,
+    };
+    frame.render_widget(
+        Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center),
+        area,
+    );
+}
+
+/// Worker rows, one per line, filling as many rows as fit; an overflow tail
+/// collapses the last visible row to a dim `▾ +N more`.
+fn render_dash_rows(frame: &mut Frame, app: &App, rows_area: Rect) {
+    let rows = rows_area.height as usize;
+    let total = app.dash_workers.len();
+    let visible = if total > rows {
+        rows.saturating_sub(1)
+    } else {
+        total
+    };
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(visible + 1);
+    for w in app.dash_workers.iter().take(visible) {
+        lines.push(dash_worker_row(app, w, rows_area.width));
+    }
+    if total > visible {
+        lines.push(Line::styled(
+            format!("▾ +{} more", total - visible),
+            Style::default().add_modifier(Modifier::DIM),
+        ));
+    }
+    frame.render_widget(Paragraph::new(lines), rows_area);
+}
+
+/// One worker's line: `#<id> glyph role status+elapsed branch task`.
+fn dash_worker_row(
+    app: &App,
+    w: &entheai_orchestrator::WorkerSummary,
+    width: u16,
+) -> Line<'static> {
+    let (glyph, glyph_style) = worker_status_style(&w.status);
+    let running = matches!(w.status, entheai_orchestrator::WorkerStatus::Running { .. });
+    let role_style = if running {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().add_modifier(Modifier::DIM)
+    };
+    let done_elapsed = app.dash_started.get(&w.id).map(|t| t.elapsed());
+    let status_text = status_elapsed_text(&w.status, done_elapsed);
+    // 3 + 1 + 1 + 1 + 12 + 1 + 16 + 1 + 18 + 1 columns; the task takes the rest.
+    let task_w = (width as usize).saturating_sub(3 + 1 + 1 + 1 + 12 + 1 + 16 + 1 + 18 + 1);
+    Line::from(vec![
+        Span::styled(
+            format!("#{:>2}", w.id),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+        Span::raw(" "),
+        Span::styled(glyph, glyph_style),
+        Span::raw(" "),
+        Span::styled(format!("{:<12}", truncate(&w.role, 12)), role_style),
+        Span::raw(" "),
+        Span::styled(
+            format!("{:<16}", truncate(&status_text, 16)),
+            Style::default(),
+        ),
+        Span::raw(" "),
+        Span::styled(format!("{:<18}", "––"), Style::default().fg(Color::Magenta)),
+        Span::raw(" "),
+        Span::styled(
+            truncate(&w.task, task_w),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+    ])
+}
+
+/// The glyph + style for a worker status on the dashboard board.
+fn worker_status_style(status: &entheai_orchestrator::WorkerStatus) -> (&'static str, Style) {
+    use entheai_orchestrator::WorkerStatus;
+    match status {
+        WorkerStatus::Queued => ("◻", Style::default().add_modifier(Modifier::DIM)),
+        WorkerStatus::Running { .. } => (
+            "⟳",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        WorkerStatus::Done => ("✓", Style::default().fg(Color::Green)),
+        WorkerStatus::TimedOut => ("⚠", Style::default().fg(Color::Yellow)),
+        WorkerStatus::Killed => ("✗", Style::default().fg(Color::Red)),
+    }
+}
+
+/// The `status+elapsed` column: `queued · ––` / `running · 41s` / `done · 2m45s`
+/// / `timed out` / `killed`. `done_elapsed` comes from the board's remembered
+/// start instants (reaped workers leave the pool without their `started_at`).
+fn status_elapsed_text(
+    status: &entheai_orchestrator::WorkerStatus,
+    done_elapsed: Option<Duration>,
+) -> String {
+    use entheai_orchestrator::WorkerStatus;
+    match status {
+        WorkerStatus::Queued => "queued · ––".to_string(),
+        WorkerStatus::Running { started_at } => {
+            format!("running · {}", fmt_duration(started_at.elapsed()))
+        }
+        WorkerStatus::Done => match done_elapsed {
+            Some(d) => format!("done · {}", fmt_duration(d)),
+            None => "done · ––".to_string(),
+        },
+        WorkerStatus::TimedOut => "timed out".to_string(),
+        WorkerStatus::Killed => "killed".to_string(),
+    }
+}
+
+/// Human-readable duration: `41s` · `2m45s` · `1h05m`.
+fn fmt_duration(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+/// The one-line board summary: worker counts, last seal fingerprint, phase.
+fn dash_summary_line(app: &App) -> Line<'static> {
+    use entheai_orchestrator::WorkerStatus;
+    let n = app.dash_workers.len();
+    let running = app
+        .dash_workers
+        .iter()
+        .filter(|w| matches!(w.status, WorkerStatus::Running { .. }))
+        .count();
+    let done = app
+        .dash_workers
+        .iter()
+        .filter(|w| matches!(w.status, WorkerStatus::Done))
+        .count();
+    let failed = app
+        .dash_workers
+        .iter()
+        .filter(|w| matches!(w.status, WorkerStatus::TimedOut | WorkerStatus::Killed))
+        .count();
+    let seal_span = match &app.last_seal {
+        Some(s) => Span::styled(
+            format!("seal {}", &s[..12.min(s.len())]),
+            Style::default().fg(Color::Magenta),
+        ),
+        None => Span::styled("seal ────", Style::default().add_modifier(Modifier::DIM)),
+    };
+    Line::from(vec![
+        Span::raw(format!("{n} workers · ")),
+        Span::styled(
+            format!("{running} running"),
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::raw(" · "),
+        Span::styled(format!("{done} done"), Style::default().fg(Color::Green)),
+        Span::raw(" · "),
+        Span::styled(format!("{failed} failed"), Style::default().fg(Color::Red)),
+        Span::raw(" · "),
+        seal_span,
+        Span::raw(" · "),
+        Span::styled(
+            format!("phase: {}", dash_phase(app)),
+            Style::default().fg(Color::Yellow),
+        ),
+    ])
+}
+
+/// Dashboard phase label derived from the swarm's fan-out phase.
+fn dash_phase(app: &App) -> &'static str {
+    match app.swarm.phase {
+        entheai_viz::Phase::Idle => "idle",
+        entheai_viz::Phase::Fanning => {
+            if app.current_action == "running coders" {
+                "coding"
+            } else {
+                "decomposing"
+            }
+        }
+        entheai_viz::Phase::Integrating => "integrating",
+        entheai_viz::Phase::Done => "done",
+    }
+}
+
+/// The status-bar row-2 progression readout: `Lv 3 ▰▰▰▱▱▱▱▱▱▱ 312/450 · next: 🧿
+/// First Seal`. `None` on terminals narrower than 100 columns.
+fn progression_segment(app: &App, width: u16) -> Option<Line<'static>> {
+    if width < 100 {
+        return None;
+    }
+    let p = &app.progression;
+    let level = Progression::level_of(p.xp);
+    let cur = Progression::level_threshold(level);
+    let xp_in_level = p.xp.saturating_sub(cur);
+    let (fill, next_label) = match Progression::next_level_threshold(level) {
+        Some(next) => {
+            let delta = (next - cur).max(1) as f64;
+            let fill = ((10.0 * xp_in_level as f64 / delta).round() as usize).min(10);
+            (fill, next.to_string())
+        }
+        None => (10, "max".to_string()),
+    };
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let mut spans = vec![Span::styled(format!("Lv {level} "), dim)];
+    if fill > 0 {
+        spans.push(Span::styled(
+            "▰".repeat(fill),
+            Style::default().fg(Color::Green),
+        ));
+    }
+    if fill < 10 {
+        spans.push(Span::styled("▱".repeat(10 - fill), dim));
+    }
+    spans.push(Span::styled(
+        format!(" {}/{} · next: {}", p.xp, next_label, p.next_badge_label()),
+        dim,
+    ));
+    Some(Line::from(spans))
+}
+
+/// Refresh the dashboard worker board from the live pool, merging with the
+/// retained snapshot so reaped (finished) workers stay visible. Remembers the
+/// `started_at` of running workers so `done · 2m45s` elapsed stays derivable
+/// after the pool forgets them.
+fn refresh_dash_workers(app: &mut App) {
+    let Some(pool) = &app.worker_pool else {
+        return;
+    };
+    let mut live = pool.list();
+    live.sort_by_key(|s| s.id);
+    let mut merged: Vec<entheai_orchestrator::WorkerSummary> = Vec::new();
+    let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for s in &live {
+        seen.insert(s.id);
+        if let entheai_orchestrator::WorkerStatus::Running { started_at } = s.status {
+            app.dash_started.entry(s.id).or_insert(started_at);
+        }
+        merged.push(s.clone());
+    }
+    for old in &app.dash_workers {
+        if !seen.contains(&old.id) {
+            merged.push(old.clone());
+        }
+    }
+    merged.sort_by_key(|s| s.id);
+    app.dash_workers = merged;
+}
+
+/// Pull the first `seal <12-hex>` fingerprint out of a fan-out report (the
+/// orchestrator renders `integrated ✓ — seal abcdef123456 (verify: …)`).
+fn seal_from_report(report: &str) -> Option<String> {
+    for line in report.lines() {
+        let Some(i) = line.find("seal ") else {
+            continue;
+        };
+        let hex: String = line[i + "seal ".len()..]
+            .chars()
+            .take_while(|c| c.is_ascii_hexdigit())
+            .take(12)
+            .collect();
+        if hex.len() == 12 {
+            return Some(hex);
+        }
+    }
+    None
+}
+
 /// Build the top status bar line: `entheai · <model> · [fan-out ·] <state>
 fn status_line(app: &App) -> Line<'static> {
     let state = match &app.status {
@@ -3330,6 +3866,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
         "/zen",
         "the full-canvas living field — one message box  (Ctrl-G)",
     ),
+    ("/dashboard", "live fan-out dashboard  (Ctrl-D)"),
     (
         "/theme",
         "zen palette — entheia · ember · verdant · void (cycle or name)",
@@ -3631,6 +4168,12 @@ mod tests {
             mode: entheai_permission::Mode::Ask,
             policy: Arc::new(Policy::new(false, Vec::new())),
             slash_index: None,
+            progression: Progression::default(),
+            dash_workers: Vec::new(),
+            dash_started: std::collections::HashMap::new(),
+            last_seal: None,
+            zen_accum: Duration::ZERO,
+            prog_dirty: false,
         }
     }
 
@@ -4128,6 +4671,12 @@ mod tests {
             mode: entheai_permission::Mode::Ask,
             policy: Arc::new(Policy::new(false, Vec::new())),
             slash_index: None,
+            progression: Progression::default(),
+            dash_workers: Vec::new(),
+            dash_started: std::collections::HashMap::new(),
+            last_seal: None,
+            zen_accum: Duration::ZERO,
+            prog_dirty: false,
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -4177,6 +4726,12 @@ mod tests {
             mode: entheai_permission::Mode::Ask,
             policy: Arc::new(Policy::new(false, Vec::new())),
             slash_index: None,
+            progression: Progression::default(),
+            dash_workers: Vec::new(),
+            dash_started: std::collections::HashMap::new(),
+            last_seal: None,
+            zen_accum: Duration::ZERO,
+            prog_dirty: false,
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -4224,6 +4779,12 @@ mod tests {
             mode: entheai_permission::Mode::Ask,
             policy: Arc::new(Policy::new(false, Vec::new())),
             slash_index: None,
+            progression: Progression::default(),
+            dash_workers: Vec::new(),
+            dash_started: std::collections::HashMap::new(),
+            last_seal: None,
+            zen_accum: Duration::ZERO,
+            prog_dirty: false,
         };
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = handle_key(&mut app, key);
@@ -4326,6 +4887,12 @@ mod tests {
             mode: entheai_permission::Mode::Ask,
             policy: Arc::new(Policy::new(false, Vec::new())),
             slash_index: None,
+            progression: Progression::default(),
+            dash_workers: Vec::new(),
+            dash_started: std::collections::HashMap::new(),
+            last_seal: None,
+            zen_accum: Duration::ZERO,
+            prog_dirty: false,
         };
         handle_workers_command(&mut app, "/workers list");
         assert!(app
@@ -4376,6 +4943,12 @@ mod tests {
             mode: entheai_permission::Mode::Ask,
             policy: Arc::new(Policy::new(false, Vec::new())),
             slash_index: None,
+            progression: Progression::default(),
+            dash_workers: Vec::new(),
+            dash_started: std::collections::HashMap::new(),
+            last_seal: None,
+            zen_accum: Duration::ZERO,
+            prog_dirty: false,
         };
         handle_radio_event(
             &mut app,
@@ -4392,5 +4965,227 @@ mod tests {
         handle_radio_event(&mut app, RadioEvent::Stopped);
         assert!(app.now_playing.is_none());
         assert!(app.messages.iter().any(|m| m.text.contains("now playing")));
+    }
+
+    #[test]
+    fn ctrl_d_toggles_dashboard_action() {
+        let mut app = test_app();
+        let key = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert!(matches!(handle_key(&mut app, key), Action::DashboardToggle));
+    }
+
+    #[test]
+    fn dashboard_command_detection() {
+        assert!(is_dashboard_command("/dashboard"));
+        assert!(!is_dashboard_command("/dashboardx"));
+        assert!(!is_dashboard_command("/dash"));
+        let m = slash_matches("/dash");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].0, "/dashboard");
+        // Toggle semantics: Dashboard → Chat, everything else → Dashboard.
+        let mut app = test_app();
+        handle_dashboard_command(&mut app, "/dashboard");
+        assert_eq!(app.view, ViewMode::Dashboard);
+        handle_dashboard_command(&mut app, "/dashboard");
+        assert_eq!(app.view, ViewMode::Chat);
+    }
+
+    #[test]
+    fn worker_status_style_maps_glyphs_and_colors() {
+        use entheai_orchestrator::WorkerStatus;
+        use std::time::Instant;
+        let (g, s) = worker_status_style(&WorkerStatus::Queued);
+        assert_eq!(g, "◻");
+        assert!(s.add_modifier.contains(Modifier::DIM), "queued is dim");
+        let (g, s) = worker_status_style(&WorkerStatus::Running {
+            started_at: Instant::now(),
+        });
+        assert_eq!(g, "⟳");
+        assert_eq!(s.fg, Some(Color::Cyan));
+        assert!(s.add_modifier.contains(Modifier::BOLD));
+        let (g, s) = worker_status_style(&WorkerStatus::Done);
+        assert_eq!(g, "✓");
+        assert_eq!(s.fg, Some(Color::Green));
+        let (g, s) = worker_status_style(&WorkerStatus::TimedOut);
+        assert_eq!(g, "⚠");
+        assert_eq!(s.fg, Some(Color::Yellow));
+        let (g, s) = worker_status_style(&WorkerStatus::Killed);
+        assert_eq!(g, "✗");
+        assert_eq!(s.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn status_elapsed_text_variants() {
+        use entheai_orchestrator::WorkerStatus;
+        use std::time::Instant;
+        assert_eq!(
+            status_elapsed_text(&WorkerStatus::Queued, None),
+            "queued · ––"
+        );
+        assert_eq!(status_elapsed_text(&WorkerStatus::Done, None), "done · ––");
+        assert_eq!(
+            status_elapsed_text(&WorkerStatus::Done, Some(Duration::from_secs(165))),
+            "done · 2m45s"
+        );
+        assert_eq!(
+            status_elapsed_text(&WorkerStatus::TimedOut, None),
+            "timed out"
+        );
+        assert_eq!(status_elapsed_text(&WorkerStatus::Killed, None), "killed");
+        let r = status_elapsed_text(
+            &WorkerStatus::Running {
+                started_at: Instant::now() - Duration::from_secs(41),
+            },
+            None,
+        );
+        assert!(r.starts_with("running · "), "running prefix: {r}");
+        assert!(r.ends_with('s'), "elapsed in seconds: {r}");
+        // fmt_duration shapes: s / m{mm}s / h{hh}m.
+        assert_eq!(fmt_duration(Duration::from_secs(41)), "41s");
+        assert_eq!(fmt_duration(Duration::from_secs(165)), "2m45s");
+        assert_eq!(fmt_duration(Duration::from_secs(3905)), "1h05m");
+    }
+
+    #[test]
+    fn dash_summary_line_empty_vs_populated() {
+        // Empty board, no seal, idle phase.
+        let app = test_app();
+        let text: String = dash_summary_line(&app)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(
+            text,
+            "0 workers · 0 running · 0 done · 0 failed · seal ──── · phase: idle"
+        );
+
+        let mut app = test_app();
+        use entheai_orchestrator::{WorkerStatus, WorkerSummary};
+        use std::time::Instant;
+        app.dash_workers = vec![
+            WorkerSummary {
+                id: 0,
+                role: "coder".into(),
+                task: "t0".into(),
+                status: WorkerStatus::Queued,
+            },
+            WorkerSummary {
+                id: 1,
+                role: "coder".into(),
+                task: "t1".into(),
+                status: WorkerStatus::Running {
+                    started_at: Instant::now(),
+                },
+            },
+            WorkerSummary {
+                id: 2,
+                role: "reviewer".into(),
+                task: "t2".into(),
+                status: WorkerStatus::Done,
+            },
+            WorkerSummary {
+                id: 3,
+                role: "test".into(),
+                task: "t3".into(),
+                status: WorkerStatus::TimedOut,
+            },
+            WorkerSummary {
+                id: 4,
+                role: "explore".into(),
+                task: "t4".into(),
+                status: WorkerStatus::Killed,
+            },
+        ];
+        app.last_seal = Some("abcdef1234567890deadbeef".to_string());
+        let text: String = dash_summary_line(&app)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(
+            text,
+            "5 workers · 1 running · 1 done · 2 failed · seal abcdef123456 · phase: idle"
+        );
+        // After a finished run the phase reads `done`.
+        app.swarm.done(None, 1, 0);
+        let text: String = dash_summary_line(&app)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(text.ends_with("· phase: done"), "done phase: {text}");
+    }
+
+    #[test]
+    fn dash_worker_row_formats_columns() {
+        use entheai_orchestrator::{WorkerStatus, WorkerSummary};
+        use std::time::{Duration, Instant};
+        let mut app = test_app();
+        app.dash_started
+            .insert(2, Instant::now() - Duration::from_secs(165));
+        let w = WorkerSummary {
+            id: 2,
+            role: "coder".into(),
+            task: "implement the parser".into(),
+            status: WorkerStatus::Done,
+        };
+        let line = dash_worker_row(&app, &w, 120);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(
+            text,
+            "# 2 ✓ coder        done · 2m45s     ––                 implement the parser"
+        );
+    }
+
+    #[test]
+    fn progression_segment_mid_level_and_width_gate() {
+        let mut app = test_app();
+        app.progression = Progression {
+            xp: 312,
+            ..Progression::default()
+        };
+        assert!(
+            progression_segment(&app, 99).is_none(),
+            "hidden below 100 columns"
+        );
+        let seg = progression_segment(&app, 100).expect("shown at >= 100 columns");
+        let text: String = seg.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "Lv 3 ▰▰▰▱▱▱▱▱▱▱ 312/450 · next: 🜂 First Flame");
+        // A maxed-out progression shows a full bar; the next badge stays the
+        // first unearned one until every badge is unlocked.
+        app.progression = Progression {
+            xp: 5000,
+            ..Progression::default()
+        };
+        let seg = progression_segment(&app, 100).expect("shown at max level");
+        let text: String = seg.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "Lv 8 ▰▰▰▰▰▰▰▰▰▰ 5000/max · next: 🜂 First Flame");
+    }
+
+    #[test]
+    fn seal_from_report_extracts_12_hex() {
+        let report = "## Integration\n- integrated ✓ — seal aabbccddeeff0011223344 (verify: ./scripts/check.sh)\n";
+        assert_eq!(seal_from_report(report).as_deref(), Some("aabbccddeeff"));
+        assert_eq!(seal_from_report("no seal here"), None);
+        assert_eq!(
+            seal_from_report("seal abc"),
+            None,
+            "too short to be a fingerprint"
+        );
+    }
+
+    #[test]
+    fn dash_phase_labels() {
+        let mut app = test_app();
+        assert_eq!(dash_phase(&app), "idle");
+        app.swarm.decompose(&[("coder".into(), "t".into())]);
+        assert_eq!(dash_phase(&app), "decomposing");
+        app.current_action = "running coders".to_string();
+        assert_eq!(dash_phase(&app), "coding");
+        app.swarm.integrating(1);
+        assert_eq!(dash_phase(&app), "integrating");
+        app.swarm.done(None, 1, 0);
+        assert_eq!(dash_phase(&app), "done");
     }
 }
