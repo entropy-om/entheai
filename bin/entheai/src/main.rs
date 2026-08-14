@@ -7,6 +7,7 @@ use entheai_config::Config;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixListener;
 
+mod backer;
 mod logging;
 
 #[cfg(target_os = "macos")]
@@ -61,6 +62,12 @@ struct Cli {
     /// shape as `--relay`; the default prompt path (no flag) is unchanged.
     #[arg(long = "caligraph", value_name = "PATH")]
     caligraph: Option<String>,
+    /// Activate a backer license key, then exit: `--activate <KEY>`.
+    #[arg(long, value_name = "KEY")]
+    activate: Option<String>,
+    /// Unlock the beta channel (requires an activated backer key).
+    #[arg(long)]
+    beta: bool,
 }
 
 /// The `--config` default; only this filename falls through to the global /
@@ -190,6 +197,18 @@ async fn main() -> anyhow::Result<()> {
     if cli.doctor {
         return run_doctor_cmd();
     }
+
+    // `--activate <KEY>` verifies the key against the license endpoint,
+    // persists `~/.config/entheai/backer.json`, and exits — before any config
+    // file, agent, or companion is built.
+    if let Some(key) = cli.activate.as_deref() {
+        return backer::activate(key).await;
+    }
+
+    // `--beta` gates on the stored backer credential (fail-fast, before config
+    // load). The flag does not yet change any behavior.
+    backer::ensure_beta(cli.beta)?;
+    // # Stream N lands here: beta-gated behavior attaches below this line.
 
     let cfg = load_config(&cli.config)?;
     let _sentry = init_telemetry(cfg.telemetry.sentry_dsn.clone());
@@ -340,9 +359,16 @@ async fn main() -> anyhow::Result<()> {
                         as std::sync::Arc<dyn entheai_orchestrator::TrajectorySink>
                 });
                 let answer = entheai_orchestrator::run_fanout(
-                    &cfg, &root, &prompt, events, pool, fed_exec,
+                    &cfg,
+                    &root,
+                    &prompt,
+                    events,
+                    pool,
+                    fed_exec,
                     entheai_orchestrator::oracle_for_config(&cfg),
-                    runtime, scope, sink,
+                    runtime,
+                    scope,
+                    sink,
                 )
                 .await?;
                 // Drain + flush the tee before teardown so the final events

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <title>entheai Backer — bleeding-edge beta access, yours forever</title>
+  <defs>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#2ff0e2" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#2ff0e2" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="dotgrid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.3" fill="#2ff0e2" fill-opacity="0.05"/>
+    </pattern>
+    <style>
+      @keyframes blink { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0; } }
+      #cursor { animation: blink 1.1s steps(1, end) infinite; }
+    </style>
+  </defs>
+
+  <!-- full-bleed near-black field + faint dot-matrix texture -->
+  <rect width="1280" height="720" fill="#04060a"/>
+  <rect width="1280" height="720" fill="url(#dotgrid)"/>
+
+  <!-- soft teal atmosphere behind the mark -->
+  <circle cx="300" cy="380" r="340" fill="url(#glow)"/>
+
+  <!-- logo mark: teal triangle on dark rounded square (brand geometry, 512 canvas scaled) -->
+  <g transform="translate(150,230) scale(0.586)">
+    <rect width="512" height="512" rx="112" fill="#04060a" stroke="#2ff0e2" stroke-opacity="0.3" stroke-width="4"/>
+    <polygon points="180,128 384,256 180,384" fill="#2ff0e2"/>
+  </g>
+
+  <!-- primary wordmark + terminal block cursor -->
+  <text x="510" y="340" font-family="ui-monospace, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="80" font-weight="700" fill="#eaf6f5">entheai<tspan fill="#2ff0e2"> Backer</tspan></text>
+  <rect id="cursor" x="1194" y="276" width="46" height="64" fill="#2ff0e2" fill-opacity="0.9"/>
+
+  <!-- subline -->
+  <text x="510" y="408" font-family="ui-monospace, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="28" fill="#8a9aa8" letter-spacing="0.5">bleeding-edge beta access · yours forever</text>
+
+  <!-- one-time pricing pill -->
+  <rect x="510" y="446" width="500" height="56" rx="28" fill="#2ff0e2" fill-opacity="0.07" stroke="#2ff0e2" stroke-opacity="0.55" stroke-width="1.5"/>
+  <text x="760" y="483" font-family="ui-monospace, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="24" font-weight="600" fill="#2ff0e2" text-anchor="middle">$9.99 one-time · no subscription</text>
+
+  <!-- faint terminal prompt glyphs -->
+  <text x="1235" y="100" font-family="ui-monospace, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="28" fill="#2ff0e2" fill-opacity="0.3" text-anchor="end">&gt;_</text>
+  <text x="150" y="660" font-family="ui-monospace, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="24" fill="#8a9aa8" fill-opacity="0.4">$ entheai beta --local-first</text>
+</svg>

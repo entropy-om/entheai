@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600" viewBox="0 0 600 600">
+  <title>entheai Backer</title>
+  <defs>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#2ff0e2" stop-opacity="0.15"/>
+      <stop offset="1" stop-color="#2ff0e2" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="dotgrid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.1" fill="#2ff0e2" fill-opacity="0.05"/>
+    </pattern>
+  </defs>
+
+  <!-- near-black field + faint dot-matrix texture -->
+  <rect width="600" height="600" fill="#04060a"/>
+  <rect width="600" height="600" fill="url(#dotgrid)"/>
+
+  <!-- soft teal atmosphere behind the mark -->
+  <circle cx="320" cy="292" r="330" fill="url(#glow)"/>
+
+  <!-- logo mark, dominant: dark rounded square (rx ≈ 123 on 600) + teal triangle -->
+  <g transform="translate(15,15) scale(1.1)">
+    <rect width="512" height="512" rx="112" fill="#060b12" stroke="#2ff0e2" stroke-opacity="0.35" stroke-width="3"/>
+    <polygon points="180,128 384,256 180,384" fill="#2ff0e2"/>
+  </g>
+
+  <!-- micro tier label + wordmark, overlaid inside the tile bottom -->
+  <text x="300" y="512" text-anchor="middle" font-family="ui-monospace, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="15" font-weight="600" letter-spacing="7" fill="#2ff0e2" fill-opacity="0.8">BACKER</text>
+  <text x="300" y="548" text-anchor="middle" font-family="ui-monospace, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="32" font-weight="700" fill="#e6f2f0">entheai</text>
+</svg>

@@ -9,9 +9,17 @@
   //   wrangler kv namespace create ENTROPY      → paste the id below, uncomment
   //   wrangler secret put ENTROPY_TOKEN         → the bridge's bearer token
   "main": "src/worker.mjs",
-  // "kv_namespaces": [
-  //   { "binding": "ENTROPY", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
-  // ],
+  "kv_namespaces": [
+    // ENTROPY (live beacon) — commented until provisioned:
+    //   wrangler kv namespace create ENTROPY → paste the id below, uncomment.
+    // { "binding": "ENTROPY", "id": "REPLACE_WITH_KV_NAMESPACE_ID" },
+    // LICENSES (backer licenses: license:<key>, session:<checkout id>,
+    // releases:<channel>). One-time setup:
+    //   wrangler kv namespace create LICENSES
+    // → paste the returned id over REPLACE_WITH_LICENSES_KV_NAMESPACE_ID
+    //   before deploying — a placeholder id makes `wrangler deploy` fail.
+    { "binding": "LICENSES", "id": "REPLACE_WITH_LICENSES_KV_NAMESPACE_ID" }
+  ],
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",

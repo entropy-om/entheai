@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claim your Backer key — entheai</title>
+<meta name="description" content="Claim your entheai Backer license key after checkout.">
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #04060a;
+    --bg-elev: #0a0f17;
+    --bg-inset: #070b12;
+    --line: rgba(47, 240, 226, 0.16);
+    --line-soft: rgba(47, 240, 226, 0.08);
+    --teal: #2ff0e2;
+    --teal-dim: #5eead4;
+    --muted: #8a9aa8;
+    --text: #d7e3ea;
+    --red: #f97066;
+    --amber: #e0b94c;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    line-height: 1.6;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 20px;
+    position: relative;
+    overflow-x: hidden;
+  }
+
+  .grid-bg {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(47, 240, 226, 0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(47, 240, 226, 0.035) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: radial-gradient(120% 90% at 50% 0%, #000 30%, transparent 80%);
+    -webkit-mask-image: radial-gradient(120% 90% at 50% 0%, #000 30%, transparent 80%);
+  }
+  .scanlines {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none; opacity: 0.5;
+    background: repeating-linear-gradient(0deg, rgba(255,255,255,0.028) 0 1px, transparent 1px 3px);
+    mix-blend-mode: overlay;
+  }
+
+  .wrap {
+    position: relative; z-index: 1;
+    width: 100%; max-width: 640px;
+  }
+
+  /* terminal frame */
+  .term {
+    background: var(--bg-elev);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(47, 240, 226, 0.04), 0 0 60px rgba(47, 240, 226, 0.06);
+    overflow: hidden;
+  }
+  .term-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    background: #06090f;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .term-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .term-dot.r { background: #f97066; opacity: 0.85; }
+  .term-dot.y { background: #e0b94c; opacity: 0.85; }
+  .term-dot.g { background: #3ddc97; opacity: 0.85; }
+  .term-path {
+    margin-left: 8px; color: var(--muted); font-size: 12px; letter-spacing: 0.04em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .term-path b { color: var(--teal-dim); font-weight: 700; }
+
+  .term-body { padding: 28px 26px 30px; }
+
+  .term-head {
+    display: flex; align-items: center; gap: 14px;
+    margin-bottom: 20px;
+  }
+  .term-head img {
+    width: 52px; height: 52px; border-radius: 9px;
+    border: 1px solid var(--line);
+    flex: 0 0 auto;
+  }
+  .term-head h1 { font-size: 19px; font-weight: 800; color: #f2f9f7; letter-spacing: -0.01em; }
+  .term-head .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  /* status line */
+  .status {
+    font-size: 13.5px;
+    color: var(--muted);
+    margin-bottom: 18px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .spinner {
+    width: 13px; height: 13px; flex: 0 0 auto;
+    border: 2px solid var(--line);
+    border-top-color: var(--teal);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .status.pending { color: var(--amber); }
+  .status.err { color: var(--red); }
+
+  .attempt { font-size: 11.5px; color: var(--muted); opacity: 0.75; margin-top: 4px; }
+
+  /* key box */
+  .key-box {
+    background: var(--bg-inset);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 16px 18px;
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    color: var(--teal);
+    text-shadow: 0 0 18px rgba(47, 240, 226, 0.35);
+    word-break: break-all;
+    user-select: all;
+    margin-bottom: 14px;
+  }
+  .key-box::before { content: "key › "; color: var(--muted); font-weight: 400; letter-spacing: 0; }
+
+  /* command block */
+  .cmd-block {
+    background: var(--bg-inset);
+    border: 1px solid var(--line-soft);
+    border-radius: 9px;
+    padding: 14px 18px;
+    font-size: 13.5px;
+    color: var(--teal-dim);
+    word-break: break-all;
+    margin-bottom: 22px;
+    position: relative;
+  }
+  .cmd-block .prompt { color: var(--muted); }
+  .cmd-block code { font-family: var(--mono); color: var(--teal-dim); }
+  .cmd-block .key-part { color: var(--teal); font-weight: 700; text-shadow: 0 0 12px rgba(47, 240, 226, 0.3); }
+
+  /* copy buttons */
+  .copy-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+  .copy {
+    font-family: var(--mono);
+    font-size: 12.5px; font-weight: 700; letter-spacing: 0.06em;
+    color: var(--teal-dim);
+    background: rgba(47, 240, 226, 0.06);
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 9px 16px;
+    cursor: pointer;
+    transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+  .copy:hover { background: rgba(47, 240, 226, 0.14); border-color: var(--teal); color: var(--teal); box-shadow: 0 0 18px rgba(47, 240, 226, 0.18); }
+  .copy:active { transform: translateY(1px); }
+  .copy.ok { background: rgba(61, 220, 151, 0.12); border-color: #3ddc97; color: #3ddc97; box-shadow: 0 0 14px rgba(61, 220, 151, 0.2); }
+
+  .hint {
+    font-size: 12.5px; color: var(--muted);
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line-soft);
+  }
+  .hint a, .foot a {
+    color: var(--teal-dim);
+    text-decoration: none;
+    border-bottom: 1px dashed rgba(94, 234, 212, 0.4);
+    transition: color 0.2s ease, border-color 0.2s ease;
+  }
+  .hint a:hover, .foot a:hover { color: var(--teal); border-color: var(--teal); }
+
+  .foot {
+    margin-top: 26px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  /* hidden state helpers */
+  [hidden] { display: none !important; }
+
+  @media (max-width: 560px) {
+    .term-body { padding: 22px 16px 24px; }
+    .key-box { font-size: 13px; letter-spacing: 0.1em; }
+    .cmd-block { font-size: 12px; }
+    .term-head img { width: 44px; height: 44px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation-duration: 1.6s; }
+  }
+</style>
+</head>
+<body>
+
+<div class="grid-bg" aria-hidden="true"></div>
+<div class="scanlines" aria-hidden="true"></div>
+
+<main class="wrap">
+  <section class="term" aria-live="polite" aria-label="Claim your entheai Backer key">
+    <div class="term-bar">
+      <span class="term-dot r"></span>
+      <span class="term-dot y"></span>
+      <span class="term-dot g"></span>
+      <span class="term-path">~ <b>entheai</b> --claim-key</span>
+    </div>
+
+    <div class="term-body">
+
+      <div class="term-head">
+        <img src="../assets/marketing/backer-thumbnail.png" alt="" width="600" height="600">
+        <div>
+          <h1>Claim your Backer key</h1>
+          <div class="sub">entheai &middot; one-time tier</div>
+        </div>
+      </div>
+
+      <!-- loading / pending / error -->
+      <div id="status-wrap">
+        <div class="status" id="status-line">
+          <span class="spinner" id="spinner"></span>
+          <span id="status-text">Contacting the license server…</span>
+        </div>
+        <div class="attempt" id="attempt-line" hidden></div>
+      </div>
+
+      <!-- success -->
+      <div id="success-wrap" hidden>
+        <div class="copy-row">
+          <button class="copy" type="button" id="copy-key">Copy key</button>
+          <button class="copy" type="button" id="copy-cmd">Copy activation command</button>
+        </div>
+
+        <div class="key-box" id="key-box"></div>
+
+        <div class="cmd-block">
+          <span class="prompt">$ </span><code id="cmd">entheai activate </code><span class="key-part" id="cmd-key"></span>
+        </div>
+
+        <div class="hint">
+          Run the command above in your terminal and entheai will activate this Backer key.
+          Keep it somewhere safe — it is your proof of the one-time purchase.
+        </div>
+      </div>
+
+      <!-- pending note -->
+      <div id="pending-wrap" hidden>
+        <div class="hint">
+          Payment confirmed on Stripe's side, but fulfillment is still being processed —
+          this usually takes a few seconds. Retrying automatically…
+        </div>
+      </div>
+
+      <!-- error -->
+      <div id="error-wrap" hidden>
+        <div class="hint">
+          Something went wrong contacting the license server. Check your connection and try again.
+          If this persists, reach out via <a href="https://entheai.com/">entheai.com</a>.
+        </div>
+      </div>
+
+      <!-- no session -->
+      <div id="nosession-wrap" hidden>
+        <div class="hint">
+          No session id found in this URL. This page claims a key after checkout —
+          if you haven't purchased yet, head back to <a href="/back">/back</a>.
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <footer class="foot">
+    <a href="https://entheai.com/">← back to entheai.com</a> &nbsp;&middot;&nbsp; runs on your machine
+  </footer>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  var MAX_TRIES = 10;
+  var RETRY_MS = 3000;
+
+  var els = {
+    statusWrap: document.getElementById("status-wrap"),
+    statusLine: document.getElementById("status-line"),
+    statusText: document.getElementById("status-text"),
+    spinner: document.getElementById("spinner"),
+    attemptLine: document.getElementById("attempt-line"),
+    successWrap: document.getElementById("success-wrap"),
+    pendingWrap: document.getElementById("pending-wrap"),
+    errorWrap: document.getElementById("error-wrap"),
+    nosessionWrap: document.getElementById("nosession-wrap"),
+    keyBox: document.getElementById("key-box"),
+    cmd: document.getElementById("cmd"),
+    cmdKey: document.getElementById("cmd-key"),
+    copyKey: document.getElementById("copy-key"),
+    copyCmd: document.getElementById("copy-cmd")
+  };
+
+  var state = {
+    key: null,
+    sessionId: null,
+    tries: 0,
+    timer: null,
+    done: false
+  };
+
+  function show(which) {
+    ["successWrap", "pendingWrap", "errorWrap", "nosessionWrap"].forEach(function (name) {
+      els[name].hidden = (name !== which);
+    });
+    els.statusWrap.hidden = (which !== null && which !== "status");
+  }
+
+  function setStatus(text, cls) {
+    els.statusText.textContent = text;
+    els.statusLine.className = "status" + (cls ? " " + cls : "");
+  }
+
+  function setAttempt(n) {
+    if (n > 1) {
+      els.attemptLine.hidden = false;
+      els.attemptLine.textContent = "attempt " + n + " of " + MAX_TRIES;
+    } else {
+      els.attemptLine.hidden = true;
+    }
+  }
+
+  // ---- copy ----
+  function copyText(text, btn) {
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); flash(btn); }
+      catch (e) { flash(btn, true); }
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { flash(btn); }, fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  function flash(btn, fail) {
+    var original = btn.textContent;
+    btn.textContent = fail ? "copy failed" : "copied ✓";
+    btn.classList.add("ok");
+    setTimeout(function () {
+      btn.textContent = original;
+      btn.classList.remove("ok");
+    }, 1600);
+  }
+
+  // ---- fetch loop ----
+  function fetchKey() {
+    state.tries += 1;
+    setAttempt(state.tries);
+
+    fetch("/api/license/claim?session_id=" + encodeURIComponent(state.sessionId))
+      .then(function (res) {
+        if (res.status === 404) {
+          return Promise.reject({ code: "pending" });
+        }
+        if (!res.ok) {
+          return Promise.reject({ code: "server", status: res.status });
+        }
+        return res.json();
+      })
+      .then(function (data) {
+        if (!data || typeof data.key !== "string" || data.key.length === 0) {
+          return Promise.reject({ code: "bad" });
+        }
+        onSuccess(data.key);
+      })
+      .catch(function (err) {
+        if (state.done) return;
+        var code = (err && err.code) || "network";
+        if (code === "pending" && state.tries < MAX_TRIES) {
+          els.spinner.hidden = false;
+          setStatus("Fulfillment pending — retrying…", "pending");
+          show("pending");
+          state.timer = setTimeout(fetchKey, RETRY_MS);
+        } else {
+          onFail(code);
+        }
+      });
+  }
+
+  function onSuccess(key) {
+    state.done = true;
+    if (state.timer) { clearTimeout(state.timer); state.timer = null; }
+
+    state.key = key;
+    els.keyBox.textContent = key;
+    els.cmdKey.textContent = key;
+
+    show("success");
+
+    els.copyKey.addEventListener("click", function () {
+      copyText(state.key, els.copyKey);
+    });
+    els.copyCmd.addEventListener("click", function () {
+      copyText("entheai activate " + state.key, els.copyCmd);
+    });
+  }
+
+  function onFail(code) {
+    state.done = true;
+    if (state.timer) { clearTimeout(state.timer); state.timer = null; }
+    els.spinner.hidden = true;
+    setStatus(
+      code === "server"
+        ? "License server error (" + code + ")."
+        : code === "bad"
+          ? "Server response was invalid."
+          : "Could not reach the license server.",
+      "err"
+    );
+    show("error");
+  }
+
+  // ---- boot ----
+  var params = new URLSearchParams(window.location.search);
+  state.sessionId = params.get("session_id");
+
+  if (!state.sessionId) {
+    show("nosession");
+    els.spinner.hidden = true;
+    setStatus("No session id in URL", "pending");
+  } else {
+    show("status");
+    setStatus("Contacting the license server…");
+    fetchKey();
+  }
+})();
+</script>
+
+</body>
+</html>

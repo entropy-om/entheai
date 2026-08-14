@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>entheai Backer — one-time support tier</title>
+<meta name="description" content="entheai Backer: a one-time €9.99 tier. Bleeding-edge beta builds, roadmap voting, named Backer role. Runs 100% on your machine. MIT source stays free.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #04060a;
+    --bg-elev: #0a0f17;
+    --bg-inset: #070b12;
+    --line: rgba(47, 240, 226, 0.16);
+    --line-soft: rgba(47, 240, 226, 0.08);
+    --teal: #2ff0e2;
+    --teal-dim: #5eead4;
+    --muted: #8a9aa8;
+    --text: #d7e3ea;
+    --red: #f97066;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    line-height: 1.6;
+    min-height: 100vh;
+    overflow-x: hidden;
+    position: relative;
+  }
+
+  /* ambient backdrop: grid + scanlines */
+  .grid-bg {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(47, 240, 226, 0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(47, 240, 226, 0.035) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: radial-gradient(120% 90% at 50% 0%, #000 30%, transparent 80%);
+    -webkit-mask-image: radial-gradient(120% 90% at 50% 0%, #000 30%, transparent 80%);
+  }
+  .scanlines {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none; opacity: 0.5;
+    background: repeating-linear-gradient(0deg, rgba(255,255,255,0.028) 0 1px, transparent 1px 3px);
+    mix-blend-mode: overlay;
+  }
+  .glow-orb {
+    position: fixed; z-index: 0; pointer-events: none; border-radius: 50%; filter: blur(90px);
+  }
+  .glow-orb.teal { width: 480px; height: 480px; top: -160px; right: -120px; background: rgba(47, 240, 226, 0.07); }
+  .glow-orb.blue { width: 420px; height: 420px; bottom: -180px; left: -140px; background: rgba(94, 234, 212, 0.05); }
+
+  .wrap { position: relative; z-index: 1; max-width: 860px; margin: 0 auto; padding: 48px 20px 64px; }
+
+  /* ---- reveal on load ---- */
+  .rise { opacity: 0; transform: translateY(14px); animation: rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+  .rise:nth-child(1) { animation-delay: 0.05s; }
+  .rise:nth-child(2) { animation-delay: 0.14s; }
+  .rise:nth-child(3) { animation-delay: 0.23s; }
+  .rise:nth-child(4) { animation-delay: 0.32s; }
+  .rise:nth-child(5) { animation-delay: 0.41s; }
+  .rise:nth-child(6) { animation-delay: 0.50s; }
+  @keyframes rise { to { opacity: 1; transform: translateY(0); } }
+
+  /* ---- terminal frame (hero) ---- */
+  .term {
+    background: var(--bg-elev);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(47, 240, 226, 0.04), 0 0 60px rgba(47, 240, 226, 0.06);
+    overflow: hidden;
+  }
+  .term-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    background: #06090f;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .term-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .term-dot.r { background: #f97066; opacity: 0.85; }
+  .term-dot.y { background: #e0b94c; opacity: 0.85; }
+  .term-dot.g { background: #3ddc97; opacity: 0.85; }
+  .term-path {
+    margin-left: 8px; color: var(--muted); font-size: 12px; letter-spacing: 0.04em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .term-path b { color: var(--teal-dim); font-weight: 700; }
+  .term-body { padding: 0; }
+  .term-body img {
+    display: block; width: 100%; height: auto;
+    max-height: 420px; object-fit: cover;
+    border-radius: 0;
+  }
+
+  /* ---- headline block ---- */
+  .headline { margin-top: 44px; text-align: center; }
+  .eyebrow {
+    display: inline-block;
+    color: var(--teal-dim);
+    font-size: 12px; font-weight: 700; letter-spacing: 0.22em; text-transform: uppercase;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 6px 14px;
+    margin-bottom: 18px;
+    background: rgba(47, 240, 226, 0.05);
+  }
+  h1 {
+    font-size: clamp(2.1rem, 6vw, 3.4rem);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    line-height: 1.05;
+    color: #f2f9f7;
+    text-shadow: 0 0 40px rgba(47, 240, 226, 0.18);
+  }
+  h1 .accent { color: var(--teal); }
+  .tagline {
+    margin: 16px auto 0; max-width: 560px;
+    color: var(--muted); font-size: 14.5px;
+  }
+  .tagline b { color: var(--teal-dim); font-weight: 700; }
+
+  /* ---- price card ---- */
+  .card {
+    margin-top: 36px;
+    background: linear-gradient(180deg, rgba(47, 240, 226, 0.05), rgba(47, 240, 226, 0.015) 40%), var(--bg-elev);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 32px 28px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+  }
+  .price-row { display: flex; align-items: baseline; justify-content: center; gap: 14px; flex-wrap: wrap; }
+  .price { font-size: clamp(2.4rem, 7vw, 3.2rem); font-weight: 800; color: var(--teal); letter-spacing: -0.02em; text-shadow: 0 0 30px rgba(47, 240, 226, 0.35); }
+  .price-sub { color: var(--muted); font-size: 13.5px; }
+  .price-sub b { color: var(--teal-dim); }
+
+  .features {
+    margin: 26px auto 0; max-width: 560px;
+    list-style: none;
+    display: grid; gap: 10px;
+    text-align: left;
+  }
+  .features li {
+    display: flex; align-items: flex-start; gap: 12px;
+    color: var(--text);
+    font-size: 14px;
+    padding: 8px 12px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    transition: border-color 0.2s ease, background 0.2s ease;
+  }
+  .features li:hover { border-color: var(--line-soft); background: rgba(47, 240, 226, 0.03); }
+  .features .tick {
+    flex: 0 0 auto;
+    color: var(--teal);
+    font-weight: 700;
+    text-shadow: 0 0 12px rgba(47, 240, 226, 0.5);
+  }
+  .features b { color: var(--teal-dim); font-weight: 700; }
+
+  .buy-wrap { margin-top: 30px; text-align: center; }
+  .buy {
+    display: inline-block;
+    background: var(--teal);
+    color: #02100e;
+    font-family: var(--mono);
+    font-size: 17px; font-weight: 800; letter-spacing: 0.02em;
+    text-decoration: none;
+    padding: 16px 52px;
+    border-radius: 10px;
+    border: 1px solid var(--teal);
+    box-shadow: 0 0 34px rgba(47, 240, 226, 0.35), inset 0 0 18px rgba(255, 255, 255, 0.12);
+    transition: transform 0.15s ease, box-shadow 0.25s ease, background 0.2s ease;
+    cursor: pointer;
+  }
+  .buy:hover { transform: translateY(-2px); box-shadow: 0 0 54px rgba(47, 240, 226, 0.55), inset 0 0 22px rgba(255, 255, 255, 0.18); }
+  .buy:active { transform: translateY(0); }
+  .buy .kbd { opacity: 0.65; font-size: 12px; letter-spacing: 0.1em; }
+
+  /* ---- grounded note ---- */
+  .note {
+    margin: 22px auto 0; max-width: 600px;
+    background: var(--bg-inset);
+    border-left: 2px solid var(--teal-dim);
+    border-radius: 0 8px 8px 0;
+    padding: 16px 18px;
+    color: var(--muted);
+    font-size: 13px;
+    text-align: left;
+  }
+  .note b { color: var(--teal-dim); }
+  .note .warn { color: var(--red); font-weight: 700; }
+
+  /* ---- FAQ ---- */
+  .faq { margin-top: 44px; }
+  .faq-title {
+    text-align: center;
+    font-size: 13px; font-weight: 700; letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--teal-dim);
+    margin-bottom: 18px;
+  }
+  details {
+    background: var(--bg-elev);
+    border: 1px solid var(--line-soft);
+    border-radius: 10px;
+    margin-bottom: 10px;
+    overflow: hidden;
+    transition: border-color 0.2s ease;
+  }
+  details[open] { border-color: var(--line); }
+  summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 14px 18px;
+    font-weight: 700;
+    color: var(--text);
+    font-size: 14px;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    user-select: none;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::after {
+    content: "+";
+    color: var(--teal);
+    font-size: 18px;
+    font-weight: 400;
+    transition: transform 0.2s ease;
+    flex: 0 0 auto;
+  }
+  details[open] summary::after { transform: rotate(45deg); }
+  details p { padding: 0 18px 16px; color: var(--muted); font-size: 13.5px; }
+  details code {
+    background: #04060a;
+    border: 1px solid var(--line-soft);
+    border-radius: 5px;
+    padding: 2px 7px;
+    color: var(--teal-dim);
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+
+  footer {
+    margin-top: 56px;
+    text-align: center;
+    padding-top: 24px;
+    border-top: 1px solid var(--line-soft);
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  footer a { color: var(--teal-dim); text-decoration: none; border-bottom: 1px dashed rgba(94, 234, 212, 0.4); transition: color 0.2s ease, border-color 0.2s ease; }
+  footer a:hover { color: var(--teal); border-color: var(--teal); }
+
+  @media (max-width: 560px) {
+    .wrap { padding: 28px 14px 48px; }
+    .card { padding: 24px 18px; }
+    .buy { width: 100%; padding: 16px 20px; text-align: center; }
+    .features li { font-size: 13px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rise { opacity: 1; transform: none; animation: none; }
+    html { scroll-behavior: auto; }
+  }
+</style>
+</head>
+<body>
+
+<div class="grid-bg" aria-hidden="true"></div>
+<div class="scanlines" aria-hidden="true"></div>
+<div class="glow-orb teal" aria-hidden="true"></div>
+<div class="glow-orb blue" aria-hidden="true"></div>
+
+<main class="wrap">
+
+  <!-- hero: terminal frame with cover art -->
+  <section class="term rise" aria-label="entheai Backer">
+    <div class="term-bar">
+      <span class="term-dot r"></span>
+      <span class="term-dot y"></span>
+      <span class="term-dot g"></span>
+      <span class="term-path">~ <b>entheai</b> --tier backer</span>
+    </div>
+    <div class="term-body">
+      <img src="assets/marketing/backer-cover.png"
+           alt="entheai Backer — own your infrastructure, local-first"
+           width="1280" height="720">
+    </div>
+  </section>
+
+  <!-- headline -->
+  <header class="headline rise">
+    <span class="eyebrow">one-time tier &middot; no subscription</span>
+    <h1>entheai <span class="accent">Backer</span></h1>
+    <p class="tagline">
+      Own your infrastructure. Local-first, terminal-native, runs <b>100% on your machine</b>.
+      One payment, yours forever — the MIT source and public builds stay free.
+    </p>
+  </header>
+
+  <!-- price card -->
+  <section class="card rise" aria-label="Backer tier details">
+    <div class="price-row">
+      <span class="price">€9.99</span>
+      <span class="price-sub">one-time payment &middot; <b>yours forever</b></span>
+    </div>
+
+    <ul class="features">
+      <li><span class="tick">✓</span><span><b>Bleeding-edge beta builds</b> + <code>--beta</code> channel</span></li>
+      <li><span class="tick">✓</span><span><b>Roadmap voting</b> + priority issue triage</span></li>
+      <li><span class="tick">✓</span><span><b>One-time payment</b> — yours forever</span></li>
+      <li><span class="tick">✓</span><span>Runs <b>100% on your machine</b></span></li>
+      <li><span class="tick">✓</span><span><b>Named Backer role</b></span></li>
+    </ul>
+
+    <div class="buy-wrap">
+      <!-- TODO: paste real Stripe Payment Link URL here -->
+      <a class="buy" href="https://buy.stripe.com/REPLACE_WITH_YOUR_PAYMENT_LINK" rel="noopener">
+        Buy now &mdash; €9.99 <span class="kbd">[ one-time ]</span>
+      </a>
+    </div>
+
+    <div class="note">
+      <b>Read this before buying.</b> This is an entitlement, not governance.
+      Buying does <span class="warn">NOT</span> grant write access to the entheai repository —
+      collaborator rights stay invite + code-review gated. The MIT license and public source remain free.
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section class="faq rise" aria-label="Frequently asked questions">
+    <p class="faq-title">FAQ</p>
+
+    <details>
+      <summary>How do I activate my key?</summary>
+      <p>After checkout you land on the claim page with your <code>session_id</code> in the URL.
+      Your key is fetched from <code>/api/license/claim</code> and shown in a box — copy it, then run
+      <code>entheai activate ENTH-XXXX-XXXX-XXXX-XXXX</code> once in your terminal. Done.</p>
+    </details>
+
+    <details>
+      <summary>Is there a subscription?</summary>
+      <p>No. This is a single one-time payment of <code>€9.99</code>. No renewal, no recurring charge,
+      no account required to keep what you paid for.</p>
+    </details>
+
+    <details>
+      <summary>What happens if I lose my key?</summary>
+      <p>Keys are tied to the email used at checkout. If you lose yours, reach out via entheai.com and
+      it will be re-issued once the purchase is verified. Until then, the free MIT builds keep working.</p>
+    </details>
+  </section>
+
+  <footer class="rise">
+    <a href="https://entheai.com/">← back to entheai.com</a> &nbsp;&middot;&nbsp; MIT license &middot; runs on your machine
+  </footer>
+
+</main>
+
+</body>
+</html>

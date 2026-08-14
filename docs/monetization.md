@@ -1,9 +1,9 @@
 # entheai monetization + launch plan
 
-Status: proposal — review before any code lands.
-Scope: backer tier (one-time purchase) gating bleeding-edge beta access, idea
-submission/roadmap influence, and issue priority. **No repo write access is ever
-sold.**
+Status: in progress — payment rail switched to Stripe direct (Gumroad rejected
+Hungary payout details; see §3). Backer tier (one-time purchase) gating
+bleeding-edge beta access, idea submission/roadmap influence, and issue
+priority. **No repo write access is ever sold.**
 
 ---
 
@@ -29,63 +29,80 @@ convenience/service on top, not a license change.
 
 ## 2. Pricing
 
-- **Recommendation:** `$9.99` one-time (parity with Scape), with an optional
-  `$19.99 "Supporter"` tier later (direct line to founders, shape roadmap).
-- **Decision needed:** final price + whether to ship a Supporter tier at launch.
-  Suggest: launch with one tier only; add Supporter once backers exist.
+- **Price:** `€9.99` one-time. Priced in EUR to settle cleanly to a Hungarian
+  IBAN (HUF is zero-decimal for payouts; EUR/HUF avoids Stripe FX conversion
+  fees). Optionally a `$19.99 "Supporter"` tier later.
+- **Currency note:** customers are charged in EUR; the seller's Stripe account
+  settles in HUF to a Hungarian bank (IBAN). No Gumroad-style `$100` minimum —
+  Stripe's minimum is ~one base unit and the seller chooses the schedule.
 
-## 3. Distribution + payment
+## 3. Distribution + payment — **Stripe direct**
 
-- **Payment/license issuance:** Gumroad (recommended) or Paddle.
-  - *Gumroad:* simplest; free license-verify endpoint
-    (`POST /v2/licenses/verify`), no secret needed server-side to verify.
-  - *Paddle:* better for a software vendor with global VAT/sales-tax handling,
-    but verify requires a Paddle API key (secret) on the server.
-- **Delivery:** Gumroad/Paddle deliver a license key (and can host the beta
-  binary behind the purchase). Stable public releases stay on GitHub Releases +
-  Homebrew cask as today.
-- **Decision needed:** Gumroad vs Paddle. Default Gumroad for launch speed.
+**Gumroad was dropped.** Its payout partner (Stripe) rejected the Hungary
+payout details: "LLC" is not a valid Hungarian entity type, the bank-account
+name mismatched the (bogus) business name, and DOB year was missing. Hungary is
+a mandatory bank-payout country (no PayPal escape hatch) and publishing is
+blocked until payout validates. The seller already has a Stripe account, so the
+plan switched to Stripe direct.
+
+- **Checkout:** Stripe Payment Link (hosted checkout) for a one-time product,
+  price `999` in `eur` (minor units). Button on `public/back.html` links to it.
+- **License issuance:** Stripe has no license-key primitive. A webhook on
+  `checkout.session.completed` (only when `payment_status == "paid"`) generates
+  a key and stores it in KV. This is the source of truth.
+- **No Stripe API keys in the Worker.** The `whsec_…` webhook signing secret is
+  the only trust anchor; the Worker never calls the Stripe API. (Minimal
+  attack surface.)
+- **Seller setup (Stripe dashboard):** create a one-time Product/Price in EUR
+  (`€9.99`), create a Payment Link (copy URL into `public/back.html`), create a
+  Webhook endpoint `https://entheai.com/api/stripe/webhook` listening for
+  `checkout.session.completed`, copy its `whsec_` secret, then
+  `wrangler secret put STRIPE_WEBHOOK_SECRET` and
+  `wrangler kv namespace create LICENSES` (paste id into `wrangler.jsonc`).
+- Stable public releases stay on GitHub Releases + Homebrew cask as today.
 
 ## 4. License verification architecture
 
-Reuse the existing Cloudflare Worker (`src/worker.mjs`), which already runs an
-authenticated endpoint (`/api/entropy`). Add a sibling:
+Reuse the existing Cloudflare Worker (`src/worker.mjs`). Flow:
 
 ```
-entheai CLI                       Cloudflare Worker              Gumroad/Paddle
-  entheai activate <key> ────▶  POST /api/license/verify ──▶  verify API
-       │  (stores local cred)         │  (cache in KV)              │
-       ◀───────────────────  {ok, entitlements, grace} ◀────────────┘
+buyer → Stripe Payment Link → pays → checkout.session.completed
+        webhook → Worker → verify whsec_ signature → generate ENTH- key → KV
+        buyer lands on /back/claim?session_id=… → GET /api/license/claim → key
+entheai CLI
+  entheai activate <key> ────▶ POST /api/license/verify ──▶ KV lookup
+       │  (stores key hash)        ◀────────────── {ok, entitlements, backer}
+       └── ~/.config/entheai/backer.json (sha256 hash, NOT raw key)
 ```
 
-- **`POST /api/license/verify`** (Worker): body `{key}`; the Worker calls
-  Gumroad's `/v2/licenses/verify` (or Paddle's verify API), caches a
-  positive result in KV (TTL, e.g. 7 days) to cut upstream calls, returns
-  `{ ok, entitlements: ["beta"], backer: true }` or `401`-style denial.
-  No key is logged; no key is stored server-side beyond the KV cache.
-- **`entheai activate <key>`** (CLI): calls the endpoint, stores a local
-  credential (`~/.config/entheai/backer.json` — store the *key hash*, not the
-  raw key) with a signed/local grace window so **offline use never bricks**
-  (a one-time buyer owns it forever, Scape-style). Grace default e.g. 30 days
-  between online re-checks; fail-open to last-known-good.
-- **Anti-abuse:** rate-limit the endpoint (Worker: per-IP + per-key); the
-  activation path needs no billing secret on the client.
+- **License key format:** `ENTH-` + 16 chars from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`
+  (no 0/O/1/I/L), 4 groups of 4: `ENTH-XXXX-XXXX-XXXX-XXXX`.
+- **KV (binding `LICENSES`):** `license:<key>` → `{session_id, email, product,
+  created_at, entitlements:["beta"]}` (no TTL — lifetime); `session:<id>` → key
+  (idempotency + claim lookup).
+- **Endpoints:** `POST /api/stripe/webhook` (signature-verified), `POST
+  /api/license/verify` (`{ok, entitlements}` or 401), `GET /api/license/claim?
+  session_id=…` (returns the key), `GET /api/releases?channel=beta` (manifest
+  seam, reads KV `releases:beta`).
+- **`entheai activate <key>`** (CLI): verifies, stores `backer.json` holding the
+  key's sha256 hash (never the raw key). Offline-fail-open: a valid local
+  credential is trusted without re-check.
+- **Anti-abuse:** webhook is signature-gated; `verify` returns only booleans +
+  entitlements, never raw key material it didn't issue.
 
 ## 5. Beta channel
 
 GitHub pre-releases on a *public* repo are public, so gating must be in-app:
 
-- Single binary for both tiers. `--beta` (and the pre-release install path) is
-  unlocked by an active backer credential; otherwise it falls back to a clear
+- Single binary for both tiers. `--beta` is unlocked by an active backer
+  credential; otherwise it falls back to a clear
   `become a backer → entheai.com/back` message.
-- **Release manifest:** `GET /api/releases?channel=beta` on the Worker returns
-  the current beta version + download URL, so `entheai update --beta` can
-  self-update backers to bleeding-edge builds.
+- **Release manifest:** `GET /api/releases?channel=beta` returns the current
+  beta version + download URL, so `entheai update --beta` can self-update
+  backers to bleeding-edge builds. (`// # Stream N lands here:` marks where
+  beta-gated behavior attaches.)
 - Public stable channel unchanged: `vX.Y.Z` tags → GitHub Release + cask.
   Beta channel uses `vX.Y.Z-beta.N` tags, surfaced only via the gated manifest.
-- **Decision needed:** beta builds delivered via Gumroad-hosted binary vs
-  GitHub pre-release + gated manifest. Default: GitHub pre-release (keeps CI
-  in `release.yml`) + gated manifest (the manifest is the gate).
 
 ## 6. Idea submission + roadmap voting
 
@@ -96,40 +113,37 @@ Keep it low-infra for launch:
 - **Site roadmap page** (`public/roadmap.html`) reading a small JSON/KV list of
   open ideas; a `/ideas` submission form posts to the Worker (reuse the
   authenticated-write pattern) so backers can file ideas from the site.
-- **Decision needed:** Discussions-only vs Discussions + site form. Default:
-  Discussions for launch; site form in a follow-up.
 
 ## 7. Governance + security guardrails (non-negotiable)
 
 - No write access is sold. `entropy-om/entheai` collaborator rights remain
-  invite + PR-review gated. Document this in the checkout page and repo
-  `CONTRIBUTING.md`.
+  invite + PR-review gated. Documented on the checkout page.
 - License keys never logged; CLI stores a hash, not the raw key.
-- Worker endpoint is rate-limited and never returns the raw key.
-- MIT license untouched; add a `BACKING.md` (or section in README) explaining
-  what the paid tier is and is *not* (no license change, no governance sale).
-- Gumroad/Paddle secret (if any, for Paddle) lives in Cloudflare
-  (`wrangler secret put`) + the deploy env, never in-repo.
+- Webhook is signature-verified (`Stripe-Signature` HMAC-SHA256, 5-min replay
+  window); no Stripe API keys live in the Worker at all.
+- MIT license untouched. The `back` page states the entitlement-vs-governance
+  line in plain language.
+- Secrets (`STRIPE_WEBHOOK_SECRET`) live in Cloudflare (`wrangler secret put`),
+  never in-repo.
 
-## 8. Build phases (smallest-first, each independently shippable)
+## 8. Build phases
 
-| Phase | Work | Touches |
+| Phase | Work | Status |
 |---|---|---|
-| 0 — Storefront | Gumroad/Paddle product + `entheai.com/back` page + checkout | `public/`, deploy |
-| 1 — Verify | `/api/license/verify` Worker endpoint + `entheai activate` CLI + local cred | `src/worker.mjs`, `crates/config`/CLI |
-| 2 — Beta | `--beta` flag + gated `/api/releases?channel=beta` manifest + `update --beta` | CLI, Worker, `release.yml` beta tags |
-| 3 — Roadmap | GitHub Discussions + `backer` label + roadmap page | repo settings, `public/` |
-| 4 — Launch | cask version pin, `CHANGELOG.md`, announce | `Casks/entheai.rb`, docs |
+| 0 — Storefront | `public/back.html` + `public/back/claim.html` + cover/thumbnail art | in progress |
+| 1 — Verify | `/api/stripe/webhook` + `/api/license/verify` + `/api/license/claim` + `entheai activate` + local cred | in progress |
+| 2 — Beta | `--beta` flag + `/api/releases?channel=beta` manifest + `update --beta` | pending |
+| 3 — Roadmap | GitHub Discussions + `backer` label + roadmap page | pending |
+| 4 — Launch | Payment Link live, `whsec_` secret + KV provisioned, cask pin, announce | pending |
 
-## 9. Open checkpoints (verify before coding)
+## 9. Open checkpoints
 
-- [ ] Confirm the `release` workflow is actually live (VERSIONING.md says
-      "paused"; `release.yml` has no `if: false` — reconcile the two).
-- [ ] List the 7 release secrets from `human-task.md`; add the new
-      Gumroad/Paddle + Cloudflare secrets to that doc.
-- [ ] Pick Gumroad vs Paddle (default Gumroad).
-- [ ] Pick price (default `$9.99`) + Supporter-tier now/later.
-- [ ] Decide beta delivery (default: GitHub pre-release + gated manifest).
+- [ ] Seller: create Stripe Product/Price in EUR (€9.99) + Payment Link → paste URL into `public/back.html`.
+- [ ] Seller: create Stripe Webhook endpoint → copy `whsec_` → `wrangler secret put STRIPE_WEBHOOK_SECRET`.
+- [ ] Seller: `wrangler kv namespace create LICENSES` → paste id into `wrangler.jsonc`.
+- [ ] Confirm `release` workflow is live (VERSIONING.md says "paused"; `release.yml` has no `if: false`).
+- [ ] Test end-to-end in Stripe test mode (card `4242…`, `stripe trigger checkout.session.completed`) before live.
+- [ ] Confirm Hungary payout settlement currency (HUF) + add EUR bank account or accept FX, if needed.
 
 ## 10. Success metrics
 
