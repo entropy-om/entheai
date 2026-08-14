@@ -61,6 +61,10 @@ async function main() {
     "line_items[0][price_data][product_data][name]": PRODUCT_NAME,
     "line_items[0][price_data][unit_amount]": String(UNIT_AMOUNT),
     "line_items[0][quantity]": "1",
+    // This account has Managed Payments on by default, which requires a
+    // product tax_code for inline price_data. We're selling a simple digital
+    // key, so disable Managed Payments on this link rather than classify it.
+    "managed_payments[enabled]": "false",
     "after_completion[type]": "redirect",
     "after_completion[redirect][url]": CLAIM_URL,
   });
