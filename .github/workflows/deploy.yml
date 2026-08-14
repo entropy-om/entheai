@@ -16,9 +16,24 @@ on:
     - cron: "0 * * * *"
   workflow_dispatch: {}
 
+# The runner went offline on 2026-08-11 and the hourly cron kept queueing: by
+# the time anyone looked there were 16 identical builds waiting, each ending in
+# its own wrangler deploy of the same content. Only the newest deploy is ever
+# worth running, so supersede the rest instead of letting an outage turn into a
+# backlog.
+concurrency:
+  group: deploy-site
+  cancel-in-progress: true
+
 jobs:
   deploy:
-    runs-on: [self-hosted, dev-cx53]
+    # Was [self-hosted, dev-cx53]. That runner registration has been offline
+    # with no service behind it on the box, so every hourly cron since
+    # 2026-08-11 queued instead of running — 16 deep by the time it was noticed.
+    # Nothing in this job is host-specific: checkout, npm, and a wrangler deploy
+    # driven by a repo secret. Running it on a hosted runner removes the single
+    # point of failure rather than re-registering one.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: main
     permissions:
       contents: read

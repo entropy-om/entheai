@@ -5,7 +5,7 @@
 # Add a skill from the web (tries <origin>/.well-known/skills.json, then /llms.txt,
 # then the page), then exit — writes skills/<slug>/SKILL.md, live on the next run:
 #   entheai --skills add https://docs.stripe.com
-default_model = "openrouter/deepseek/deepseek-chat"  # DeepSeek via OpenRouter (direct key not provisioned)
+default_model = "openai/gpt-4o-mini"
 
 # DeepSeek direct API. Models: deepseek-chat (V3), deepseek-reasoner (R1).
 [providers.deepseek]
@@ -16,6 +16,11 @@ api_key_env = "DEEPSEEK_API_KEY"
 [providers.openrouter]
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
+
+# OpenAI direct API — e.g. --model "openai/gpt-4o"
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
 
 # Hugging Face Inference router (OpenAI-compatible); model ids are HF repo paths.
 # e.g. --model "hf/deepseek-ai/DeepSeek-V3-0324"
@@ -54,7 +59,7 @@ kind = "ternary"
 # `orchestrator`, then `default_model`, when a role is unset). Tier freely across
 # the providers above — cheap/local models for exploration, stronger for review.
 [router]
-orchestrator = "vaked/qwen3-coder:30b"   # coder.vaked.dev keyless free tier (OpenRouter credits exhausted)
+orchestrator = "openai/gpt-4o-mini"
 max_parallel = 4                         # cap on concurrently-running sub-agents
 # max_turns = 200                        # per-task tool-dispatch round cap (default 200; UNLIMITED under --yolo)
 
@@ -79,7 +84,7 @@ agy_model = "gemini-3.6-flash-high"    # model agy runs the coders on
 # (~/.entheai/current.env): VALYU_API_KEY, WORLDMONITOR_API_KEY.
 [current]
 enabled = true
-topics = ["AI coding agents and LLM security this week"]  # one Valyu request per topic per pulse
+topics = ["AI coding agents and LLM security this week", "multi-agent reasoning architectures"]  # one Valyu request per topic per pulse
 refresh_minutes = 120               # auto-pulse cadence in the TUI (36 WM req/day)
 # The genetic corpus — how entheai was born. The ultrawhale dogfeed loop's
 # self-generated Q&A pairs, gated on HuggingFace (HF_TOKEN from the env). She
@@ -218,30 +223,33 @@ command = "rmcp-sensors"
 args = []
 
 [agents.explore]
-model = ["deepseek/deepseek-chat"] # local instead: ["osaurus/<your-local-model>"]
+model = ["openai/gpt-4o-mini"]
 
 [agents.coder]
-model = ["deepseek/deepseek-chat"]
+model = ["openai/gpt-4o-mini"]
 
 [agents.reviewer]
-model = ["deepseek/deepseek-reasoner"] # R1 — stronger reasoning for review
+model = ["openai/gpt-4o"]
 
 [agents.test]
-model = ["deepseek/deepseek-chat"]
+model = ["openai/gpt-4o-mini"]
 
 [agents.docs]
-model = ["deepseek/deepseek-chat"]
+model = ["openai/gpt-4o-mini"]
 
-# ── The Oracle (fused-fleet adjudication seam — steps 1-2: advisory, disabled) ──
-# Merges the assistant fleet (hermes / openclaw / agentfield) into entheai as
-# one adjudication role that dances with the fan-out orchestrator. Spec:
-# docs/superpowers/specs/2026-08-06-entheai-oracle-ebpf-sphere.md
-# [oracle]
-# enabled = false          # OFF = today's fan-out behavior, unchanged
-# coders = "local"         # "local" (darwin) | "fleet" (Linux, for the eBPF sphere)
-# gate = "advisory"        # "advisory" (log-only) | "block" (high-confidence Reject/Rework)
-# block_confidence = 0.8   # only Reject/Rework ≥ this may block under gate="block"
-# model = "vaked/qwen3-coder:30b"
+# ── The Oracle (fused-fleet adjudication seam) ──────────────────────────────────
+[oracle]
+enabled = true
+coders = "local"
+gate = "advisory"
+block_confidence = 0.8
+model = "openai/gpt-4o-mini"
+openclaw_url = "https://do-openclaw.tail2870dc.ts.net"
+
+# OpenClaw Gateway on DigitalOcean Droplet (Tailnet-only HTTPS ingress)
+[providers.openclaw]
+base_url = "https://do-openclaw.tail2870dc.ts.net/v1"
+api_key_env = "OPENCLAW_GATEWAY_TOKEN"
 
 # coder.vaked.dev — a premium tier (DeepSeek-V4-Flash-0731) + free (qwen3-coder)
 [providers.coder]

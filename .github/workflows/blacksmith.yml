@@ -13,7 +13,11 @@ concurrency:
 jobs:
   build_and_test:
     name: Rust build + clippy + test (quantum + oracle + fusion)
-    runs-on: blacksmith-4vcpu-ubuntu-2204
+    # Was ubuntu-2204, which sat queued for hours on 2026-08-12 while every
+    # 2404 workflow in this repo ran fine. 2204 is not deprecated (it ran on
+    # 08-10) but it is not being served reliably; the rest of the repo is on
+    # 2404 already, so this is now the one label instead of the odd one out.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v7
 
@@ -36,6 +40,18 @@ jobs:
             target
           key: blacksmith-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: blacksmith-cargo-
+
+      # Same list peter-layer.yml already installs. Without it the whole
+      # workspace compiles and then rust-lld fails on -lX11 -lXss -lspeechd
+      # -lasound, so the run burns a full build before failing at the link step.
+      - name: Linux build dependencies
+        run: |
+          # libasound2-dev: rodio/cpal (radio) · libspeechd-dev: tts (/speak) ·
+          # X11 family: the idle-sensor chain (x11/XScreenSaver/Xi/Xtst).
+          sudo apt-get update -qq && sudo apt-get install -y -qq \
+            libasound2-dev libspeechd-dev \
+            libx11-dev libxss-dev libxi-dev libxtst-dev \
+            pkg-config
 
       - name: Build
         run: |
