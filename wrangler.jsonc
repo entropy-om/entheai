@@ -32,8 +32,13 @@
 		// (NOT /gallery — that's served directly by the assets pretty-URL handler;
 		// running the Worker for it would rewrite → /gallery.html → 307 → /gallery
 		// → a redirect loop). Every other asset still serves directly from the edge.
+		// The /api/* routes (entropy beacon + Stripe webhook + license endpoints)
+		// must also run the Worker first — there are no static assets under /api/,
+		// and without this the assets pipeline 404s/405s them before the Worker sees
+		// them.
 		"run_worker_first": [
-			"/"
+			"/",
+			"/api/*"
 		]
 	},
 	"observability": {
