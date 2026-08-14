@@ -40,6 +40,9 @@ uuid = { version = "1", features = ["v4"] }
 sentry = { workspace = true }
 dotenvy = { workspace = true }
 log = { version = "0.4", features = ["std"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+sha2 = { workspace = true }
 
 [features]
 # `desktop` (default) enables the in-TUI audio radio (via the TUI's own feature).
