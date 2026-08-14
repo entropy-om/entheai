@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use adk_rust::agent::LlmAgentBuilder;
 use adk_rust::runner::Runner;
-use adk_rust::session::{CreateRequest, InMemorySessionService, SessionService};
+use adk_rust::session::{CreateRequest, DeleteRequest, InMemorySessionService, SessionService};
 use adk_rust::Content;
 use entheai_config::ProviderConfig;
 use entheai_permission::{Policy, Prompter};
@@ -25,10 +25,35 @@ type MemoryCtx = (
     Option<tokio::sync::mpsc::UnboundedSender<crate::AgentEvent>>,
 );
 
+/// Clamps `[inference].max_tokens` to `i32::MAX` before the cast, so an
+/// oversized config value doesn't wrap negative in `max_output_tokens`
+/// (which takes an `i32`).
+fn clamp_max_tokens(max_tokens: u32) -> i32 {
+    max_tokens.min(i32::MAX as u32) as i32
+}
+
 pub struct EntheaiAgent {
     runner: Runner,
     sessions: Arc<dyn SessionService>,
     app_name: String,
+    /// Per-run session markers used by the memory before-model callback
+    /// (`Some` only for memory-aware agents); pruned in [`Self::cleanup_run`]
+    /// so the set doesn't grow one uuid per run on long-lived agent reuse.
+    injected_sessions: Option<Arc<tokio::sync::Mutex<HashSet<String>>>>,
+    /// Per-event-gap idle timeout applied while consuming a run's stream.
+    /// Derived from `[inference].request_timeout_secs` (default 120s). A
+    /// stalled provider yields an error instead of hanging the caller forever.
+    request_timeout: std::time::Duration,
+}
+
+impl EntheaiAgent {
+    /// The per-event idle timeout used when consuming a run's stream. Stream
+    /// consumption applies `2×` this value as the gap between events (a tool
+    /// call emits nothing for up to `run_shell`'s 120s cap, so the bare value
+    /// is too tight; see `run_to_text` / `event_bridge::run_with_events`).
+    pub fn request_timeout(&self) -> std::time::Duration {
+        self.request_timeout
+    }
 }
 
 impl EntheaiAgent {
@@ -90,11 +115,15 @@ impl EntheaiAgent {
     /// retrieval brief). See `crate::memory_callbacks` and
     /// `crate::event_bridge` for what is and isn't covered.
     ///
-    /// `inference.request_timeout_secs`/`.retries` have no adk-rust 1.0.0
-    /// `OpenAIClient` equivalent (confirmed: it hardcodes `reqwest::Client::new()`
-    /// with no timeout/retry builder surface) and are intentionally NOT
-    /// applied — a known, accepted gap. `temperature`/`max_tokens` carry over
-    /// via `LlmAgentBuilder::temperature`/`max_output_tokens`.
+    /// `inference.request_timeout_secs` has no adk-rust 1.0.0 `OpenAIClient`
+    /// equivalent (confirmed: it hardcodes `reqwest::Client::new()` with no
+    /// timeout surface), so it is NOT applied at the client layer. It IS
+    /// applied at stream consumption as a per-event-gap idle timeout (see
+    /// [`Self::request_timeout`]) so a stalled provider can't hang the caller
+    /// forever. `.retries` is likewise not applied — a retried run would
+    /// re-execute tools (side effects), so it stays intentionally inert.
+    /// `temperature`/`max_tokens` carry over via
+    /// `LlmAgentBuilder::temperature`/`max_output_tokens`.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_memory(
         model_spec: &str,
@@ -196,7 +225,7 @@ impl EntheaiAgent {
             builder = builder.temperature(temperature);
         }
         if let Some(max_tokens) = inference.max_tokens {
-            builder = builder.max_output_tokens(max_tokens as i32);
+            builder = builder.max_output_tokens(clamp_max_tokens(max_tokens));
         }
         for tool in registry.to_tools() {
             let adapter = crate::adk_tool_adapter::AdkToolAdapter::new(
@@ -206,18 +235,23 @@ impl EntheaiAgent {
             );
             builder = builder.tool(Arc::new(adapter));
         }
+        let mut injected_sessions: Option<Arc<tokio::sync::Mutex<HashSet<String>>>> = None;
         if let Some((memory, pp, scope, event_tx)) = memory_ctx {
-            let injected_sessions = Arc::new(tokio::sync::Mutex::new(HashSet::new()));
+            let injected = Arc::new(tokio::sync::Mutex::new(HashSet::new()));
             builder = builder
                 .before_model_callback(crate::memory_callbacks::before_model_retrieval_callback(
                     Arc::clone(&memory),
                     pp.clone(),
-                    injected_sessions,
+                    Arc::clone(&injected),
                     event_tx,
                 ))
                 .after_tool_callback_full(crate::memory_callbacks::after_tool_evidence_callback(
                     scope, memory, pp,
                 ));
+            // Kept on the agent so `cleanup_run` can drop the per-session
+            // marker once a run's stream has been consumed (see
+            // `run_to_text` and `event_bridge::run_with_events`).
+            injected_sessions = Some(injected);
         }
         let agent: Arc<dyn adk_rust::Agent> = Arc::new(builder.build()?);
 
@@ -233,6 +267,8 @@ impl EntheaiAgent {
             runner,
             sessions,
             app_name,
+            injected_sessions,
+            request_timeout: std::time::Duration::from_secs(inference.request_timeout_secs),
         })
     }
 
@@ -240,7 +276,8 @@ impl EntheaiAgent {
     /// turns — for a caller that needs to carry conversation history forward
     /// (e.g. an interactive chat), use [`Self::run_with_history`] instead.
     pub async fn run(&self, user_message: &str) -> anyhow::Result<adk_rust::EventStream> {
-        self.run_with_history(&[], user_message).await
+        let (_session_id, stream) = self.run_with_history(&[], user_message).await?;
+        Ok(stream)
     }
 
     /// Streaming entry point that seeds a fresh session with prior
@@ -252,11 +289,15 @@ impl EntheaiAgent {
     /// implementation wasn't traceable in the vendored source) that appended
     /// events are read back into `LlmRequest.contents` on the next
     /// `run_str` call for the same session, exactly like real prior turns.
+    ///
+    /// Returns the fresh per-run `session_id` alongside the stream so the
+    /// caller can release the session (via [`Self::cleanup_run`]) once the
+    /// stream has been fully consumed.
     pub async fn run_with_history(
         &self,
         prior_turns: &[(String, String)],
         user_message: &str,
-    ) -> anyhow::Result<adk_rust::EventStream> {
+    ) -> anyhow::Result<(String, adk_rust::EventStream)> {
         let session_id = uuid::Uuid::new_v4().to_string();
         self.sessions
             .create(CreateRequest {
@@ -279,15 +320,24 @@ impl EntheaiAgent {
             self.sessions.append_event(&session_id, ev).await?;
         }
 
-        let stream = self
+        let stream = match self
             .runner
             .run_str(
                 "entheai",
                 &session_id,
                 Content::new("user").with_text(user_message),
             )
-            .await?;
-        Ok(stream)
+            .await
+        {
+            Ok(stream) => stream,
+            Err(e) => {
+                // The session was created above; drop it so a failed start
+                // doesn't leave it behind in the session service.
+                self.cleanup_run(&session_id).await;
+                return Err(e.into());
+            }
+        };
+        Ok((session_id, stream))
     }
 
     /// Test/CLI convenience: collect the stream into the final assistant text.
@@ -299,28 +349,97 @@ impl EntheaiAgent {
         use adk_rust::Part;
         use futures::StreamExt;
 
-        let mut stream = self.run(user_message).await?;
+        let (session_id, mut stream) = self.run_with_history(&[], user_message).await?;
         let mut text = String::new();
-        while let Some(ev) = stream.next().await {
-            let ev = ev?;
-            if !ev.llm_response.partial {
+        // Partial (streamed-delta) accumulation for providers that stream only
+        // partials and never emit a final non-partial text event (Ollama-backed
+        // free tiers). Mirrors `event_bridge::run_with_events`; reset at every
+        // turn boundary so it only holds the LAST turn's stream.
+        let mut streamed = String::new();
+        let mut stream_err: Option<anyhow::Error> = None;
+        // Per-event-gap idle timeout: 2× the configured value (a tool call
+        // emits nothing for up to run_shell's 120s cap, so the bare value is
+        // too tight). Any event resets the timer.
+        let idle = self.request_timeout.saturating_mul(2);
+        loop {
+            let next = match tokio::time::timeout(idle, stream.next()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    stream_err = Some(anyhow::anyhow!(
+                        "provider stream idle timeout after {idle:?}"
+                    ));
+                    break;
+                }
+            };
+            let Some(ev) = next else { break };
+            let ev = match ev {
+                Ok(ev) => ev,
+                Err(e) => {
+                    stream_err = Some(e.into());
+                    break;
+                }
+            };
+            if ev.llm_response.partial {
                 if let Some(content) = ev.content() {
-                    let has_calls = content
-                        .parts
-                        .iter()
-                        .any(|p| matches!(p, Part::FunctionCall { .. }));
-                    let has_results = content
-                        .parts
-                        .iter()
-                        .any(|p| matches!(p, Part::FunctionResponse { .. }));
-                    let joined: String = content.parts.iter().filter_map(|p| p.text()).collect();
-                    if !joined.is_empty() && !has_calls && !has_results {
-                        text = joined;
+                    for part in &content.parts {
+                        if let Some(t) = part.text() {
+                            streamed.push_str(t);
+                        }
                     }
+                }
+                continue;
+            }
+            if let Some(content) = ev.content() {
+                let has_calls = content
+                    .parts
+                    .iter()
+                    .any(|p| matches!(p, Part::FunctionCall { .. }));
+                let has_results = content
+                    .parts
+                    .iter()
+                    .any(|p| matches!(p, Part::FunctionResponse { .. }));
+                let joined: String = content.parts.iter().filter_map(|p| p.text()).collect();
+                if !joined.is_empty() && !has_calls && !has_results {
+                    text = joined;
+                    streamed.clear(); // a real final answer arrived — drop partials
+                } else if has_calls || has_results {
+                    // Turn boundary: partials before this were thinking-text
+                    // ahead of a tool call/round, not the final answer.
+                    streamed.clear();
                 }
             }
         }
+        self.cleanup_run(&session_id).await;
+        if let Some(e) = stream_err {
+            return Err(e);
+        }
+        // Fallback: providers that stream only partial deltas and never emit a
+        // final non-partial text event (see `streamed` above).
+        if text.is_empty() && !streamed.is_empty() {
+            text = streamed;
+        }
         Ok(text)
+    }
+
+    /// Releases a run's per-run session state once its stream has been fully
+    /// consumed (or failed): drops the `injected_sessions` before-model marker
+    /// (memory path) and deletes the session from the session service. Every
+    /// run creates a fresh uuid session, so without this the session service
+    /// and the marker set grow without bound on long-lived agent reuse.
+    /// Called from [`Self::run_to_text`] and `crate::event_bridge`'s
+    /// `run_with_events`.
+    pub(crate) async fn cleanup_run(&self, session_id: &str) {
+        if let Some(injected) = &self.injected_sessions {
+            injected.lock().await.remove(session_id);
+        }
+        let _ = self
+            .sessions
+            .delete(DeleteRequest {
+                app_name: self.app_name.clone(),
+                user_id: "entheai".to_string(),
+                session_id: session_id.to_string(),
+            })
+            .await;
     }
 }
 
@@ -355,6 +474,16 @@ mod tests {
         async fn confirm(&mut self, _tool: &str, _args: &str) -> entheai_permission::Grant {
             entheai_permission::Grant::Allow
         }
+    }
+
+    // Regression: `max_tokens` is a `u32` in config but `max_output_tokens`
+    // takes an `i32` — an oversized value used to wrap negative on the cast.
+    #[test]
+    fn max_tokens_is_clamped_to_i32_max_before_cast() {
+        assert_eq!(clamp_max_tokens(25), 25);
+        assert_eq!(clamp_max_tokens(i32::MAX as u32), i32::MAX);
+        assert_eq!(clamp_max_tokens(i32::MAX as u32 + 1), i32::MAX);
+        assert_eq!(clamp_max_tokens(u32::MAX), i32::MAX);
     }
 
     #[tokio::test]

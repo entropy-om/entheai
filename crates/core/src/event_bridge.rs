@@ -31,6 +31,18 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::entheai_agent::EntheaiAgent;
 use crate::{truncate_preview, AgentEvent};
 
+/// True when `result` matches `AdkToolAdapter`'s denial/error shape: a bare
+/// `{"error": ...}` object (an object whose only key is `error`). Tool data
+/// that merely *contains* an `error` field alongside other keys (e.g.
+/// `{"error":"x","rows":[...]}`) is legitimate output and must not be
+/// recorded as a denial.
+fn is_denial_shape(result: &serde_json::Value) -> bool {
+    matches!(
+        result,
+        serde_json::Value::Object(map) if map.len() == 1 && map.contains_key("error")
+    )
+}
+
 /// Runs `agent` against `user_message`, forwarding live progress as
 /// `AgentEvent`s on `event_tx` and — when `memory`/`pp` are given — recording
 /// the final answer's trajectory and raw transcript once the run completes.
@@ -48,7 +60,7 @@ pub async fn run_with_events(
 ) -> anyhow::Result<String> {
     let _ = event_tx.send(AgentEvent::Thinking);
 
-    let mut stream = agent.run_with_history(prior_turns, user_message).await?;
+    let (session_id, mut stream) = agent.run_with_history(prior_turns, user_message).await?;
     let mut answer = String::new();
     // Accumulates partial (streamed-delta) text for the current turn. Some
     // OpenAI-compatible providers — notably Ollama-backed ones (`fp_ollama`,
@@ -59,15 +71,40 @@ pub async fn run_with_events(
     // this after the loop. Reset at every turn boundary (a final text answer,
     // or any tool call/result) so it only ever holds the LAST turn's stream.
     let mut streamed_text = String::new();
-    let mut transcript: Vec<(String, String)> =
-        vec![("user".to_string(), user_message.to_string())];
+    // Seed the transcript with the full conversation (prior turns + the
+    // current message) so memory records the whole exchange, not just the
+    // latest message. `prior_turns` uses the same `(role, text)` shape the
+    // transcript already carries (`"user"`/`"assistant"`).
+    let mut transcript: Vec<(String, String)> = prior_turns.to_vec();
+    transcript.push(("user".to_string(), user_message.to_string()));
     let mut tool_evidence: Vec<ToolEvidence> = Vec::new();
     // FunctionCall.id -> (name, args), consumed by the matching FunctionResponse
     // so ToolEvidence carries the args the call was actually made with.
     let mut pending_calls: HashMap<String, (String, String)> = HashMap::new();
+    // First mid-stream error, applied after the session is released below.
+    let mut stream_err: Option<anyhow::Error> = None;
+    // Per-event-gap idle timeout (2× the configured value — a tool call emits
+    // nothing for up to run_shell's 120s cap, so the bare value is too tight).
+    let idle = agent.request_timeout().saturating_mul(2);
 
-    while let Some(ev) = stream.next().await {
-        let ev = ev?;
+    loop {
+        let next = match tokio::time::timeout(idle, stream.next()).await {
+            Ok(next) => next,
+            Err(_) => {
+                stream_err = Some(anyhow::anyhow!(
+                    "provider stream idle timeout after {idle:?}"
+                ));
+                break;
+            }
+        };
+        let Some(ev) = next else { break };
+        let ev = match ev {
+            Ok(ev) => ev,
+            Err(e) => {
+                stream_err = Some(e.into());
+                break;
+            }
+        };
         let Some(content) = ev.content() else {
             continue;
         };
@@ -102,7 +139,11 @@ pub async fn run_with_events(
         } else if has_calls || has_results {
             // Turn boundary: partials streamed before this were thinking-text
             // ahead of a tool call, or a tool round — not the final answer.
+            // Also clear a prior non-partial `answer`: any later call/result
+            // turn proves that earlier text was preamble, not the real reply,
+            // so the partial-only fallback below must not return it.
             streamed_text.clear();
+            answer.clear();
         }
 
         for part in &content.parts {
@@ -130,7 +171,7 @@ pub async fn run_with_events(
                     let call_id = id
                         .clone()
                         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                    let allowed = function_response.response.get("error").is_none();
+                    let allowed = !is_denial_shape(&function_response.response);
 
                     tool_evidence.push(ToolEvidence {
                         call_id,
@@ -161,6 +202,14 @@ pub async fn run_with_events(
         transcript.push(("assistant".to_string(), streamed_text));
     }
 
+    // The run's stream is fully consumed (or failed) — release its per-run
+    // session so the session service and the `injected_sessions` marker don't
+    // grow without bound across runs on a long-lived agent.
+    agent.cleanup_run(&session_id).await;
+    if let Some(e) = stream_err {
+        return Err(e);
+    }
+
     if let Some(mem) = &memory {
         let preview = truncate_preview(&answer, 500);
         if let Err(e) = mem
@@ -171,6 +220,10 @@ pub async fn run_with_events(
         }
     }
     if let Some(p) = &pp {
+        // `ingest_transcript` returns `()` — its raw-store failure is logged
+        // inside `PromptProcessor` itself (`log::warn!` "pp ingest_transcript
+        // failed (continuing)"), the same continue-on-error contract as the
+        // `record_final_answer` branch above; nothing to handle here.
         p.ingest_transcript(&scope, &transcript, &answer).await;
     }
 
@@ -279,6 +332,27 @@ mod tests {
             25,
         )
         .expect("agent builds")
+    }
+
+    // Regression: a tool that legitimately returns error-shaped *data* (an
+    // `error` field alongside other keys) used to be recorded as denied,
+    // because any top-level `"error"` key flipped `allowed` to false. Only the
+    // adapter's actual denial shape — a bare `{"error": ...}` object — means
+    // denied.
+    #[test]
+    fn is_denial_shape_distinguishes_bare_error_from_data_containing_error() {
+        // Adapter denial/error shape: a bare error object.
+        assert!(is_denial_shape(&serde_json::json!({"error": "denied"})));
+        assert!(is_denial_shape(
+            &serde_json::json!({"error": "permission denied"})
+        ));
+        // Legitimate data that merely *contains* an `error` field.
+        assert!(!is_denial_shape(
+            &serde_json::json!({"error": "x", "rows": [1, 2, 3]})
+        ));
+        // Non-object results can never be denials.
+        assert!(!is_denial_shape(&serde_json::json!("plain text")));
+        assert!(!is_denial_shape(&serde_json::json!([{"error": "x"}])));
     }
 
     #[tokio::test]

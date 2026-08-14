@@ -1,12 +1,21 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use adk_rust::model::openai::{OpenAIClient, OpenAIConfig};
 use anyhow::{anyhow, Context};
 use entheai_config::ProviderConfig;
 
 use crate::ternary_llm::TernaryLlm;
+
+/// Process-wide cache of loaded ternary models, keyed by canonical `model_dir`.
+/// A ternary model + tokenizer is ~400 MiB of reads; the TUI rebuilds the agent
+/// every turn, so without this each turn re-loads from disk. `Arc<dyn Llm>` is
+/// `Send + Sync` (the `Llm` trait is), so a `Mutex<HashMap>` is enough.
+fn ternary_cache() -> &'static Mutex<HashMap<String, Arc<dyn adk_rust::Llm>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<dyn adk_rust::Llm>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 /// Resolve a `"<provider>/<model>"` spec (e.g. `"osaurus/qwen3-coder"`) into a
 /// live adk-rust model client, using the same `[providers.<name>]` config
@@ -54,15 +63,29 @@ fn resolve_ternary(
         "provider {provider_name:?} model_dir {} is not a directory",
         dir.display()
     );
+    // Canonicalize so the cache key is stable across equivalent path spellings
+    // (the TUI rebuilds the agent every turn with the same config string).
+    let cache_key = std::fs::canonicalize(dir)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| model_dir.clone());
+    if let Some(cached) = ternary_cache()
+        .lock()
+        .expect("ternary cache poisoned")
+        .get(&cache_key)
+    {
+        return Ok(Arc::clone(cached));
+    }
     let model = ternary::model::TernaryModel::load(dir)
         .with_context(|| format!("loading ternary model from {}", dir.display()))?;
     let tokenizer = ternary::tokenizer::ChatTokenizer::load(dir)
         .with_context(|| format!("loading tokenizer from {}", dir.display()))?;
-    Ok(Arc::new(TernaryLlm::new(
-        model,
-        tokenizer,
-        model_name.to_string(),
-    )))
+    let llm: Arc<dyn adk_rust::Llm> =
+        Arc::new(TernaryLlm::new(model, tokenizer, model_name.to_string()));
+    ternary_cache()
+        .lock()
+        .expect("ternary cache poisoned")
+        .insert(cache_key, Arc::clone(&llm));
+    Ok(llm)
 }
 
 /// Existing OpenAI-compatible client path (`base_url` + optional `api_key_env`).
