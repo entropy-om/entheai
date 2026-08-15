@@ -140,6 +140,11 @@ args = ["--mcp"]
 command = "magiscanner"
 args = ["--mcp"]
 
+# DeepSeek Harness (dsh): Plugin-First Agent Runtime & Trajectory Engine (deepseek-ai/deepseek-harness)
+[mcp.deepseek-harness]
+command = "npx"
+args = ["-y", "@deepseek-ai/dsh", "mcp"]
+
 # Codebase Memory Knowledge Graph
 [mcp.codebase]
 command = "codebase-memory-mcp"
