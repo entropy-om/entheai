@@ -28,6 +28,20 @@ function fakeKv() {
   };
 }
 
+/** Minimal in-memory license-store double (get/set are all the worker uses). */
+function fakeStore() {
+  const store = new Map();
+  return {
+    store,
+    async get(k) {
+      return store.has(k) ? store.get(k) : null;
+    },
+    async set(k, v) {
+      store.set(k, v);
+    },
+  };
+}
+
 function env(overrides = {}) {
   return { ENTROPY: fakeKv(), ENTROPY_TOKEN: "sekrit", ...overrides };
 }
@@ -119,7 +133,7 @@ test("gallery.entheai.com root routes to the pretty /gallery", async () => {
 const WHSEC = "whsec_test_secret";
 
 function licenseEnv(overrides = {}) {
-  return { LICENSES: fakeKv(), STRIPE_WEBHOOK_SECRET: WHSEC, ...overrides };
+  return { __store: fakeStore(), STRIPE_WEBHOOK_SECRET: WHSEC, ...overrides };
 }
 
 /** Sign `${t}.${body}` the way Stripe does, so the worker's own HMAC path runs. */
@@ -191,7 +205,7 @@ test("webhook refuses to run unconfigured — no secret, no store, no GET", asyn
     503
   );
   assert.equal(
-    (await handleStripe(await webhook(body), licenseEnv({ LICENSES: undefined }))).status,
+    (await handleStripe(await webhook(body), licenseEnv({ __store: undefined }))).status,
     503
   );
   const get = new Request("https://entheai.com/api/stripe/webhook");
@@ -220,7 +234,7 @@ test("webhook rejects unsigned, mis-signed, tampered, and replayed deliveries", 
     const e = licenseEnv();
     const res = await handleStripe(req, e);
     assert.equal(res.status, 400, `${name} must be rejected`);
-    assert.equal(e.LICENSES.store.size, 0, `${name} must not fulfill`);
+    assert.equal(e.__store.store.size, 0, `${name} must not fulfill`);
   }
 });
 
@@ -234,9 +248,9 @@ test("a signed paid checkout mints one license, idempotently", async () => {
   assert.equal(first.headers.get("cache-control"), "no-store");
   assert.equal(first.headers.get("access-control-allow-origin"), "*");
 
-  const key = await e.LICENSES.get("session:cs_test_123");
+  const key = await e.__store.get("session:cs_test_123");
   assert.match(key, /^ENTH-/);
-  const license = JSON.parse(await e.LICENSES.get(`license:${key}`));
+  const license = JSON.parse(await e.__store.get(`license:${key}`));
   assert.equal(license.session_id, "cs_test_123");
   assert.equal(license.email, "backer@example.com");
   assert.equal(license.product, "entheai-backer");
@@ -244,8 +258,8 @@ test("a signed paid checkout mints one license, idempotently", async () => {
 
   // Stripe retries deliveries; a replay must not mint a second key.
   assert.equal((await handleStripe(await webhook(body), e)).status, 200);
-  assert.equal(await e.LICENSES.get("session:cs_test_123"), key);
-  assert.equal(e.LICENSES.store.size, 2, "still exactly one license + one session");
+  assert.equal(await e.__store.get("session:cs_test_123"), key);
+  assert.equal(e.__store.store.size, 2, "still exactly one license + one session");
 });
 
 test("webhook acknowledges but does not fulfill unpaid or unrelated events", async () => {
@@ -257,14 +271,14 @@ test("webhook acknowledges but does not fulfill unpaid or unrelated events", asy
     const res = await handleStripe(await webhook(body), e);
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { received: true });
-    assert.equal(e.LICENSES.store.size, 0, "nothing fulfilled");
+    assert.equal(e.__store.store.size, 0, "nothing fulfilled");
   }
 });
 
 test("license verify returns entitlements for a real key and 401 for everything else", async () => {
   const e = licenseEnv();
   await handleStripe(await webhook(checkoutEvent()), e);
-  const key = await e.LICENSES.get("session:cs_test_123");
+  const key = await e.__store.get("session:cs_test_123");
 
   const verify = (body) =>
     handleLicense(
@@ -298,8 +312,8 @@ test("license verify returns entitlements for a real key and 401 for everything 
 
 test("license verify falls back to the beta entitlement on a corrupt record", async () => {
   const e = licenseEnv();
-  await e.LICENSES.put("license:ENTH-GOOD-KEY0-AAAA-AAAA", JSON.stringify({ email: 7 }));
-  await e.LICENSES.put("license:ENTH-JUNK-KEY0-AAAA-AAAA", "{not json");
+  await e.__store.set("license:ENTH-GOOD-KEY0-AAAA-AAAA", JSON.stringify({ email: 7 }));
+  await e.__store.set("license:ENTH-JUNK-KEY0-AAAA-AAAA", "{not json");
   const verify = (key) =>
     handleLicense(
       new Request("https://entheai.com/api/license/verify", {
@@ -332,7 +346,7 @@ test("license verify guards its bindings and method", async () => {
 test("claim hands back the key for a fulfilled session only", async () => {
   const e = licenseEnv();
   await handleStripe(await webhook(checkoutEvent()), e);
-  const key = await e.LICENSES.get("session:cs_test_123");
+  const key = await e.__store.get("session:cs_test_123");
 
   const claim = (qs) =>
     handleClaim(new Request(`https://entheai.com/api/license/claim${qs}`), e);
@@ -355,13 +369,13 @@ test("releases defaults to the beta channel and reports null until published", a
   const releases = (qs) => handleReleases(new Request(`https://entheai.com/api/releases${qs}`), e);
 
   assert.deepEqual(await (await releases("")).json(), { version: null });
-  await e.LICENSES.put("releases:beta", JSON.stringify({ version: "0.2.0-beta.1" }));
+  await e.__store.set("releases:beta", JSON.stringify({ version: "0.2.0-beta.1" }));
   assert.deepEqual(await (await releases("")).json(), { version: "0.2.0-beta.1" });
   assert.deepEqual(await (await releases("?channel=beta")).json(), { version: "0.2.0-beta.1" });
   // An unpublished channel is null, not the beta manifest.
   assert.deepEqual(await (await releases("?channel=stable")).json(), { version: null });
   // A corrupt manifest degrades to null instead of throwing.
-  await e.LICENSES.put("releases:stable", "{not json");
+  await e.__store.set("releases:stable", "{not json");
   assert.deepEqual(await (await releases("?channel=stable")).json(), { version: null });
 
   assert.equal((await handleReleases(new Request("https://entheai.com/api/releases"), {})).status, 503);
@@ -382,7 +396,7 @@ test("the monetization routes reach their handlers, not the asset pipeline", asy
       },
     },
   };
-  await e.LICENSES.put("session:cs_route", "ENTH-ROUT-EAAA-AAAA-AAAA");
+  await e.__store.set("session:cs_route", "ENTH-ROUT-EAAA-AAAA-AAAA");
 
   // Each route answers with its handler's own signature status/body.
   const unsigned = new Request("https://entheai.com/api/stripe/webhook", {

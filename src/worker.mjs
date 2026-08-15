@@ -10,7 +10,7 @@
 //                      whose `schema` is exactly "entheai.entropy.v1".
 // POST /api/stripe/webhook → verify Stripe-Signature (HMAC-SHA256 via
 //                      crypto.subtle, no stripe-node) and fulfill
-//                      checkout.session.completed into the LICENSES KV
+//                      checkout.session.completed into Redis (Railway)
 //                      (idempotent on session:<checkout id>).
 // POST /api/license/verify → { key } → entitlement check. No auth (the key IS
 //                      the credential).
@@ -19,9 +19,29 @@
 //                      value written later by release tooling).
 // Everything else    → the static asset pipeline (public/), unchanged.
 //
-// Bindings (wrangler.jsonc): ASSETS (assets), LICENSES (KV namespace),
-// ENTROPY (KV namespace, commented until provisioned), ENTROPY_TOKEN (secret),
-// STRIPE_WEBHOOK_SECRET (secret via `wrangler secret put STRIPE_WEBHOOK_SECRET`).
+// Bindings (wrangler.jsonc): ASSETS (assets), REDIS_PUBLIC_URL (secret via
+// `wrangler secret put REDIS_PUBLIC_URL`), ENTROPY (KV namespace, commented
+// until provisioned), ENTROPY_TOKEN (secret), STRIPE_WEBHOOK_SECRET (secret
+// via `wrangler secret put STRIPE_WEBHOOK_SECRET`).
+
+import { redis } from "./redis.mjs";
+
+// The license store: Redis (Railway) at REDIS_PUBLIC_URL (rediss://…).
+// Returns null when unconfigured so handlers answer a clean 503. Tests inject
+// env.__store (an in-memory { get, set } double) to avoid a real socket.
+function licenseStore(env) {
+  if (env.__store) return env.__store;
+  if (!env.REDIS_PUBLIC_URL) return null;
+  const url = new URL(env.REDIS_PUBLIC_URL);
+  return {
+    async get(key) {
+      return redis(url, "GET", key);
+    },
+    async set(key, value) {
+      return redis(url, "SET", key, value);
+    },
+  };
+}
 
 export const SCHEMA = "entheai.entropy.v1";
 export const KV_KEY = "entropy:latest";
@@ -190,14 +210,14 @@ function jsonHeaders(extra = {}) {
 }
 
 // POST /api/stripe/webhook — verify the signature, then fulfill
-// checkout.session.completed into LICENSES. Idempotent per checkout session.
+// checkout.session.completed into Redis. Idempotent per checkout session.
 export async function handleStripe(request, env) {
   const headers = jsonHeaders();
   if (!env.STRIPE_WEBHOOK_SECRET) {
     return json({ error: "webhook secret unconfigured" }, 503, headers);
   }
-  if (!env.LICENSES) {
-    return json({ error: "licenses store unbound" }, 503, headers);
+  if (!licenseStore(env)) {
+    return json({ error: "license store unconfigured" }, 503, headers);
   }
   if (request.method !== "POST") {
     return json({ error: "method not allowed" }, 405, { ...headers, allow: "POST" });
@@ -230,7 +250,7 @@ export async function handleStripe(request, env) {
     return json({ received: true }, 200, headers);
   }
   // Idempotency: fulfill a checkout session exactly once.
-  const existing = await env.LICENSES.get(`session:${session.id}`);
+  const existing = await licenseStore(env).get(`session:${session.id}`);
   if (existing) {
     return json({ received: true }, 200, headers);
   }
@@ -242,10 +262,10 @@ export async function handleStripe(request, env) {
     created_at: Date.now(),
     entitlements: ["beta"],
   });
-  await env.LICENSES.put(`license:${key}`, license);
-  await env.LICENSES.put(`session:${session.id}`, key);
+  await licenseStore(env).set(`license:${key}`, license);
+  await licenseStore(env).set(`session:${session.id}`, key);
 
-  // Best-effort email delivery: the license is already durable in KV, so a
+  // Best-effort email delivery: the license is already durable in Redis, so a
   // failed send must never fail the webhook (Stripe would retry and we'd hit
   // the idempotency short-circuit above). Skip silently when unconfigured.
   const email = session.customer_details?.email;
@@ -299,8 +319,8 @@ export async function sendBackerEmail(env, to, key) {
 // credential).
 export async function handleLicense(request, env) {
   const headers = jsonHeaders();
-  if (!env.LICENSES) {
-    return json({ error: "licenses store unbound" }, 503, headers);
+  if (!licenseStore(env)) {
+    return json({ error: "license store unconfigured" }, 503, headers);
   }
   if (request.method !== "POST") {
     return json({ error: "method not allowed" }, 405, { ...headers, allow: "POST" });
@@ -313,7 +333,7 @@ export async function handleLicense(request, env) {
     return json({ ok: false }, 401, headers);
   }
   if (!key) return json({ ok: false }, 401, headers);
-  const raw = await env.LICENSES.get(`license:${key}`);
+  const raw = await licenseStore(env).get(`license:${key}`);
   if (!raw) return json({ ok: false }, 401, headers);
   let license;
   try {
@@ -336,15 +356,15 @@ export async function handleLicense(request, env) {
 // GET /api/license/claim?session_id=cs_... → key for a fulfilled session.
 export async function handleClaim(request, env) {
   const headers = jsonHeaders();
-  if (!env.LICENSES) {
-    return json({ error: "licenses store unbound" }, 503, headers);
+  if (!licenseStore(env)) {
+    return json({ error: "license store unconfigured" }, 503, headers);
   }
   if (request.method !== "GET") {
     return json({ error: "method not allowed" }, 405, { ...headers, allow: "GET" });
   }
   const sessionId = new URL(request.url).searchParams.get("session_id");
   if (!sessionId) return json({ error: "not found or not yet fulfilled" }, 404, headers);
-  const key = await env.LICENSES.get(`session:${sessionId}`);
+  const key = await licenseStore(env).get(`session:${sessionId}`);
   if (!key) return json({ error: "not found or not yet fulfilled" }, 404, headers);
   return json({ key }, 200, headers);
 }
@@ -353,14 +373,14 @@ export async function handleClaim(request, env) {
 // `releases:<channel>` is written later by release tooling; here we only read.
 export async function handleReleases(request, env) {
   const headers = jsonHeaders();
-  if (!env.LICENSES) {
-    return json({ error: "licenses store unbound" }, 503, headers);
+  if (!licenseStore(env)) {
+    return json({ error: "license store unconfigured" }, 503, headers);
   }
   if (request.method !== "GET") {
     return json({ error: "method not allowed" }, 405, { ...headers, allow: "GET" });
   }
   const channel = new URL(request.url).searchParams.get("channel") || "beta";
-  const raw = await env.LICENSES.get(`releases:${channel}`);
+  const raw = await licenseStore(env).get(`releases:${channel}`);
   if (!raw) return json({ version: null }, 200, headers);
   try {
     return json(JSON.parse(raw), 200, headers);

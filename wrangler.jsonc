@@ -13,13 +13,10 @@
 		// ENTROPY (live beacon) — commented until provisioned:
 		//   wrangler kv namespace create ENTROPY → paste the id below, uncomment.
 		// { "binding": "ENTROPY", "id": "REPLACE_WITH_KV_NAMESPACE_ID" },
-		// LICENSES (backer licenses: license:<key>, session:<checkout id>,
-		// releases:<channel>). Real namespace id below (provisioned via
-		// `wrangler kv namespace create LICENSES`).
-		{
-			"binding": "LICENSES",
-			"id": "b2f96c12b41242138d46d863ad30bd6a"
-		}
+		// LICENSES KV was retired — the backer license store now lives in Redis
+		// (Railway) via the REDIS_PUBLIC_URL secret (the Worker reads it directly).
+		// Set it with:  wrangler secret put REDIS_PUBLIC_URL
+		//   value: redis://default:<password>@<host>.proxy.rlwy.net:<port>
 	],
 	"assets": {
 		"directory": "./public",

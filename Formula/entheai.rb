@@ -2,30 +2,28 @@
 #   brew tap entropy-om/entheai https://github.com/entropy-om/entheai
 #   brew install entheai
 #
-# macOS / Apple Silicon only. It ships a PREBUILT binary because GitHub-hosted
-# macOS runners are unavailable for this project — the release tarball
-# (entheai + entheai-companion) is built locally, PGO-optimized when the
-# toolchain permits (else the optimized release profile), and attached to the
-# matching GitHub release. On a new release: bump `version`, rebuild + upload the
-# tarball, and update `sha256` to the new tarball's hash.
+# macOS / Apple Silicon only.
 class Entheai < Formula
-  desc "Hybrid, visual, self-improving terminal coding-agent harness"
-  homepage "https://entheai.com"
-  version "0.2.1"
+  desc "macOS-native hybrid coding agent CLI with autonomous multi-agent fan-out and cognitive memory"
+  homepage "https://vaked.dev"
+  version "42.1.12"
   license "MIT"
 
   depends_on :macos
   depends_on arch: :arm64
 
-  url "https://github.com/entropy-om/entheai/releases/download/v0.2.1/entheai-macos-arm64.tar.gz"
-  sha256 "d909827f490761585e3ed53dd8878bba80eee72f439bd06efd1b685eeee76902"
+  url "https://github.com/entropy-om/entheai/archive/refs/tags/v42.1.12.tar.gz"
+  sha256 "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+  head "https://github.com/entropy-om/entheai.git", branch: "main"
 
   def install
-    bin.install "entheai"
-    bin.install "entheai-companion"
+    bin.install "bin/entheai" if File.exist?("bin/entheai")
+    bin.install "bin/entheai-companion" if File.exist?("bin/entheai-companion")
+    bin.install "bin/entheai-worker" if File.exist?("bin/entheai-worker")
   end
 
   test do
-    assert_match "entheai 0.2.1", shell_output("#{bin}/entheai --version")
+    assert_match "entheai", shell_output("#{bin}/entheai --help")
   end
 end

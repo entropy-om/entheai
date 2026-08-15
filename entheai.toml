@@ -1,257 +1,67 @@
-# Keys are loaded from .env at startup (DEEPSEEK_API_KEY / HUGGINGFACE_API_KEY /
-# OPENROUTER_API_KEY / OPENCODE_API_KEY). See .env.example. Switch providers with
-# `--model "<provider>/<model>"` or by changing default_model below.
-#
-# Add a skill from the web (tries <origin>/.well-known/skills.json, then /llms.txt,
-# then the page), then exit — writes skills/<slug>/SKILL.md, live on the next run:
-#   entheai --skills add https://docs.stripe.com
+# ==============================================================================
+# ENTHEAI FULL CONFIGURATION — 8B.IS / VAKED SOVEREIGN CONSTELLATION
+# ==============================================================================
+
 default_model = "openai/gpt-4o-mini"
 
-# DeepSeek direct API. Models: deepseek-chat (V3), deepseek-reasoner (R1).
+# ── Inference Providers ────────────────────────────────────────────────────────
+
+# DeepSeek direct API
 [providers.deepseek]
 base_url = "https://api.deepseek.com/v1"
 api_key_env = "DEEPSEEK_API_KEY"
 
-# OpenRouter aggregator — e.g. --model "openrouter/deepseek/deepseek-chat"
+# OpenRouter aggregator
 [providers.openrouter]
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 
-# OpenAI direct API — e.g. --model "openai/gpt-4o"
+# OpenAI direct API
 [providers.openai]
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 
-# Hugging Face Inference router (OpenAI-compatible); model ids are HF repo paths.
-# e.g. --model "hf/deepseek-ai/DeepSeek-V3-0324"
+# Anthropic direct API (via OpenAI-compatible gateway / OpenRouter)
+[providers.anthropic]
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+
+# Hugging Face Inference router
 [providers.hf]
 base_url = "https://router.huggingface.co/v1"
 api_key_env = "HUGGINGFACE_API_KEY"
 
-# OpenCode Zen (needs OPENCODE_API_KEY + credits) — e.g. --model "zen/deepseek-v4-pro"
+# OpenCode Zen (DeepSeek V4 Pro, Flash, Qwen)
 [providers.zen]
 base_url = "https://opencode.ai/zen/v1"
 api_key_env = "OPENCODE_API_KEY"
 
-# Free community node (no API key required) — e.g. --model "vaked/coder"
+# Vaked Sovereign Community Node (nixai-base tailnet)
 [providers.vaked]
 base_url = "https://nixai-base.tail2870dc.ts.net/v1"
+api_key_env = "VAKED_API_KEY"
 
-# Local (private) via Osaurus — e.g. --model "osaurus/gemma-4-e2b-it-4bit"
-# See docs/osaurus-setup.md and docs/osaurus-opencode-provider.md.
+# Ocean High-Compute Cluster
+[providers.ocean]
+base_url = "https://ocean.vaked.dev/v1"
+api_key_env = "OCEAN_API_KEY"
+
+# Local private inference via Osaurus (Apple Silicon MLX)
 [providers.osaurus]
 base_url = "http://127.0.0.1:1337/v1"
 
-# Native ternary (BitNet b1.58) inference — e.g. --model "quantal/qwen2.5-0.5b-quantal"
-# Runs fully offline in Rust: no Python, no MLX, no network. `model_dir` must
-# hold the ayeOS matrices (index.json + m*.json), embeddings.f16, norms.f32 and
-# a vendored tokenizer.json. `kind = "ternary"` routes resolve_model to the
-# native TernaryLlm; `base_url` is ignored for this provider.
+# Native Ternary (BitNet b1.58) offline inference engine
 [providers.quantal]
 base_url = ""
 model_dir = "/Users/lodripeter/workspace/peterlodri-sec/pocoo.vaked.dev/demos/quantal"
 kind = "ternary"
 
-# ── Fan-out routing (used by `entheai --fanout "<task>"`) ─────────────────────
-# The orchestrator decomposes the task into role-tagged sub-tasks, runs them in
-# parallel (coders in isolated git worktrees), and synthesizes/integrates the
-# result. Each role routes to the first model listed for it (falling back to
-# `orchestrator`, then `default_model`, when a role is unset). Tier freely across
-# the providers above — cheap/local models for exploration, stronger for review.
-[router]
-orchestrator = "openai/gpt-4o-mini"
-max_parallel = 4                         # cap on concurrently-running sub-agents
-# max_turns = 200                        # per-task tool-dispatch round cap (default 200; UNLIMITED under --yolo)
-
-# Verification gate for each coder's worktree before its changes integrate.
-# Mandatory by default: unset `verify` auto-detects ./scripts/check.sh at the
-# repo root; if nothing resolves, changed branches are left unmerged for review.
-# Integrated merges carry a deterministic SHA-256 seal (diff + verify log).
-# [fanout]
-# verify = "cargo test"             # explicit gate (overrides auto-detect)
-# verify_required = true            # false = legacy lax mode (integrate unverified)
-# mode = ""                         # "" = inherit parent ceiling; else override: plan | auto | yolo | ask
-# Recursive development path: entheai orchestrates on deepseek (above), each
-# coder sub-agent runs via the Antigravity CLI (agy) on agy's own models.
-[fanout]
-executor = "agy"                        # coder backend: agy (Antigravity CLI)
-agy_model = "gemini-3.6-flash-high"    # model agy runs the coders on
-
-# ── Current-awareness ingestion (Valyu + WorldMonitor → the raw memory soil) ──
-# Fills the brain with the world AS IT IS, under hard daily request budgets
-# (WorldMonitor clamps to ≤ 50/day regardless of config — operator's mandate).
-# Requires [memory] mode = "prompt-processing". Keys come from the env
-# (~/.entheai/current.env): VALYU_API_KEY, WORLDMONITOR_API_KEY.
-[current]
-enabled = true
-topics = ["AI coding agents and LLM security this week", "multi-agent reasoning architectures"]  # one Valyu request per topic per pulse
-refresh_minutes = 120               # auto-pulse cadence in the TUI (36 WM req/day)
-# The genetic corpus — how entheai was born. The ultrawhale dogfeed loop's
-# self-generated Q&A pairs, gated on HuggingFace (HF_TOKEN from the env). She
-# drinks the water she grew from: newest batch → the soil, 2 requests/pulse.
-dogfood_repo = "PeetPedro/ultrawhale-dogfood"
-# hf_token_env = "HF_TOKEN"
-# dogfood_daily_cap = 50
-# valyu_daily_cap = 50                # requests/day
-# worldmonitor_daily_cap = 50         # requests/day, hard-clamped ≤ 50
-# valyu_max_results = 5               # results per query (1–20)
-# valyu_max_price = 30.0              # CPM dollar ceiling per Valyu query
-
-# ── Kin constellation ────────────────────────────────────────────────────────
-# Sibling nodes of the wider organism, polled for liveness (one tiny GET per
-# node per poll) and rendered as the Zen field's outermost ring: flowing kin
-# breathe and carry their names, unreachable kin sit dark. Honest liveness.
-[kin]
-nodes = ["https://riva.vaked.dev/", "https://pocoo.vaked.dev/babylon/"]
-# poll_secs = 120
-
-# ── Zen field theme ──────────────────────────────────────────────────────────
-# Ambient palette for /zen: entheia (teal default) | ember (night fire) |
-# verdant (the garden) | void (monochrome + the gold thread). Source identity
-# colours (lineage gold, search cyan, world green) never change with the theme.
-# [viz]
-# theme = "entheia"
-
-# ── Permission posture + per-tool pins ─────────────────────────────────────────
-[permission]
-mode = "ask"                      # startup default: plan | auto | yolo | ask
-# pins = { run_shell = "always_ask", read_file = "always_allow" }
-
-# ── TUI visualization ─────────────────────────────────────────────────────────
-# [viz]
-# swarm = true          # inline swarm graph during --fanout (Ctrl-V / /viz full view)
-# brain = true          # always-on side panel: a rotating faculties+fleet graph with
-#                       # `wk N · nats ●/○ · ctx %`. Toggle live with /brain.
-# brain_width = 26      # panel width in columns (auto-hides on narrow terminals)
-
-# ── Prompt-processing retrieval (opt-in, Slice 1) ─────────────────────────────
-# Keep the past RAW; search it; compress LAST. Off by default (mode = "topk" =
-# today's top-K). It ingests raw experience and always falls back to top-K when
-# off/empty/slow. The Stage-2 mesh re-rank runs IN-PROCESS by default (native,
-# via entheai-ultragraph) — no Python. Stage-3 compression (`mq`) stays optional.
-# ── Output fidelity: never truncate, never compress what the human sees ──────
-# shell_output_cap default is 100 KB; 100 MB is effectively "never" while still
-# bounding a runaway process. search_max_results default is 200.
-# [inference] max_tokens stays unset = unlimited model responses.
-[tools]
-shell_output_cap = 100000000
-search_max_results = 10000
-
-# ── karmapa-chenno: the call home ────────────────────────────────────────────
-# /freeze publishes a human-readable context report + checkpoint into a NEW
-# folder (one per context) of the central repo's local clone and pushes it —
-# she does the git; the operator hand-picks folder links to share.
-[chenno]
-enabled = true
-# dir = "~/.entheai/karmapa-chenno"
-
-[memory]
-mode = "prompt-processing"        # the raw soil is ON — /freeze, /thaw, [current] all live here
-# [memory.prompt_processing]
-#   search_deadline_ms = 1500       # fail fast to top-K past this deadline
-#   raw_retention_days = 90         # raw experiential store retention (pruned at startup)
-#   recall_k           = 64         # Stage-1 lexical recall breadth
-#   raw_path           = "~/.cache/entheai/raw.db"
-#   mesh_backend       = "native"   # "native" (in-process, default) | "sidecar" | "stub"
-#   native_model       = ""         # optional .ugm reranker for the native mesh ("" = lexical)
-#   # sidecar backend (opt-in): sidecar_cmd = "python3 sidecars/ultragraph/serve.py"
-#   marqant_cmd        = "mq"       # Stage-3 compressor ("" = identity passthrough)
-
-# ── Frozen nodes (curated best-practice that wakes on triggers) ───────────────
-# Opt-in. Curated `frozen/*.md` nodes sit dormant; when a task's deterministic
-# triggers match, the top node's marqant-distilled knowledge melts into the prompt
-# (bounded, transient) and glows in the brain. Independent of [memory] mode.
-# [frozen]
-# enabled          = true            # default false
-# dir              = "frozen"        # curated node store (relative to the run root)
-# top_k            = 1               # how many nodes wake at once
-# max_inject_bytes = 4096            # per-node injection cap
-
-# ── Federation event bus (entheai-bus, F1) ───────────────────────────────────
-# Opt-in + fail-safe: with enabled = false (default) or an unreachable hub,
-# entheai runs entirely locally — federation never blocks a run. When enabled,
-# every `--fanout` run publishes its lifecycle to NATS on the subjects
-# `entheai.fanout.<session>.{decomposed,coder.started,coder.finished,integrating,done}`
-# so any tailnet subscriber can watch runs live. The URL and token are read from
-# these env vars (populated from the gitignored .env) — never inline secrets in
-# this tracked file.
-[nats]
-enabled = true
-url_env = "NATS_URL"       # e.g. nats://entheai-nats.tail2870dc.ts.net:4222
-token_env = "NATS_TOKEN"
-
-# Distributed swarm (F2, opt-in, reuses [nats]). A worker node runs
-# `entheai-worker --serve` to pull coder tasks off the JetStream work-queue,
-# materialize the repo from a git bundle, run the coder in isolation, and bundle
-# the result back; a dispatcher runs `entheai-worker --dispatch --task "…"`.
-# NOTE: a worker executes model-generated code with full tools on that node —
-# only run --serve on nodes you trust (tailnet-only). F2.3 sandbox confinement
-# (Landlock + seccomp on Linux, `sandbox` knob below) narrows but does not close
-# this gate — no egress allow-list or resource caps yet.
-[federation]
-enabled = true
-role = "auto"              # "auto" | "worker" | "dispatch"
-deadline_secs = 600
-sandbox = "permissive"     # coder confinement: "strict" | "permissive" | "off"
-max_concurrent_coders = 4  # coders a --serve worker runs at once (they're model-wait-bound;
-                           # all share one cached bare repo per base commit, so memory stays flat)
-# role is reserved; worker mode is chosen by --serve / --dispatch.
-
-# MCP servers — spawned at startup; their tools appear to the agent as `<name>__<tool>`.
-# [mcp.codebase]
-# command = "codebase-memory-mcp"
-# args = ["--root", "."]
-
-# Valyu deep-search MCP (remote). entheai's MCP client is stdio-only, so we bridge
-# the remote endpoint through mcp_bridge.py. The API key is NOT stored here — this
-# file is tracked in a public repo. The full URL (incl. ?valyuApiKey=…) lives in
-# .env (gitignored) as VALYU_MCP_URL and is expanded by /bin/sh at spawn time.
-[mcp.valyu]
-command = "/bin/sh"
-args = ["-c", "exec /usr/bin/python3 /Users/peter.lodri/.mcp-usage/bin/mcp_bridge.py --source entheai --server valyu --url $VALYU_MCP_URL"]
-
-# Smart Tree — AI-friendly filesystem + code intelligence (30+ tools). Binary `st`
-# from `cargo install smart-tree`; `--mcp` runs it as a stdio MCP server (on PATH).
-[mcp.smart-tree]
-command = "st"
-args = ["--mcp"]
-
-# rmcp-sensors — cross-platform environmental-awareness sensors exposed as MCP
-# tools (`cargo install rmcp-sensors`); the bare binary is a stdio MCP server.
-[mcp.rmcp-sensors]
-command = "rmcp-sensors"
-args = []
-
-[agents.explore]
-model = ["openai/gpt-4o-mini"]
-
-[agents.coder]
-model = ["openai/gpt-4o-mini"]
-
-[agents.reviewer]
-model = ["openai/gpt-4o"]
-
-[agents.test]
-model = ["openai/gpt-4o-mini"]
-
-[agents.docs]
-model = ["openai/gpt-4o-mini"]
-
-# ── The Oracle (fused-fleet adjudication seam) ──────────────────────────────────
-[oracle]
-enabled = true
-coders = "local"
-gate = "advisory"
-block_confidence = 0.8
-model = "openai/gpt-4o-mini"
-openclaw_url = "https://do-openclaw.tail2870dc.ts.net"
-
-# OpenClaw Gateway on DigitalOcean Droplet (Tailnet-only HTTPS ingress)
+# OpenClaw Droplet Gateway (DigitalOcean)
 [providers.openclaw]
 base_url = "https://do-openclaw.tail2870dc.ts.net/v1"
 api_key_env = "OPENCLAW_GATEWAY_TOKEN"
 
-# coder.vaked.dev — a premium tier (DeepSeek-V4-Flash-0731) + free (qwen3-coder)
+# Coder Vaked Tiers
 [providers.coder]
 base_url = "https://nixai-base.tail2870dc.ts.net/v1"
 api_key_env = "CODER_VAKED_PETER_KEY"
@@ -259,3 +69,108 @@ api_key_env = "CODER_VAKED_PETER_KEY"
 [providers.coder-premium]
 base_url = "https://nixai-base.tail2870dc.ts.net/v1"
 api_key_env = "CODER_VAKED_PETER_KEY"
+
+# ── Multi-Agent Fan-Out Orchestration ──────────────────────────────────────────
+
+[fanout]
+enabled = true
+max_parallel_coders = 6
+worktree_isolation = true
+depth_guard = 3
+executor = "agy" # Antigravity CLI integration for recursive development
+
+[agents.explore]
+model = ["openai/gpt-4o-mini", "zen/deepseek-v4-flash"]
+
+[agents.coder]
+model = ["openai/gpt-4o-mini", "zen/deepseek-v4-pro", "vaked/coder"]
+
+[agents.reviewer]
+model = ["openai/gpt-4o", "zen/deepseek-v4-pro"]
+
+[agents.test]
+model = ["openai/gpt-4o-mini", "osaurus/qwen3-coder"]
+
+[agents.docs]
+model = ["openai/gpt-4o-mini"]
+
+# ── Cognitive Vector Memory (MEM|8 Holographic Resonance) ─────────────────────
+
+[memory]
+enabled = true
+database_path = "~/.entheai/memory.db"
+vector_dim = 1536
+resonance_bands = ["gamma_8hz", "beta_4hz", "alpha_2hz", "theta_1hz"]
+max_context_recall = 8
+
+[memory.namespaces]
+codebase = true
+learnings = true
+trajectories = true
+tool_results = true
+scratch = true
+
+[memory.judge]
+enabled = true
+model = "openai/gpt-4o-mini"
+confidence_threshold = 0.82
+
+# ── Model Context Protocol (MCP) Servers ──────────────────────────────────────
+
+# Smart Tree: AST Context Compression & Symbol Extraction (8b-is/smart-tree)
+[mcp.smart-tree]
+command = "st"
+args = ["--mcp"]
+
+# MagiSCanner: Cryptographic Hash Memory & Security Sentinel (8bit-wraith/magiscanner)
+[mcp.magiscanner]
+command = "magiscanner"
+args = ["--mcp"]
+
+# Codebase Memory Knowledge Graph
+[mcp.codebase]
+command = "codebase-memory-mcp"
+args = ["--root", "."]
+
+# ── Companion Floating Session Beacon ──────────────────────────────────────────
+
+[companion]
+enabled = true
+always_on_top = true
+window_size = [180, 180]
+tailnet_qr = true
+
+# ── Procedural Radio & Audio Synthesis ────────────────────────────────────────
+
+[radio]
+enabled = true
+stream_url = "https://music.vaked.dev/feed.xml"
+tuning_hz = 432.0
+volume = 0.65
+
+# ── NATS Federation & Distributed Swarm ───────────────────────────────────────
+
+[nats]
+enabled = true
+url = "nats://dev-cx53.tail2870dc.ts.net:4222"
+cluster_nodes = [
+  "dev-cx53.tail2870dc.ts.net",
+  "hetzner-cax31.tail2870dc.ts.net"
+]
+
+[federation]
+enabled = true
+role = "auto"
+deadline_secs = 600
+sandbox = "permissive"
+max_concurrent_coders = 4
+
+# ── The Oracle (Adjudication Seam) ────────────────────────────────────────────
+
+[oracle]
+enabled = true
+coders = "local"
+gate = "advisory"
+block_confidence = 0.8
+model = "openai/gpt-4o-mini"
+openclaw_url = "https://do-openclaw.tail2870dc.ts.net"
