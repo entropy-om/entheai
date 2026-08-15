@@ -166,9 +166,16 @@ fn load_config(path: &str) -> anyhow::Result<Config> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Load `.env` first so provider keys, MCP URLs, etc. are visible to
-    // everything downstream (config parsing, providers, MCP spawn).
+    // Load `.env` and global configuration env files so provider keys,
+    // MCP URLs, etc. are visible regardless of current working directory.
     dotenvy::dotenv().ok();
+    if let Ok(home) = std::env::var("HOME") {
+        let home_path = PathBuf::from(home);
+        dotenvy::from_path(home_path.join(".config/entheai/entheai.env")).ok();
+        dotenvy::from_path(home_path.join(".config/entheai/.env")).ok();
+        dotenvy::from_path(home_path.join(".entheai/.env")).ok();
+        dotenvy::from_path(home_path.join(".env")).ok();
+    }
     let cli = Cli::parse();
 
     // Install the log backend before anything can emit. Interactive TUI sessions

@@ -302,8 +302,30 @@ impl McpClient {
         server_name: impl Into<String>,
         timeout: Duration,
     ) -> Result<(Arc<Self>, ChildGuard), McpError> {
-        let mut cmd = Command::new(command);
+        let home = std::env::var("HOME").unwrap_or_default();
+        let cargo_bin = format!("{home}/.cargo/bin");
+        let brew_bin = "/opt/homebrew/bin";
+        let path_env = std::env::var("PATH").unwrap_or_default();
+        let extended_path = format!("{cargo_bin}:{brew_bin}:/usr/local/bin:{path_env}");
+
+        // If command is a bare binary name, check cargo/brew paths first
+        let resolved_command = if !command.contains('/') {
+            let cargo_candidate = format!("{cargo_bin}/{command}");
+            let brew_candidate = format!("{brew_bin}/{command}");
+            if std::path::Path::new(&cargo_candidate).exists() {
+                cargo_candidate
+            } else if std::path::Path::new(&brew_candidate).exists() {
+                brew_candidate
+            } else {
+                command.to_string()
+            }
+        } else {
+            command.to_string()
+        };
+
+        let mut cmd = Command::new(&resolved_command);
         cmd.args(args)
+            .env("PATH", extended_path)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
