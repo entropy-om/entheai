@@ -50,16 +50,6 @@ function licenseStore(env) {
       },
     };
   }
-  if (env.LICENSES) {
-    return {
-      async get(key) {
-        return env.LICENSES.get(key);
-      },
-      async set(key, value) {
-        return env.LICENSES.put(key, value);
-      },
-    };
-  }
   return null;
 }
 
@@ -327,7 +317,6 @@ export async function handleStripe(request, env) {
   await licenseStore(env).set(`license:${key}`, license);
   await licenseStore(env).set(`session:${session.id}`, key);
 
-<<<<<<< HEAD
   // Sovereign mint (Lane 1): the constellation store marks its checkouts with
   // metadata[tier]. When present — and not an entheai checkout — ALSO issue a
   // vkd_ token for the same buyer under `vkd:license:<sub>`. Best-effort and
@@ -342,18 +331,13 @@ export async function handleStripe(request, env) {
         buildSovereignPayload(sub, tier),
         env.SOVEREIGN_SIGNING_KEY
       );
-      await env.LICENSES.put(`vkd:license:${sub}`, token);
+      await licenseStore(env).set(`vkd:license:${sub}`, token);
     } catch (e) {
       console.warn(`sovereign mint failed for ${sub}: ${e}`);
     }
   }
 
-  // Best-effort email delivery: the license is already durable in KV, so a
-||||||| 71ae689
-  // Best-effort email delivery: the license is already durable in KV, so a
-=======
   // Best-effort email delivery: the license is already durable in Redis, so a
->>>>>>> perf/hot-path-optimizations
   // failed send must never fail the webhook (Stripe would retry and we'd hit
   // the idempotency short-circuit above). Skip silently when unconfigured.
   const email = session.customer_details?.email;
@@ -708,8 +692,9 @@ export async function handleSovereignVerify(request, env) {
   if (!key) return json({ ok: false }, 401, headers);
   const payload = await verifySovereign(key, env.SOVEREIGN_PUBLIC_KEY || SOVEREIGN_PUBLIC_KEY_B64URL);
   if (!payload) return json({ ok: false }, 401, headers);
-  if (env.LICENSES) {
-    const raw = await env.LICENSES.get(`vkd:license:${payload.sub}`);
+  const store = licenseStore(env);
+  if (store) {
+    const raw = await store.get(`vkd:license:${payload.sub}`);
     if (!raw) return json({ ok: false }, 401, headers);
   }
   return json(

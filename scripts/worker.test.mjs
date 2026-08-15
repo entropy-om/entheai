@@ -609,7 +609,7 @@ test("sovereign: verify accepts a store-minted member token (signature + exp + K
   });
   await handleStripe(await webhook(checkoutEvent({ metadata: { tier: "member" } })), e);
 
-  const token = await e.LICENSES.get("vkd:license:backer@example.com");
+  const token = await e.__store.get("vkd:license:backer@example.com");
   assert.ok(token && token.startsWith("vkd_sk_"), "token minted into KV under vkd:license:<email>");
   const payload = decodePayload(token);
   assert.equal(payload.sub, "backer@example.com");
@@ -632,7 +632,7 @@ test("sovereign: verify rejects a tampered signature and an expired token", asyn
     SOVEREIGN_PUBLIC_KEY: await pubKeyB64FromSeed(TEST_SEED),
   });
   await handleStripe(await webhook(checkoutEvent({ metadata: { tier: "backer" } })), e);
-  const token = await e.LICENSES.get("vkd:license:backer@example.com");
+  const token = await e.__store.get("vkd:license:backer@example.com");
 
   // Same sub with a valid KV record: rejection provably comes from the crypto
   // path, not the record cross-check.
@@ -865,7 +865,7 @@ test("sovereign: webhook mints a vkd token when metadata.tier is member and neve
     e
   );
   assert.equal(res.status, 200);
-  const token = await e.LICENSES.get("vkd:license:backer@example.com");
+  const token = await e.__store.get("vkd:license:backer@example.com");
   assert.ok(token && token.startsWith("vkd_sk_"), "sovereign token minted under vkd:license:<email>");
   const payload = decodePayload(token);
   assert.equal(payload.sub, "backer@example.com");
@@ -873,12 +873,12 @@ test("sovereign: webhook mints a vkd token when metadata.tier is member and neve
   assert.deepEqual(payload.ent, TIER_ENTITLEMENTS.member);
   assert.equal(payload.exp - payload.iat, SOVEREIGN_TTL_SECS.member);
   // The entheai license path is untouched: still one ENTH- license + session.
-  assert.match(await e.LICENSES.get("session:cs_member_1"), /^ENTH-/);
+  assert.match(await e.__store.get("session:cs_member_1"), /^ENTH-/);
 
   // No metadata.tier → no sovereign keys at all.
   const plain = licenseEnv({ SOVEREIGN_SIGNING_KEY: TEST_SEED });
   await handleStripe(await webhook(checkoutEvent({ id: "cs_plain_1" })), plain);
-  for (const k of plain.LICENSES.store.keys()) {
+  for (const k of plain.__store.store.keys()) {
     assert.ok(!k.startsWith("vkd:"), `default path must not mint vkd keys (saw ${k})`);
   }
 });
@@ -894,7 +894,7 @@ test("sovereign: webhook mints per-tier entitlements and honors sub fallbacks", 
       await webhook(checkoutEvent({ id: `cs_tier_${i}`, metadata: { tier: c.tier } })),
       e
     );
-    const payload = decodePayload(await e.LICENSES.get("vkd:license:backer@example.com"));
+    const payload = decodePayload(await e.__store.get("vkd:license:backer@example.com"));
     assert.equal(payload.tier, c.tier);
     assert.deepEqual(payload.ent, c.ent);
     assert.equal(payload.exp - payload.iat, c.ttl);
@@ -908,14 +908,14 @@ test("sovereign: webhook mints per-tier entitlements and honors sub fallbacks", 
     ),
     subFallback
   );
-  assert.ok(await subFallback.LICENSES.get("vkd:license:wallet-abc"), "metadata.sub fallback");
+  assert.ok(await subFallback.__store.get("vkd:license:wallet-abc"), "metadata.sub fallback");
 
   const idFallback = licenseEnv({ SOVEREIGN_SIGNING_KEY: TEST_SEED });
   await handleStripe(
     await webhook(checkoutEvent({ id: "cs_id_1", customer_details: {}, metadata: { tier: "backer" } })),
     idFallback
   );
-  assert.ok(await idFallback.LICENSES.get("vkd:license:cs_id_1"), "session id fallback");
+  assert.ok(await idFallback.__store.get("vkd:license:cs_id_1"), "session id fallback");
 });
 
 test("sovereign: webhook skips the mint for entheai-backer and unconfigured signing keys", async () => {
@@ -924,7 +924,7 @@ test("sovereign: webhook skips the mint for entheai-backer and unconfigured sign
     await webhook(checkoutEvent({ id: "cs_enth_1", metadata: { tier: "entheai-backer" } })),
     e
   );
-  for (const k of e.LICENSES.store.keys()) {
+  for (const k of e.__store.store.keys()) {
     assert.ok(!k.startsWith("vkd:"), `entheai-backer must not mint sovereign keys (saw ${k})`);
   }
 
@@ -934,7 +934,7 @@ test("sovereign: webhook skips the mint for entheai-backer and unconfigured sign
     unconfigured
   );
   assert.equal(res.status, 200, "missing signing key never fails the webhook");
-  for (const k of unconfigured.LICENSES.store.keys()) {
+  for (const k of unconfigured.__store.store.keys()) {
     assert.ok(!k.startsWith("vkd:"), `unconfigured must not mint sovereign keys (saw ${k})`);
   }
 });
@@ -943,11 +943,11 @@ test("sovereign: the sovereign mint is idempotent per session like the entheai o
   const e = licenseEnv({ SOVEREIGN_SIGNING_KEY: TEST_SEED });
   const body = checkoutEvent({ id: "cs_replay_1", metadata: { tier: "member" } });
   assert.equal((await handleStripe(await webhook(body), e)).status, 200);
-  const token = await e.LICENSES.get("vkd:license:backer@example.com");
-  assert.equal(e.LICENSES.store.size, 3, "license + session + vkd");
+  const token = await e.__store.get("vkd:license:backer@example.com");
+  assert.equal(e.__store.store.size, 3, "license + session + vkd");
   assert.equal((await handleStripe(await webhook(body), e)).status, 200);
-  assert.equal(await e.LICENSES.get("vkd:license:backer@example.com"), token, "no second mint on replay");
-  assert.equal(e.LICENSES.store.size, 3, "replay adds nothing");
+  assert.equal(await e.__store.get("vkd:license:backer@example.com"), token, "no second mint on replay");
+  assert.equal(e.__store.store.size, 3, "replay adds nothing");
 });
 
 test("sovereign: an end-to-end store purchase verifies on the verify endpoint", async () => {
@@ -957,7 +957,7 @@ test("sovereign: an end-to-end store purchase verifies on the verify endpoint", 
     await webhook(checkoutEvent({ id: "cs_e2e_1", metadata: { tier: "presence" } })),
     e
   );
-  const token = await e.LICENSES.get("vkd:license:backer@example.com");
+  const token = await e.__store.get("vkd:license:backer@example.com");
   const ok = await sovereignVerify(token, e);
   assert.equal(ok.status, 200);
   assert.deepEqual(await ok.json(), {
