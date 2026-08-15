@@ -50,7 +50,7 @@ fn is_denial_shape(result: &serde_json::Value) -> bool {
 #[allow(clippy::too_many_arguments)]
 pub async fn run_with_events(
     agent: &EntheaiAgent,
-    prior_turns: &[(String, String)],
+    prior_turns: &[(Arc<str>, Arc<str>)],
     user_message: &str,
     model: &str,
     event_tx: UnboundedSender<AgentEvent>,
@@ -75,8 +75,8 @@ pub async fn run_with_events(
     // current message) so memory records the whole exchange, not just the
     // latest message. `prior_turns` uses the same `(role, text)` shape the
     // transcript already carries (`"user"`/`"assistant"`).
-    let mut transcript: Vec<(String, String)> = prior_turns.to_vec();
-    transcript.push(("user".to_string(), user_message.to_string()));
+    let mut transcript: Vec<(Arc<str>, Arc<str>)> = prior_turns.to_vec();
+    transcript.push(("user".into(), Arc::from(user_message.to_string())));
     let mut tool_evidence: Vec<ToolEvidence> = Vec::new();
     // FunctionCall.id -> (name, args), consumed by the matching FunctionResponse
     // so ToolEvidence carries the args the call was actually made with.
@@ -113,7 +113,7 @@ pub async fn run_with_events(
             for part in &content.parts {
                 if let Some(t) = part.text() {
                     streamed_text.push_str(t);
-                    let _ = event_tx.send(AgentEvent::Token(t.to_string()));
+                    let _ = event_tx.send(AgentEvent::Token(t.into()));
                 }
             }
             continue;
@@ -135,7 +135,7 @@ pub async fn run_with_events(
         if !text.is_empty() && !has_calls && !has_results {
             answer = text.clone();
             streamed_text.clear(); // a real final answer arrived — drop partials
-            transcript.push(("assistant".to_string(), text));
+            transcript.push(("assistant".into(), Arc::from(text)));
         } else if has_calls || has_results {
             // Turn boundary: partials streamed before this were thinking-text
             // ahead of a tool call, or a tool round — not the final answer.
@@ -180,7 +180,7 @@ pub async fn run_with_events(
                         result: result_str.clone(),
                         allowed,
                     });
-                    transcript.push(("function".to_string(), result_str.clone()));
+                    transcript.push(("function".into(), Arc::from(result_str.clone())));
                     let _ = event_tx.send(AgentEvent::ToolFinished {
                         name: function_response.name.clone(),
                         result: result_str,
@@ -199,7 +199,7 @@ pub async fn run_with_events(
     // silently empty even though the model replied in full.
     if answer.is_empty() && !streamed_text.is_empty() {
         answer = streamed_text.clone();
-        transcript.push(("assistant".to_string(), streamed_text));
+        transcript.push(("assistant".into(), Arc::from(streamed_text)));
     }
 
     // The run's stream is fully consumed (or failed) — release its per-run
@@ -496,12 +496,12 @@ mod tests {
         let agent = build_agent(&server).await;
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let prior = vec![
+        let prior: Vec<(Arc<str>, Arc<str>)> = vec![
             (
-                "user".to_string(),
-                "EARLIER_MARKER_TEXT from a prior turn".to_string(),
+                "user".into(),
+                "EARLIER_MARKER_TEXT from a prior turn".into(),
             ),
-            ("assistant".to_string(), "acknowledged".to_string()),
+            ("assistant".into(), "acknowledged".into()),
         ];
         // Fails with a wiremock "no matching mock" error unless the seeded
         // prior turn's marker text reached this outbound request.

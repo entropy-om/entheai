@@ -81,20 +81,41 @@ impl Qubits {
 
     pub fn h(&mut self, q: usize) {
         let s = 1.0 / 2f64.sqrt();
-        self.apply_single(q, &[[Complex::new(s, 0.0), Complex::new(s, 0.0)],
-                              [Complex::new(s, 0.0), Complex::new(-s, 0.0)]]);
+        self.apply_single(
+            q,
+            &[
+                [Complex::new(s, 0.0), Complex::new(s, 0.0)],
+                [Complex::new(s, 0.0), Complex::new(-s, 0.0)],
+            ],
+        );
     }
     pub fn x(&mut self, q: usize) {
-        self.apply_single(q, &[[Complex::new(0.0, 0.0), Complex::new(1.0, 0.0)],
-                              [Complex::new(1.0, 0.0), Complex::new(0.0, 0.0)]]);
+        self.apply_single(
+            q,
+            &[
+                [Complex::new(0.0, 0.0), Complex::new(1.0, 0.0)],
+                [Complex::new(1.0, 0.0), Complex::new(0.0, 0.0)],
+            ],
+        );
     }
     pub fn z(&mut self, q: usize) {
-        self.apply_single(q, &[[Complex::new(1.0, 0.0), Complex::new(0.0, 0.0)],
-                              [Complex::new(0.0, 0.0), Complex::new(-1.0, 0.0)]]);
+        self.apply_single(
+            q,
+            &[
+                [Complex::new(1.0, 0.0), Complex::new(0.0, 0.0)],
+                [Complex::new(0.0, 0.0), Complex::new(-1.0, 0.0)],
+            ],
+        );
     }
     pub fn cnot(&mut self, ctrl: usize, tgt: usize) {
-        self.apply_controlled(ctrl, tgt, &[[Complex::new(0.0, 0.0), Complex::new(1.0, 0.0)],
-                                          [Complex::new(1.0, 0.0), Complex::new(0.0, 0.0)]]);
+        self.apply_controlled(
+            ctrl,
+            tgt,
+            &[
+                [Complex::new(0.0, 0.0), Complex::new(1.0, 0.0)],
+                [Complex::new(1.0, 0.0), Complex::new(0.0, 0.0)],
+            ],
+        );
     }
 
     /// Measure qubit `q` in the computational basis, collapsing the state.
@@ -103,12 +124,17 @@ impl Qubits {
         let mut p0 = 0.0;
         for base in 0..self.dim() {
             if (base >> q) & 1 == 0 {
-                p0 += self.amps[base].re * self.amps[base].re + self.amps[base].im * self.amps[base].im;
+                p0 += self.amps[base].re * self.amps[base].re
+                    + self.amps[base].im * self.amps[base].im;
             }
         }
         // deterministic pseudo-random (xorshift)
-        let mut s = seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(0x1234567);
-        s ^= s >> 12; s ^= s << 25; s ^= s >> 27;
+        let mut s = seed
+            .wrapping_mul(0x9E3779B97F4A7C15)
+            .wrapping_add(0x1234567);
+        s ^= s >> 12;
+        s ^= s << 25;
+        s ^= s >> 27;
         let r = s as f64 / u64::MAX as f64;
         let outcome: u8 = if r < p0 { 0 } else { 1 };
         // collapse
@@ -129,7 +155,8 @@ impl Qubits {
         let mut p = 0.0;
         for base in 0..self.dim() {
             if (base >> q) & 1 == 1 {
-                p += self.amps[base].re * self.amps[base].re + self.amps[base].im * self.amps[base].im;
+                p += self.amps[base].re * self.amps[base].re
+                    + self.amps[base].im * self.amps[base].im;
             }
         }
         p

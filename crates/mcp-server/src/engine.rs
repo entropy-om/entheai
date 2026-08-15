@@ -76,7 +76,12 @@ pub fn load_config_for(cwd: &Path) -> anyhow::Result<Config> {
     if global.exists() {
         let text = std::fs::read_to_string(&global)
             .with_context(|| format!("reading config {}", global.display()))?;
-        log::warn!("no {} in {:?} — using {}", DEFAULT_CONFIG_PATH, cwd, global.display());
+        log::warn!(
+            "no {} in {:?} — using {}",
+            DEFAULT_CONFIG_PATH,
+            cwd,
+            global.display()
+        );
         return Ok(Config::from_toml_str(&text)?);
     }
 
@@ -113,7 +118,9 @@ pub fn unattended_policy(yolo: bool) -> Arc<entheai_permission::Policy> {
 
 /// Map the config's `[memory]` block to the runtime config (mirrors
 /// bin/entheai's `memory_runtime_config`).
-pub fn memory_runtime_config(m: &entheai_config::MemoryConfig) -> entheai_memory::MemoryRuntimeConfig {
+pub fn memory_runtime_config(
+    m: &entheai_config::MemoryConfig,
+) -> entheai_memory::MemoryRuntimeConfig {
     entheai_memory::MemoryRuntimeConfig {
         enabled: m.enabled,
         strict: m.strict,

@@ -19,7 +19,7 @@ pub enum AgentEvent {
     /// "error: …" text in that case, same string fed back to the model).
     ToolFinished { name: String, result: String },
     /// A text delta streamed live from the model.
-    Token(String),
+    Token(Box<str>),
     /// A frozen node was woken and its knowledge injected as a system brief.
     /// `name` is the frozen node's canonical name (from front-matter), used
     /// by the brain viz panel to match the glow ring. The brief preview is the

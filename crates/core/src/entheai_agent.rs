@@ -295,7 +295,7 @@ impl EntheaiAgent {
     /// stream has been fully consumed.
     pub async fn run_with_history(
         &self,
-        prior_turns: &[(String, String)],
+        prior_turns: &[(Arc<str>, Arc<str>)],
         user_message: &str,
     ) -> anyhow::Result<(String, adk_rust::EventStream)> {
         let session_id = uuid::Uuid::new_v4().to_string();
@@ -309,14 +309,14 @@ impl EntheaiAgent {
             .await?;
 
         for (role, text) in prior_turns {
-            let adk_role = if role == "assistant" {
+            let adk_role = if role.as_ref() == "assistant" {
                 "model"
             } else {
-                role.as_str()
+                role.as_ref()
             };
             let mut ev = adk_rust::Event::new(&session_id);
             ev.author = adk_role.to_string();
-            ev.llm_response.content = Some(Content::new(adk_role).with_text(text.clone()));
+            ev.llm_response.content = Some(Content::new(adk_role).with_text(text.to_string()));
             self.sessions.append_event(&session_id, ev).await?;
         }
 

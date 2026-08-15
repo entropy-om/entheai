@@ -37,8 +37,8 @@ pub use agy::AgyExecutor;
 pub use copilot::CopilotExecutor;
 
 pub use oracle::{
-    Attestation, AttestationKind, FusionOracle, GateMode, NoOpOracle, Oracle, OracleAdjudication,
-    OracleBackend, OracleContext, Phase, Verdict, oracle_for_config,
+    oracle_for_config, Attestation, AttestationKind, FusionOracle, GateMode, NoOpOracle, Oracle,
+    OracleAdjudication, OracleBackend, OracleContext, Phase, Verdict,
 };
 
 pub use pool::{WorkerId, WorkerPool, WorkerStatus, WorkerSummary};
@@ -836,7 +836,16 @@ pub async fn run_fanout(
     trajectories: Option<Arc<dyn TrajectorySink>>,
 ) -> anyhow::Result<String> {
     Ok(run_fanout_detailed(
-        config, root, task, events, pool, executor, oracle, memory, scope, trajectories,
+        config,
+        root,
+        task,
+        events,
+        pool,
+        executor,
+        oracle,
+        memory,
+        scope,
+        trajectories,
     )
     .await?
     .report)
@@ -906,7 +915,11 @@ pub async fn run_fanout_detailed(
     if let Some(o) = &oracle {
         let ctx = OracleContext {
             task: task.to_string(),
-            mapped_files: mapped.file_chunks.iter().map(|c| c.path.to_string_lossy().into_owned()).collect(),
+            mapped_files: mapped
+                .file_chunks
+                .iter()
+                .map(|c| c.path.to_string_lossy().into_owned())
+                .collect(),
             ..OracleContext::default()
         };
         match o.adjudicate(Phase::Decompose, &ctx).await {

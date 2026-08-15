@@ -282,6 +282,9 @@ struct App {
     /// In-flight response-as-light ceremony: (reply text, born brain-frame).
     zen_reveal: Option<(String, u64)>,
     messages: Vec<Msg>,
+    /// Running sum of `messages[*].text.len()`, kept in lockstep with `messages`
+    /// so the per-frame context readout stays O(1) while tokens stream.
+    ctx_chars: usize,
     input: String,
     status: Status,
     /// Vertical scroll offset into the wrapped history, in rows.
@@ -379,6 +382,27 @@ struct App {
     zen_accum: Duration,
     /// Set by any `Progression::award`; the ticker flushes the file when set.
     prog_dirty: bool,
+}
+
+impl App {
+    /// Push a message, keeping `ctx_chars` in lockstep.
+    fn push_msg(&mut self, msg: Msg) {
+        self.ctx_chars += msg.text.len();
+        self.messages.push(msg);
+    }
+
+    /// Drop all messages, resetting `ctx_chars`.
+    fn clear_messages(&mut self) {
+        self.ctx_chars = 0;
+        self.messages.clear();
+    }
+
+    /// Append a streamed token delta to the message at `idx`, keeping
+    /// `ctx_chars` in lockstep.
+    fn append_token(&mut self, idx: usize, tok: &str) {
+        self.ctx_chars += tok.len();
+        self.messages[idx].text.push_str(tok);
+    }
 }
 
 /// Probes the local Osaurus (OpenAI-compatible) endpoint for connectivity and served models.
@@ -647,6 +671,7 @@ async fn event_loop(
 
     let mut app = App {
         messages: Vec::new(),
+        ctx_chars: 0,
         input: String::new(),
         status: Status::Idle,
         scroll: 0,
@@ -692,7 +717,7 @@ async fn event_loop(
     };
 
     let fanout_status = if fanout { "ON" } else { "OFF" };
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::Assistant,
         text: format!(
             "🜂 welcome to entheai v{} 🜂\n\n\
@@ -919,7 +944,7 @@ async fn event_loop(
                             if let Some(h) = run_handle.take() {
                                 h.abort();
                             }
-                            app.messages.push(Msg {
+                            app.push_msg(Msg {
                                 role: Role::Error,
                                 text: "⛔ run stopped".to_string(),
                             });
@@ -1000,19 +1025,19 @@ async fn event_loop(
                         // async: the ~0.8s ping/collect briefly blocks the event
                         // loop, which is acceptable for a manual command.
                         Action::Submit(text) if is_fleet_command(&text) => {
-                            app.messages.push(Msg {
+                            app.push_msg(Msg {
                                 role: Role::User,
                                 text: text.clone(),
                             });
                             match &fleet_fed {
-                                None => app.messages.push(Msg {
+                                None => app.push_msg(Msg {
                                     role: Role::Tool,
                                     text: "⚑ federation disabled — no remote fleet".to_string(),
                                 }),
                                 Some(fed) => {
                                     let workers =
                                         fed.list_workers(Duration::from_millis(800)).await;
-                                    app.messages.push(Msg {
+                                    app.push_msg(Msg {
                                         role: Role::Tool,
                                         text: render_fleet(&workers),
                                     });
@@ -1022,7 +1047,7 @@ async fn event_loop(
                         }
                         Action::Submit(text) if is_quit_command(&text) => break,
                         Action::Submit(text) => {
-                            app.messages.push(Msg { role: Role::User, text: text.clone() });
+                            app.push_msg(Msg { role: Role::User, text: text.clone() });
                             app.status = Status::Working;
                             if let Some(ref tx) = companion_tx {
                                 let _ = tx.send(StateChange::working());
@@ -1186,14 +1211,14 @@ async fn event_loop(
                             app.messages[idx].text = answer;
                         } else {
                             // No tokens streamed this run (e.g. a tool-only path) -> push fresh.
-                            app.messages.push(Msg { role: Role::Assistant, text: answer });
+                            app.push_msg(Msg { role: Role::Assistant, text: answer });
                         }
                     }
-                    Some(Err(err)) => app.messages.push(Msg { role: Role::Error, text: err }),
+                    Some(Err(err)) => app.push_msg(Msg { role: Role::Error, text: err }),
                     None => {
                         // The spawned task panicked (sender dropped without sending).
                         // Recover the UI from the stuck Working state.
-                        app.messages.push(Msg {
+                        app.push_msg(Msg {
                             role: Role::Error,
                             text: "Internal error: task failed unexpectedly (panicked)".into(),
                         });
@@ -1232,7 +1257,7 @@ async fn event_loop(
                         let idx = match app.streaming_idx {
                             Some(idx) => idx,
                             None => {
-                                app.messages.push(Msg {
+                                app.push_msg(Msg {
                                     role: Role::Assistant,
                                     text: String::new(),
                                 });
@@ -1242,7 +1267,7 @@ async fn event_loop(
                             }
                         };
                         app.out_tokens += t.len() / 4;
-                        app.messages[idx].text.push_str(&t);
+                        app.append_token(idx, &t);
                     }
                     Some(AgentEvent::ToolStarted { name, args }) => {
                         app.brain.flare(entheai_viz::FacultyKind::Tools);
@@ -1251,7 +1276,7 @@ async fn event_loop(
                                 serde_json::from_str(&args).unwrap_or(serde_json::Value::Null);
                             app.plan = entheai_tools::todo::parse_todos(&parsed);
                         }
-                        app.messages.push(Msg {
+                        app.push_msg(Msg {
                             role: Role::Tool,
                             text: format!("⚙ {name}({})", truncate_args(&args, 80)),
                         });
@@ -1264,7 +1289,7 @@ async fn event_loop(
                         if let Some(judge) = &brain_judge {
                             judge.notify(&format!("used tool {name}: {}", first_line_trunc(&result, 200)));
                         }
-                        app.messages.push(Msg {
+                        app.push_msg(Msg {
                             role: Role::Tool,
                             text: format!("  ↳ {}", first_line_trunc(&result, 120)),
                         });
@@ -1272,7 +1297,7 @@ async fn event_loop(
                     }
                     Some(AgentEvent::FrozenWoke { name, brief_preview }) => {
                         app.brain.wake_frozen(&name);
-                        app.messages.push(Msg {
+                        app.push_msg(Msg {
                             role: Role::Tool,
                             text: format!("❄ frozen node matches: {name} — {}", truncate(&brief_preview, 80)),
                         });
@@ -1290,7 +1315,7 @@ async fn event_loop(
                 dirty = true;
                 match maybe_fanout {
                     Some(entheai_orchestrator::FanoutEvent::Fallback) => {
-                        app.messages.push(Msg {
+                        app.push_msg(Msg {
                             role: Role::Tool,
                             text: "⋔ not a git repo — read-only fan-out".to_string(),
                         });
@@ -1305,7 +1330,7 @@ async fn event_loop(
                                 status: entheai_tools::todo::TodoStatus::Pending,
                             })
                             .collect();
-                        app.messages.push(Msg {
+                        app.push_msg(Msg {
                             role: Role::Tool,
                             text: format!("◇ decomposed into {count} sub-task(s)"),
                         });
@@ -1323,7 +1348,7 @@ async fn event_loop(
                         if let Some(item) = app.plan.get_mut(index) {
                             item.status = entheai_tools::todo::TodoStatus::InProgress;
                         }
-                        app.messages.push(Msg {
+                        app.push_msg(Msg {
                             role: Role::Tool,
                             text: format!("▸ [{role} #{index}] {}", truncate(&task, 80)),
                         });
@@ -1339,7 +1364,7 @@ async fn event_loop(
                                 entheai_tools::todo::TodoStatus::Done
                             };
                         }
-                        app.messages.push(Msg {
+                        app.push_msg(Msg {
                             role: Role::Tool,
                             text: format!("  #{index}: {status}"),
                         });
@@ -1359,7 +1384,7 @@ async fn event_loop(
                     }
                     Some(entheai_orchestrator::FanoutEvent::Integrating { branches }) => {
                         app.swarm.integrating(branches);
-                        app.messages.push(Msg {
+                        app.push_msg(Msg {
                             role: Role::Tool,
                             text: format!("⧉ integrating {branches} branch(es)…"),
                         });
@@ -1370,7 +1395,7 @@ async fn event_loop(
                     }
                     Some(entheai_orchestrator::FanoutEvent::Done { integration_branch, merged, conflicted }) => {
                         app.swarm.done(integration_branch.clone(), merged, conflicted);
-                        app.messages.push(Msg {
+                        app.push_msg(Msg {
                             role: Role::Tool,
                             text: format!(
                                 "◆ done — {merged} merged, {conflicted} conflicted{}",
@@ -1455,7 +1480,7 @@ async fn event_loop(
                             }
                         }
                     }
-                    app.messages.push(Msg {
+                    app.push_msg(Msg {
                         role: Role::Tool,
                         text: format!("{} · {fresh} new span(s) in the soil", report.summary()),
                     });
@@ -1794,7 +1819,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 }
                 4 => {
                     app.status = Status::Idle;
-                    app.messages.push(Msg {
+                    app.push_msg(Msg {
                         role: Role::Tool,
                         text: "✓ entheai setup complete! Options saved for session.".to_string(),
                     });
@@ -1997,7 +2022,7 @@ fn is_radio_command(text: &str) -> bool {
 /// Forms: `/radio pause` · `/radio next` (restart the loop) · `/radio stop`
 /// · `/radio` (usage). There is exactly one track — see `entheai_radio`.
 fn handle_radio_command(app: &mut App, radio: &Radio, text: &str) {
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::User,
         text: text.to_string(),
     });
@@ -2017,7 +2042,7 @@ fn handle_radio_command(app: &mut App, radio: &Radio, text: &str) {
         }
         _ => "usage: /radio pause | next | stop — stations: Standing-Onde (8bit-Wraith) · Mirror in F (Fable's seed)".to_string(),
     };
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::Tool,
         text: feedback,
     });
@@ -2036,7 +2061,7 @@ fn is_speak_command(text: &str) -> bool {
 /// Forms: `/speak on` · `/speak off` · `/speak stop` (interrupt current
 /// utterance) · `/speak` (toggle).
 fn handle_speak_command(app: &mut App, voice: &mut Voice, text: &str) {
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::User,
         text: text.to_string(),
     });
@@ -2066,7 +2091,7 @@ fn handle_speak_command(app: &mut App, voice: &mut Voice, text: &str) {
         }
         Some(_) => "usage: /speak [on|off|stop]".to_string(),
     };
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::Tool,
         text: feedback,
     });
@@ -2095,7 +2120,7 @@ async fn handle_checkpoint_command(
     chenno_cfg: &entheai_config::ChennoConfig,
     text: &str,
 ) {
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::User,
         text: text.to_string(),
     });
@@ -2172,7 +2197,7 @@ async fn handle_checkpoint_command(
                                 // sees the rehydrated context next turn.
                                 let header =
                                     brief.lines().next().unwrap_or_default().to_string();
-                                app.messages.push(Msg {
+                                app.push_msg(Msg {
                                     role: Role::User,
                                     text: format!("[thawed context — for reference]\n{brief}"),
                                 });
@@ -2186,7 +2211,7 @@ async fn handle_checkpoint_command(
             }
         }
     };
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::Tool,
         text: feedback,
     });
@@ -2204,7 +2229,7 @@ fn is_current_command(text: &str) -> bool {
 /// now (spawned — the UI never blocks on the network; the report arrives via
 /// the pulse channel like an automatic one).
 fn handle_current_command(app: &mut App, current: &Option<CurrentRuntime>, text: &str) {
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::User,
         text: text.to_string(),
     });
@@ -2237,7 +2262,7 @@ fn handle_current_command(app: &mut App, current: &Option<CurrentRuntime>, text:
             Some(_) => "usage: /current [status|pulse]".to_string(),
         },
     };
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::Tool,
         text: feedback,
     });
@@ -2271,7 +2296,7 @@ fn format_status(status: &entheai_orchestrator::WorkerStatus) -> String {
 ///
 /// Forms: `/workers` / `/workers list` · `/workers stop <id>` · `/workers debug <id>`.
 fn handle_workers_command(app: &mut App, text: &str) {
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::User,
         text: text.to_string(),
     });
@@ -2332,7 +2357,7 @@ fn handle_workers_command(app: &mut App, text: &str) {
             _ => "usage: /workers [list | stop <id> | debug <id>]".to_string(),
         },
     };
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::Tool,
         text: feedback,
     });
@@ -2348,7 +2373,7 @@ fn is_viz_command(text: &str) -> bool {
 /// Toggle between the chat and full-screen swarm views in response to `/viz`,
 /// echoing the switch into history (mirrors the other local commands).
 fn handle_viz_command(app: &mut App, text: &str) {
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::User,
         text: text.to_string(),
     });
@@ -2363,7 +2388,7 @@ fn handle_viz_command(app: &mut App, text: &str) {
         ViewMode::Zen => "zen field",
         ViewMode::Dashboard => "dashboard view",
     };
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::Tool,
         text: format!("◈ switched to {where_now} (Ctrl-V to toggle)"),
     });
@@ -2377,7 +2402,7 @@ fn is_zen_command(text: &str) -> bool {
 
 /// Toggle the full-canvas Zen field in response to `/zen` (mirror of Ctrl-G).
 fn handle_zen_command(app: &mut App, text: &str) {
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::User,
         text: text.to_string(),
     });
@@ -2395,7 +2420,7 @@ fn handle_zen_command(app: &mut App, text: &str) {
     } else {
         "◈ back to chat view"
     };
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::Tool,
         text: word.to_string(),
     });
@@ -2410,7 +2435,7 @@ fn is_dashboard_command(text: &str) -> bool {
 /// Toggle the live fan-out dashboard in response to `/dashboard` (mirror of
 /// Ctrl-D), echoing the switch into history.
 fn handle_dashboard_command(app: &mut App, text: &str) {
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::User,
         text: text.to_string(),
     });
@@ -2425,7 +2450,7 @@ fn handle_dashboard_command(app: &mut App, text: &str) {
         ViewMode::Zen => "zen field",
         ViewMode::Dashboard => "dashboard",
     };
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::Tool,
         text: format!("◈ switched to {where_now} (Ctrl-D to toggle)"),
     });
@@ -2441,7 +2466,7 @@ fn is_theme_command(text: &str) -> bool {
 /// `/theme` cycles the Zen palette; `/theme <name>` sets one. Source identity
 /// colours (lineage gold & co) never change with the theme — the entity rule.
 fn handle_theme_command(app: &mut App, text: &str) {
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::User,
         text: text.to_string(),
     });
@@ -2460,7 +2485,7 @@ fn handle_theme_command(app: &mut App, text: &str) {
         })
         .collect::<Vec<_>>()
         .join(" · ");
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::Tool,
         text: format!("🎨 zen theme: {roster}"),
     });
@@ -2491,7 +2516,7 @@ fn is_help_command(text: &str) -> bool {
 /// Echo the full slash-command list plus key bindings into history so the whole
 /// surface is discoverable without leaving the TUI.
 fn handle_help_command(app: &mut App) {
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::User,
         text: "/help".to_string(),
     });
@@ -2503,7 +2528,7 @@ fn handle_help_command(app: &mut App) {
         "\nkeys: Enter send · Esc Esc stop run · Ctrl-C ×2 quit · q quit (empty input)\
          \n      Ctrl-G zen · Ctrl-V viz · Ctrl-P pause · Ctrl-N next · PgUp/PgDn scroll · Tab complete",
     );
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::Tool,
         text: body,
     });
@@ -2517,12 +2542,12 @@ fn is_config_command(text: &str) -> bool {
 
 /// Open the interactive configuration menu overlay.
 fn handle_config_command(app: &mut App) {
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::User,
         text: "/config".to_string(),
     });
     app.status = Status::ConfigMenu { selected_idx: 0 };
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::Tool,
         text:
             "◧ configuration menu opened. Use Arrow Keys to navigate, Left/Right/Enter to toggle."
@@ -2538,12 +2563,12 @@ fn is_setup_command(text: &str) -> bool {
 
 /// Open the interactive setup wizard modal overlay.
 fn handle_setup_command(app: &mut App) {
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::User,
         text: "/setup".to_string(),
     });
     app.status = Status::SetupMenu { step_idx: 0 };
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::Tool,
         text:
             "❖ entheai setup wizard started. Follow the interactive steps to configure your environment."
@@ -2562,12 +2587,12 @@ fn is_clear_command(text: &str) -> bool {
 /// Drop the whole conversation (and any derived plan/scroll state) so the next
 /// message starts from an empty context. The system prompt is untouched.
 fn handle_clear_command(app: &mut App) {
-    app.messages.clear();
+    app.clear_messages();
     app.streaming_idx = None;
     app.plan.clear();
     app.scroll = 0;
     app.follow = true;
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::Tool,
         text: "◧ conversation cleared — fresh context".to_string(),
     });
@@ -2582,7 +2607,7 @@ fn is_fanout_command(text: &str) -> bool {
 /// Flip (or set) whether submitted messages decompose into parallel coders
 /// (`app.fanout`, read by the run path) instead of the single-agent loop.
 fn handle_fanout_command(app: &mut App, text: &str) {
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::User,
         text: text.to_string(),
     });
@@ -2596,7 +2621,7 @@ fn handle_fanout_command(app: &mut App, text: &str) {
     } else {
         "off — single-agent loop"
     };
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::Tool,
         text: format!("⑂ fan-out {state}"),
     });
@@ -2611,11 +2636,11 @@ fn is_model_command(text: &str) -> bool {
 /// Echo the active model label; the agent is built once per session, so
 /// switching means relaunching with `--model "<provider>/<model>"`.
 fn handle_model_command(app: &mut App) {
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::User,
         text: "/model".to_string(),
     });
-    app.messages.push(Msg {
+    app.push_msg(Msg {
         role: Role::Tool,
         text: format!(
             "● model: {} — switch by restarting with --model \"<provider>/<model>\"",
@@ -2664,7 +2689,7 @@ fn handle_radio_event(app: &mut App, ev: RadioEvent) {
     match ev {
         RadioEvent::NowPlaying { title, loop_count } => {
             if loop_count <= 1 {
-                app.messages.push(Msg {
+                app.push_msg(Msg {
                     role: Role::Tool,
                     text: format!("♪ now playing: {title}"),
                 });
@@ -2682,7 +2707,7 @@ fn handle_radio_event(app: &mut App, ev: RadioEvent) {
             }
         }
         RadioEvent::Stopped => app.now_playing = None,
-        RadioEvent::Error(e) => app.messages.push(Msg {
+        RadioEvent::Error(e) => app.push_msg(Msg {
             role: Role::Error,
             text: format!("radio: {e}"),
         }),
@@ -2693,12 +2718,12 @@ fn handle_radio_event(app: &mut App, ev: RadioEvent) {
 /// to seed as prior turns. Only User and Assistant turns are real conversation;
 /// Tool/Error lines are display-only. The system prompt is no longer part of
 /// this history — it's applied once at agent construction via `instruction`.
-fn build_prior_turns(messages: &[Msg]) -> Vec<(String, String)> {
+fn build_prior_turns(messages: &[Msg]) -> Vec<(Arc<str>, Arc<str>)> {
     messages
         .iter()
         .filter_map(|m| match m.role {
-            Role::User => Some(("user".to_string(), m.text.clone())),
-            Role::Assistant => Some(("assistant".to_string(), m.text.clone())),
+            Role::User => Some(("user".into(), Arc::from(m.text.as_str()))),
+            Role::Assistant => Some(("assistant".into(), Arc::from(m.text.as_str()))),
             Role::Tool | Role::Error => None,
         })
         .collect()
@@ -3804,8 +3829,7 @@ fn max_context_window(model: &str) -> usize {
 /// every message) at ~4 chars/token — the same approximation `out_tokens` uses.
 fn est_context_tokens(app: &App) -> usize {
     let sys = app.system_prompt.as_deref().map(str::len).unwrap_or(0);
-    let msgs: usize = app.messages.iter().map(|m| m.text.len()).sum();
-    (sys + msgs) / 4
+    (sys + app.ctx_chars) / 4
 }
 
 /// Right-aligned top-bar segment: context fill + this run's generated tokens —
@@ -4132,6 +4156,7 @@ mod tests {
     fn test_app() -> App {
         App {
             messages: Vec::new(),
+            ctx_chars: 0,
             input: String::new(),
             status: Status::Idle,
             scroll: 0,
@@ -4291,11 +4316,11 @@ mod tests {
     fn clear_command_empties_history_but_keeps_system_prompt() {
         let mut app = test_app();
         app.system_prompt = Some("skills advertisement".into());
-        app.messages.push(Msg {
+        app.push_msg(Msg {
             role: Role::User,
             text: "hi".into(),
         });
-        app.messages.push(Msg {
+        app.push_msg(Msg {
             role: Role::Assistant,
             text: "hello".into(),
         });
@@ -4408,8 +4433,31 @@ mod tests {
         ];
         let hist = build_prior_turns(&messages);
         assert_eq!(hist.len(), 2);
-        assert_eq!(hist[0].0, "user");
-        assert_eq!(hist[1].0, "assistant");
+        assert_eq!(hist[0].0.as_ref(), "user");
+        assert_eq!(hist[1].0.as_ref(), "assistant");
+    }
+
+    #[test]
+    fn ctx_counter_stays_in_lockstep_and_readout_is_o1() {
+        let mut app = test_app();
+        app.system_prompt = Some("0123456789".into());
+        app.push_msg(Msg {
+            role: Role::User,
+            text: "abcd".into(),
+        });
+        app.push_msg(Msg {
+            role: Role::Assistant,
+            text: "efghij".into(),
+        });
+        app.append_token(1, "kl");
+        let sum: usize = app.messages.iter().map(|m| m.text.len()).sum();
+        assert_eq!(app.ctx_chars, sum, "counter must equal the message sum");
+        assert_eq!(app.ctx_chars, 12);
+        assert_eq!(est_context_tokens(&app), (10 + 12) / 4);
+        app.clear_messages();
+        assert_eq!(app.ctx_chars, 0);
+        assert!(app.messages.is_empty());
+        assert_eq!(est_context_tokens(&app), 10 / 4);
     }
 
     #[test]
@@ -4635,6 +4683,7 @@ mod tests {
     fn workers_command_submits_even_while_working() {
         let mut app = App {
             messages: Vec::new(),
+            ctx_chars: 0,
             input: "/workers list".to_string(),
             status: Status::Working,
             scroll: 0,
@@ -4690,6 +4739,7 @@ mod tests {
     fn plain_message_does_not_submit_while_working() {
         let mut app = App {
             messages: Vec::new(),
+            ctx_chars: 0,
             input: "hello agent".to_string(),
             status: Status::Working,
             scroll: 0,
@@ -4743,6 +4793,7 @@ mod tests {
     fn at_file_reference_survives_submit_unmodified() {
         let mut app = App {
             messages: Vec::new(),
+            ctx_chars: 0,
             input: "@{crates/tui/src/lib.rs} fix the input handler".to_string(),
             status: Status::Idle,
             scroll: 0,
@@ -4851,6 +4902,7 @@ mod tests {
     fn workers_command_reports_no_fanout_running_when_pool_is_none() {
         let mut app = App {
             messages: Vec::new(),
+            ctx_chars: 0,
             input: String::new(),
             status: Status::Idle,
             scroll: 0,
@@ -4907,6 +4959,7 @@ mod tests {
     fn radio_events_update_now_playing() {
         let mut app = App {
             messages: Vec::new(),
+            ctx_chars: 0,
             input: String::new(),
             status: Status::Idle,
             scroll: 0,

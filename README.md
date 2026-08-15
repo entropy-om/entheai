@@ -13,6 +13,9 @@ Community call: `https://luma.com/sfkwmsjx` [sign-up](https://luma.com/sfkwmsjx)
   <img src="https://img.shields.io/badge/platform-macOS%20·%20Apple%20Silicon-111" alt="platform">
   <img src="https://img.shields.io/badge/built%20in-Rust-orange" alt="Rust">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="license">
+  <a href="https://www.8b.is/documentation"><img src="https://img.shields.io/badge/8b.IS-Documentation%20Hub-00ff9f" alt="8b.is documentation"></a>
+  <a href="https://github.com/8b-is/8b-public-documents"><img src="https://img.shields.io/badge/docs-8b--public--documents-00b8ff" alt="8b public documents"></a>
+  <a href="https://www.8b.is/waves/mem8"><img src="https://img.shields.io/badge/Wave-MEM%7C8-ff00ff" alt="MEM|8 Wave"></a>
   <a href="https://rustybox.io"><img src="https://img.shields.io/badge/userland-rustybox.io-9900ff" alt="rustybox.io userland"></a>
   <a href="https://huggingface.co/datasets/PeetPedro/ultrawhale-dogfood"><img src="https://img.shields.io/badge/🤗%20dataset-ultrawhale--dogfood-ffbd45" alt="ultrawhale-dogfood dataset on Hugging Face"></a>
 </p>

@@ -55,9 +55,12 @@ pub async fn entheai_run(args: Value, server_cwd: PathBuf) -> anyhow::Result<Val
     )?;
 
     let t0 = Instant::now();
-    let answer = tokio::time::timeout(Duration::from_secs(timeout_secs), agent.run_to_text(&prompt))
-        .await
-        .map_err(|_| anyhow::anyhow!("entheai_run timed out after {timeout_secs}s"))??;
+    let answer = tokio::time::timeout(
+        Duration::from_secs(timeout_secs),
+        agent.run_to_text(&prompt),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("entheai_run timed out after {timeout_secs}s"))??;
 
     Ok(json!({
         "answer": answer,

@@ -1,6 +1,6 @@
+use crate::{Tool, ToolError};
 use async_trait::async_trait;
 use serde_json::json;
-use crate::{Tool, ToolError};
 
 /// OpenClaw Health Check tool for entheai.
 pub struct OpenClawProbe {
@@ -44,9 +44,15 @@ impl Tool for OpenClawProbe {
         match client.get(&self.endpoint).send().await {
             Ok(resp) => {
                 let status = resp.status();
-                Ok(format!("OpenClaw Gateway ({}) status: HTTP {}", self.endpoint, status))
+                Ok(format!(
+                    "OpenClaw Gateway ({}) status: HTTP {}",
+                    self.endpoint, status
+                ))
             }
-            Err(e) => Ok(format!("OpenClaw Gateway ({}) probe failed: {}", self.endpoint, e)),
+            Err(e) => Ok(format!(
+                "OpenClaw Gateway ({}) probe failed: {}",
+                self.endpoint, e
+            )),
         }
     }
 

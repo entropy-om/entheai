@@ -146,11 +146,7 @@ async fn tools_call_response(
 
 /// Box the handler call so `Handler` (a plain fn returning a pinned future)
 /// needs no generic plumbing at the call site.
-async fn call_handler(
-    handler: Handler,
-    args: Value,
-    server_cwd: PathBuf,
-) -> anyhow::Result<Value> {
+async fn call_handler(handler: Handler, args: Value, server_cwd: PathBuf) -> anyhow::Result<Value> {
     handler(args, server_cwd).await
 }
 

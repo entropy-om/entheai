@@ -29,9 +29,9 @@ fn resolve_in_root(root: &Path, rel: &str) -> Result<PathBuf, ToolError> {
     // the deepest EXISTING ancestor of the target and confirm it's still inside `root`. A
     // symlink can only redirect an existing component, so checking the existing prefix is
     // sufficient; not-yet-created files (write_file) fall back to their nearest existing
-    // parent (worst case, `root` itself). `root` itself is canonicalized here too — callers
-    // may pass it as-is (e.g. macOS temp dirs live under `/var`, itself a symlink to
-    // `/private/var`), so comparing against a raw `root` would produce false positives.
+    // parent (worst case, `root` itself). `root` must already be canonicalized — the tool
+    // constructors do that once (e.g. macOS temp dirs live under `/var`, itself a symlink
+    // to `/private/var`), so no per-call canonicalization is needed here.
     let mut ancestor: &Path = normalized.as_path();
     while !ancestor.exists() {
         match ancestor.parent() {
@@ -40,8 +40,7 @@ fn resolve_in_root(root: &Path, rel: &str) -> Result<PathBuf, ToolError> {
         }
     }
     if let Ok(canonical) = ancestor.canonicalize() {
-        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        if !canonical.starts_with(&canonical_root) {
+        if !canonical.starts_with(root) {
             return Err(ToolError::PathEscape(rel.to_string()));
         }
     }
@@ -58,14 +57,16 @@ fn path_arg(args: &serde_json::Value) -> Result<String, ToolError> {
 /// Upper bound on how much of a file `read_file` will load into memory at once,
 /// consistent with `run_shell`'s output cap — an unbounded `read_to_string` on an
 /// arbitrarily large in-workspace file would otherwise be an uncapped allocation.
-const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
+pub(crate) const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
 
 pub struct ReadFile {
     root: PathBuf,
 }
 impl ReadFile {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        let root = root.into();
+        let root = root.canonicalize().unwrap_or(root);
+        Self { root }
     }
 }
 #[async_trait]
@@ -109,7 +110,9 @@ pub struct WriteFile {
 }
 impl WriteFile {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        let root = root.into();
+        let root = root.canonicalize().unwrap_or(root);
+        Self { root }
     }
 }
 #[async_trait]
@@ -156,7 +159,9 @@ pub struct EditFile {
 }
 impl EditFile {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        let root = root.into();
+        let root = root.canonicalize().unwrap_or(root);
+        Self { root }
     }
 }
 #[async_trait]
@@ -241,6 +246,51 @@ mod tests {
         assert!(
             err.to_string().to_lowercase().contains("too large"),
             "expected a 'too large' error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn constructors_canonicalize_the_root_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let expected = dir.path().canonicalize().unwrap();
+        assert_eq!(ReadFile::new(dir.path()).root, expected);
+        assert_eq!(WriteFile::new(dir.path()).root, expected);
+        assert_eq!(EditFile::new(dir.path()).root, expected);
+    }
+
+    #[test]
+    fn resolve_in_root_accepts_plain_and_dot_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        assert_eq!(
+            resolve_in_root(&root, "a/b.txt").unwrap(),
+            root.join("a/b.txt")
+        );
+        assert_eq!(resolve_in_root(&root, "./x").unwrap(), root.join("x"));
+    }
+
+    #[test]
+    fn resolve_in_root_rejects_parent_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        assert!(resolve_in_root(&root, "../escaped.txt").is_err());
+        assert!(resolve_in_root(&root, "a/../../escaped.txt").is_err());
+    }
+
+    #[test]
+    fn resolve_in_root_rejects_symlink_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "sekret").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.txt"),
+            dir.path().join("link.txt"),
+        )
+        .unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        assert!(
+            resolve_in_root(&root, "link.txt").is_err(),
+            "an escaping symlink must be rejected"
         );
     }
 }
