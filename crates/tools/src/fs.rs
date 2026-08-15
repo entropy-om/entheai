@@ -248,4 +248,49 @@ mod tests {
             "expected a 'too large' error, got: {err}"
         );
     }
+
+    #[test]
+    fn constructors_canonicalize_the_root_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let expected = dir.path().canonicalize().unwrap();
+        assert_eq!(ReadFile::new(dir.path()).root, expected);
+        assert_eq!(WriteFile::new(dir.path()).root, expected);
+        assert_eq!(EditFile::new(dir.path()).root, expected);
+    }
+
+    #[test]
+    fn resolve_in_root_accepts_plain_and_dot_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        assert_eq!(
+            resolve_in_root(&root, "a/b.txt").unwrap(),
+            root.join("a/b.txt")
+        );
+        assert_eq!(resolve_in_root(&root, "./x").unwrap(), root.join("x"));
+    }
+
+    #[test]
+    fn resolve_in_root_rejects_parent_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        assert!(resolve_in_root(&root, "../escaped.txt").is_err());
+        assert!(resolve_in_root(&root, "a/../../escaped.txt").is_err());
+    }
+
+    #[test]
+    fn resolve_in_root_rejects_symlink_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "sekret").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.txt"),
+            dir.path().join("link.txt"),
+        )
+        .unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        assert!(
+            resolve_in_root(&root, "link.txt").is_err(),
+            "an escaping symlink must be rejected"
+        );
+    }
 }

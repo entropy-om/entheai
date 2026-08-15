@@ -145,10 +145,11 @@ mod tests {
             "search",
             "run_shell",
             "todo",
+            "openclaw_probe",
         ] {
             assert!(names.contains(expected), "builtin set missing {expected:?}");
         }
-        assert_eq!(reg.to_tools().len(), 6, "exactly the six core builtins");
+        assert_eq!(reg.to_tools().len(), 7, "exactly the seven core builtins");
     }
 
     #[tokio::test]

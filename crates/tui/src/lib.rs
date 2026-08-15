@@ -4438,6 +4438,29 @@ mod tests {
     }
 
     #[test]
+    fn ctx_counter_stays_in_lockstep_and_readout_is_o1() {
+        let mut app = test_app();
+        app.system_prompt = Some("0123456789".into());
+        app.push_msg(Msg {
+            role: Role::User,
+            text: "abcd".into(),
+        });
+        app.push_msg(Msg {
+            role: Role::Assistant,
+            text: "efghij".into(),
+        });
+        app.append_token(1, "kl");
+        let sum: usize = app.messages.iter().map(|m| m.text.len()).sum();
+        assert_eq!(app.ctx_chars, sum, "counter must equal the message sum");
+        assert_eq!(app.ctx_chars, 12);
+        assert_eq!(est_context_tokens(&app), (10 + 12) / 4);
+        app.clear_messages();
+        assert_eq!(app.ctx_chars, 0);
+        assert!(app.messages.is_empty());
+        assert_eq!(est_context_tokens(&app), 10 / 4);
+    }
+
+    #[test]
     fn history_lines_prefix_first_row_only() {
         let messages = vec![Msg {
             role: Role::User,

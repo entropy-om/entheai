@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn cap_chars_truncates_and_marks() {
         let long = "x".repeat(50);
-        assert_eq!(cap_chars(&long, 10).len(), 10 + "…[truncated]".len());
+        assert_eq!(cap_chars(&long, 10).len(), 10 + "\n…[truncated]".len());
         assert!(cap_chars(&long, 10).ends_with("[truncated]"));
         assert_eq!(cap_chars("short", 100), "short");
     }
