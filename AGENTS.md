@@ -134,3 +134,9 @@ Register in `main.rs` with `registry.register(Box::new(MyTool::new(root.clone())
 - **Osaurus**: local inference server on `http://127.0.0.1:1337/v1` (OpenAI-compatible)
 - **OpenCode Zen**: cloud gateway at `https://opencode.ai/zen/v1` (DeepSeek V4 Pro/Flash, Qwen, etc.)
 - **Sentry**: crash/error reporting with hardcoded DSN (opt-out via `SENTRY_DSN` env)
+- **8b.IS Ecosystem**:
+  - Documentation Hub: `https://www.8b.is/documentation`
+  - Public Documents: `https://github.com/8b-is/8b-public-documents`
+  - MEM|8 Temporal Vector Memory: `https://www.8b.is/waves/mem8`
+  - MAAT Ethical Alignment: `https://www.8b.is/maat`
+
