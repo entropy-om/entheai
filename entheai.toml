@@ -130,25 +130,15 @@ confidence_threshold = 0.82
 
 # ── Model Context Protocol (MCP) Servers ──────────────────────────────────────
 
-# Smart Tree: AST Context Compression & Symbol Extraction (8b-is/smart-tree)
+# Smart Tree: AST Context Compression, Symbol Extraction & Security Sentinel (8b-is/smart-tree)
 [mcp.smart-tree]
 command = "st"
-args = ["--mcp"]
-
-# MagiSCanner: Cryptographic Hash Memory & Security Sentinel (8bit-wraith/magiscanner)
-[mcp.magiscanner]
-command = "magiscanner"
 args = ["--mcp"]
 
 # DeepSeek Harness (dsh): Plugin-First Agent Runtime & Trajectory Engine (deepseek-ai/deepseek-harness)
 [mcp.deepseek-harness]
 command = "npx"
 args = ["-y", "@deepseek-ai/dsh", "mcp"]
-
-# Codebase Memory Knowledge Graph
-[mcp.codebase]
-command = "codebase-memory-mcp"
-args = ["--root", "."]
 
 # ── Companion Floating Session Beacon ──────────────────────────────────────────
 
