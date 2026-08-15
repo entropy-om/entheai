@@ -244,7 +244,55 @@ export async function handleStripe(request, env) {
   });
   await env.LICENSES.put(`license:${key}`, license);
   await env.LICENSES.put(`session:${session.id}`, key);
+
+  // Best-effort email delivery: the license is already durable in KV, so a
+  // failed send must never fail the webhook (Stripe would retry and we'd hit
+  // the idempotency short-circuit above). Skip silently when unconfigured.
+  const email = session.customer_details?.email;
+  if (email) {
+    await sendBackerEmail(env, email, key);
+  }
   return json({ received: true }, 200, headers);
+}
+
+// Send the freshly-minted license key to the buyer via AgentMail. Best-effort:
+// logs a warning on any failure and never throws. Requires the AgentMail API
+// key (`AGENTMAIL_AGENTMAIL_API_KEY`) and a created inbox (`AGENTMAIL_INBOX_ID`).
+export async function sendBackerEmail(env, to, key) {
+  if (!env.AGENTMAIL_AGENTMAIL_API_KEY || !env.AGENTMAIL_INBOX_ID) {
+    return;
+  }
+  const body = JSON.stringify({
+    to,
+    subject: "Your entheai Backer license key",
+    text: [
+      "Thanks for backing entheai.",
+      "",
+      `Your license key: ${key}`,
+      "",
+      "Activate it with:",
+      `  entheai activate ${key}`,
+      "",
+      "The beta channel unlocks once activated. If you lose this key, you can",
+      "reclaim it from https://entheai.com/back/claim",
+    ].join("\n"),
+  });
+  try {
+    await fetch(
+      `https://api.agentmail.to/v0/inboxes/${env.AGENTMAIL_INBOX_ID}/messages/send`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.AGENTMAIL_AGENTMAIL_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body,
+      }
+    );
+  } catch (e) {
+    // Delivery is best-effort; the claim page is the fallback path.
+    console.warn(`sendBackerEmail failed: ${e}`);
+  }
 }
 
 // POST /api/license/verify — { key } → entitlement. No auth (the key IS the

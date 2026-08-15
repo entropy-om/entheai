@@ -7,6 +7,7 @@ import worker, {
   handleClaim,
   handleReleases,
   generateLicenseKey,
+  sendBackerEmail,
   LICENSE_ALPHABET,
   SCHEMA,
   KV_KEY,
@@ -409,4 +410,55 @@ test("the monetization routes reach their handlers, not the asset pipeline", asy
   // Anything else still does fall through.
   assert.equal((await worker.fetch(new Request("https://entheai.com/back"), e)).status, 200);
   assert.equal(assetHits, 1);
+});
+
+test("sendBackerEmail is a no-op when unconfigured and posts to AgentMail when set", async () => {
+  // No secrets → resolves without throwing and without a network call.
+  await sendBackerEmail({}, "a@b.c", "ENTH-AAAA-AAAA-AAAA-AAAA");
+
+  // With secrets → one fetch to the AgentMail send endpoint, Bearer auth, the
+  // key in the plain-text body.
+  let seen;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    seen = { url, init };
+    return new Response("{}", { status: 200 });
+  };
+  try {
+    await sendBackerEmail(
+      { AGENTMAIL_AGENTMAIL_API_KEY: "am_u_test", AGENTMAIL_INBOX_ID: "entheai-backer@agentmail.to" },
+      "backer@example.com",
+      "ENTH-KEY0-KEY0-KEY0-KEY0"
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(
+    seen.url,
+    "https://api.agentmail.to/v0/inboxes/entheai-backer@agentmail.to/messages/send"
+  );
+  assert.equal(seen.init.headers.Authorization, "Bearer am_u_test");
+  const body = JSON.parse(seen.init.body);
+  assert.equal(body.to, "backer@example.com");
+  assert.ok(body.text.includes("ENTH-KEY0-KEY0-KEY0-KEY0"), "key in the email body");
+});
+
+test("sendBackerEmail swallows network failures (best-effort delivery)", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("network down");
+  };
+  let threw = false;
+  try {
+    await sendBackerEmail(
+      { AGENTMAIL_AGENTMAIL_API_KEY: "am_u_test", AGENTMAIL_INBOX_ID: "in@agentmail.to" },
+      "a@b.c",
+      "ENTH-KEY0-KEY0-KEY0-KEY0"
+    );
+  } catch {
+    threw = true;
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(threw, false, "email failure must never propagate to the webhook");
 });
