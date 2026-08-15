@@ -6,12 +6,23 @@ import worker, {
   handleLicense,
   handleClaim,
   handleReleases,
+  handleStripeCheckout,
+  handleSovereignVerify,
+  handleSovereignPub,
   generateLicenseKey,
   sendBackerEmail,
+  signSovereign,
+  buildSovereignPayload,
+  b64url,
+  b64urlDecode,
   LICENSE_ALPHABET,
   SCHEMA,
   KV_KEY,
   STALE_AFTER_MS,
+  SOVEREIGN_PUBLIC_KEY_B64URL,
+  SOVEREIGN_TTL_SECS,
+  TIER_ENTITLEMENTS,
+  STORE_CATALOG,
 } from "../src/worker.mjs";
 
 /** Minimal in-memory KV double (get/put are all the worker uses). */
@@ -461,4 +472,514 @@ test("sendBackerEmail swallows network failures (best-effort delivery)", async (
     globalThis.fetch = realFetch;
   }
   assert.equal(threw, false, "email failure must never propagate to the webhook");
+});
+
+// ---- Sovereign keys (constellation monetization, Lane 1) ------------------
+// Ed25519-signed vkd_ tokens minted on store checkout and verified offline
+// against the published public key. Records live under the `vkd:` KV prefix.
+
+// Fixed 32-byte Ed25519 seed (bytes 0x01..0x20), base64url.
+const TEST_SEED = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
+
+/** Derive the base64url 32-byte public key for a seed (RFC 8410 PKCS#8). */
+async function pubKeyB64FromSeed(seedB64) {
+  const der = new Uint8Array([
+    0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70,
+    0x04, 0x22, 0x04, 0x20, ...b64urlDecode(seedB64),
+  ]);
+  const key = await crypto.subtle.importKey("pkcs8", der, { name: "Ed25519" }, true, ["sign"]);
+  return (await crypto.subtle.exportKey("jwk", key)).x;
+}
+
+/** Parse the payload segment of a `vkd_sk_<payload>.<sig>` token. */
+function decodePayload(token) {
+  return JSON.parse(
+    new TextDecoder().decode(b64urlDecode(token.slice("vkd_sk_".length).split(".")[0]))
+  );
+}
+
+const sovereignVerify = (key, e) =>
+  handleSovereignVerify(
+    new Request("https://entheai.com/api/sovereign/verify", {
+      method: "POST",
+      body: JSON.stringify({ key }),
+    }),
+    e
+  );
+
+const sovereignCheckout = (body, overrides = {}) =>
+  handleStripeCheckout(
+    new Request("https://entheai.com/api/stripe/checkout", { method: "POST", body }),
+    licenseEnv({ STRIPE_SECRET_KEY: "sk_test_live", ...overrides })
+  );
+
+test("sovereign: b64url round-trips bytes with no padding or URL-hostile chars", () => {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  assert.equal(b64urlDecode(b64url(bytes)).join(","), bytes.join(","));
+  const enc = b64url(bytes);
+  assert.ok(!enc.includes("="), "no padding");
+  assert.ok(!enc.includes("+") && !enc.includes("/"), "URL-safe alphabet");
+});
+
+test("sovereign: Ed25519 sign→verify round trip over a fixed seed", async () => {
+  const payload = buildSovereignPayload("roundtrip@example.com", "member");
+  const token = await signSovereign(payload, TEST_SEED);
+  assert.match(token, /^vkd_sk_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+
+  const [, head, sig] = token.match(/^vkd_sk_([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/);
+  const payloadBytes = b64urlDecode(head);
+  const sigBytes = b64urlDecode(sig);
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(payloadBytes)), payload);
+
+  const pub = await crypto.subtle.importKey(
+    "jwk",
+    { kty: "OKP", crv: "Ed25519", x: await pubKeyB64FromSeed(TEST_SEED) },
+    { name: "Ed25519" },
+    false,
+    ["verify"]
+  );
+  assert.equal(await crypto.subtle.verify("Ed25519", pub, sigBytes, payloadBytes), true);
+  const tampered = Uint8Array.from(sigBytes);
+  tampered[0] ^= 0xff;
+  assert.equal(await crypto.subtle.verify("Ed25519", pub, tampered, payloadBytes), false);
+});
+
+test("sovereign: payload carries the tier matrix (TTLs + entitlements)", () => {
+  const expected = {
+    presence: { ttl: 30 * 86400, ent: ["community"] },
+    backer: { ttl: 365 * 86400, ent: ["community", "gallery-hd", "quantal", "beta"] },
+    member: {
+      ttl: 5 * 365 * 86400,
+      ent: ["community", "gallery-hd", "quantal", "labs", "quant-api", "beta"],
+    },
+  };
+  for (const [tier, { ttl, ent }] of Object.entries(expected)) {
+    const p = buildSovereignPayload("tier@example.com", tier);
+    assert.equal(p.v, 1);
+    assert.equal(p.iss, "vaked-sovereign-worker");
+    assert.equal(p.tier, tier);
+    assert.deepEqual(p.ent, ent);
+    assert.equal(p.exp - p.iat, ttl, `${tier} TTL`);
+    assert.ok(p.iat <= Math.floor(Date.now() / 1000), "iat is in the past");
+  }
+  // Unknown tiers degrade to presence, never throw.
+  const fallback = buildSovereignPayload("x@y.z", "hyperbacker");
+  assert.equal(fallback.tier, "hyperbacker");
+  assert.deepEqual(fallback.ent, TIER_ENTITLEMENTS.presence);
+});
+
+test("sovereign: both public key paths serve the hardcoded 32-byte key", async () => {
+  for (const path of ["/.well-known/sovereign.pub", "/api/sovereign/pub"]) {
+    const res = await worker.fetch(new Request(`https://entheai.com${path}`), {});
+    assert.equal(res.status, 200, path);
+    assert.equal(res.headers.get("content-type"), "application/octet-stream", path);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    assert.equal(bytes.length, 32, path);
+    assert.equal(b64url(bytes), SOVEREIGN_PUBLIC_KEY_B64URL, path);
+  }
+});
+
+test("sovereign: public key endpoint degrades to 503 on an unconfigured key", async () => {
+  const res = await handleSovereignPub(
+    new Request("https://entheai.com/.well-known/sovereign.pub"),
+    { SOVEREIGN_PUBLIC_KEY: "not-base64url!!!" }
+  );
+  assert.equal(res.status, 503);
+  assert.deepEqual(await res.json(), { error: "public key unconfigured" });
+});
+
+test("sovereign: verify accepts a store-minted member token (signature + exp + KV record)", async () => {
+  const e = licenseEnv({
+    SOVEREIGN_SIGNING_KEY: TEST_SEED,
+    SOVEREIGN_PUBLIC_KEY: await pubKeyB64FromSeed(TEST_SEED),
+  });
+  await handleStripe(await webhook(checkoutEvent({ metadata: { tier: "member" } })), e);
+
+  const token = await e.LICENSES.get("vkd:license:backer@example.com");
+  assert.ok(token && token.startsWith("vkd_sk_"), "token minted into KV under vkd:license:<email>");
+  const payload = decodePayload(token);
+  assert.equal(payload.sub, "backer@example.com");
+  assert.equal(payload.tier, "member");
+
+  const ok = await sovereignVerify(token, e);
+  assert.equal(ok.status, 200);
+  assert.deepEqual(await ok.json(), {
+    ok: true,
+    tier: "member",
+    ent: TIER_ENTITLEMENTS.member,
+    sub: "backer@example.com",
+    exp: payload.exp,
+  });
+});
+
+test("sovereign: verify rejects a tampered signature and an expired token", async () => {
+  const e = licenseEnv({
+    SOVEREIGN_SIGNING_KEY: TEST_SEED,
+    SOVEREIGN_PUBLIC_KEY: await pubKeyB64FromSeed(TEST_SEED),
+  });
+  await handleStripe(await webhook(checkoutEvent({ metadata: { tier: "backer" } })), e);
+  const token = await e.LICENSES.get("vkd:license:backer@example.com");
+
+  // Same sub with a valid KV record: rejection provably comes from the crypto
+  // path, not the record cross-check.
+  const dot = token.lastIndexOf(".");
+  const flip = token[dot + 1] === "A" ? "B" : "A";
+  const tampered = token.slice(0, dot + 1) + flip + token.slice(dot + 2);
+  const bad = await sovereignVerify(tampered, e);
+  assert.equal(bad.status, 401);
+  assert.deepEqual(await bad.json(), { ok: false });
+
+  // Signature valid but exp in the past — no KV store bound, so the rejection
+  // provably comes from the expiry check.
+  const expired = await signSovereign(
+    buildSovereignPayload("expired@example.com", "backer", Date.now() - 400 * 86400 * 1000),
+    TEST_SEED
+  );
+  const offline = await sovereignVerify(expired, {
+    SOVEREIGN_PUBLIC_KEY: await pubKeyB64FromSeed(TEST_SEED),
+  });
+  assert.equal(offline.status, 401);
+  assert.deepEqual(await offline.json(), { ok: false });
+});
+
+test("sovereign: verify is offline-friendly and treats a missing KV record as revocation", async () => {
+  const pubB64 = await pubKeyB64FromSeed(TEST_SEED);
+  const fresh = await signSovereign(buildSovereignPayload("offline@example.com", "backer"), TEST_SEED);
+
+  // No KV store bound → signature + exp is the whole story.
+  const offline = await sovereignVerify(fresh, { SOVEREIGN_PUBLIC_KEY: pubB64 });
+  assert.equal(offline.status, 200);
+  assert.equal((await offline.json()).ok, true);
+
+  // Store bound but no vkd:license:<sub> record → revoked.
+  const revoked = await sovereignVerify(fresh, licenseEnv({ SOVEREIGN_PUBLIC_KEY: pubB64 }));
+  assert.equal(revoked.status, 401);
+  assert.deepEqual(await revoked.json(), { ok: false });
+});
+
+test("sovereign: verify guards its method and rejects malformed keys", async () => {
+  const e = licenseEnv({ SOVEREIGN_PUBLIC_KEY: SOVEREIGN_PUBLIC_KEY_B64URL });
+  const get = new Request("https://entheai.com/api/sovereign/verify");
+  const res = await handleSovereignVerify(get, e);
+  assert.equal(res.status, 405);
+  assert.equal(res.headers.get("allow"), "POST");
+  const cases = ["", "not-a-sovereign-key", "vkd_sk_AAAA.BBB", "   ", JSON.stringify({ key: 42 })];
+  for (const key of cases) {
+    const r = await sovereignVerify(key, e);
+    assert.equal(r.status, 401, `${key} must not verify`);
+    assert.deepEqual(await r.json(), { ok: false });
+  }
+  for (const body of ["not json", JSON.stringify({}), JSON.stringify({ key: "" })]) {
+    const r = await handleSovereignVerify(
+      new Request("https://entheai.com/api/sovereign/verify", { method: "POST", body }),
+      e
+    );
+    assert.equal(r.status, 401, `${body} must not verify`);
+    assert.deepEqual(await r.json(), { ok: false });
+  }
+});
+
+test("sovereign: checkout returns 503 without STRIPE_SECRET_KEY", async () => {
+  const res = await handleStripeCheckout(
+    new Request("https://entheai.com/api/stripe/checkout", {
+      method: "POST",
+      body: JSON.stringify({ items: [{ sku: "tshirt", qty: 1 }] }),
+    }),
+    licenseEnv({ STRIPE_SECRET_KEY: undefined })
+  );
+  assert.equal(res.status, 503);
+  assert.deepEqual(await res.json(), { error: "stripe not configured" });
+});
+
+test("sovereign: checkout POSTs a hosted session to Stripe with catalog prices, tier metadata, and overrides", async () => {
+  let seen;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    seen = { url, init };
+    return new Response(JSON.stringify({ url: "https://checkout.stripe.com/c/pay/cs_test_shop" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const res = await sovereignCheckout(
+      JSON.stringify({
+        items: [
+          { sku: "hoodie", qty: 2 },
+          { sku: "vinyl", qty: 1, unit_amount: 4444 },
+          { sku: "vakedide-supporter", qty: 1 },
+        ],
+      })
+    );
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { url: "https://checkout.stripe.com/c/pay/cs_test_shop" });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(seen.url, "https://api.stripe.com/v1/checkout/sessions");
+  assert.equal(seen.init.method, "POST");
+  assert.equal(seen.init.headers.Authorization, "Bearer sk_test_live");
+  assert.equal(seen.init.headers["Content-Type"], "application/x-www-form-urlencoded");
+  const form = new URLSearchParams(seen.init.body);
+  assert.equal(form.get("mode"), "payment");
+  assert.equal(form.get("success_url"), "https://store.vaked.dev/?checkout={CHECKOUT_SESSION_ID}");
+  assert.equal(form.get("cancel_url"), "https://store.vaked.dev/?canceled=1");
+  assert.equal(form.get("metadata[source]"), "store.vaked.dev");
+  assert.equal(form.get("managed_payments[enabled]"), "false", "Managed Payments off (no tax_code for inline SKUs)");
+  assert.equal(form.get("metadata[tier]"), "member", "vakedide sku upgrades the tier");
+  assert.equal(form.get("line_items[0][quantity]"), "2");
+  assert.equal(form.get("line_items[0][price_data][currency]"), "eur");
+  assert.equal(form.get("line_items[0][price_data][product_data][name]"), "hoodie");
+  assert.equal(form.get("line_items[0][price_data][unit_amount]"), String(STORE_CATALOG.hoodie));
+  assert.equal(form.get("line_items[1][price_data][unit_amount]"), "4444", "override wins over catalog");
+  assert.equal(
+    form.get("line_items[2][price_data][unit_amount]"),
+    String(STORE_CATALOG["vakedide-supporter"])
+  );
+});
+
+test("sovereign: checkout defaults to backer, honors explicit tiers, and defaults quantities", async () => {
+  const seen = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    seen.push(new URLSearchParams(init.body));
+    return new Response(JSON.stringify({ url: "https://checkout.stripe.com/c/pay/cs_x" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    assert.equal((await sovereignCheckout(JSON.stringify({ items: [{ sku: "tshirt" }] }))).status, 200);
+    assert.equal(
+      (await sovereignCheckout(JSON.stringify({ items: [{ sku: "scarf" }], tier: "presence" }))).status,
+      200
+    );
+    assert.equal(
+      (await sovereignCheckout(JSON.stringify({ items: [{ sku: "tshirt", qty: -3 }], tier: "member" }))).status,
+      200
+    );
+    // Case-insensitive member detection on the sku itself.
+    assert.equal(
+      (await sovereignCheckout(JSON.stringify({ items: [{ sku: "VAKEDIDE-SUPPORTER" }] }))).status,
+      200
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(seen[0].get("metadata[tier]"), "backer", "default tier is backer");
+  assert.equal(seen[0].get("line_items[0][price_data][unit_amount]"), "3500");
+  assert.equal(seen[0].get("line_items[0][quantity]"), "1", "quantity defaults to 1");
+  assert.equal(seen[1].get("metadata[tier]"), "presence", "explicit tier is honored");
+  assert.equal(seen[2].get("metadata[tier]"), "member", "explicit tier is honored");
+  assert.equal(seen[2].get("line_items[0][quantity]"), "1", "invalid quantity defaults to 1");
+  assert.equal(seen[3].get("metadata[tier]"), "member", "sku match is case-insensitive");
+});
+
+test("sovereign: checkout validates items, skus, and overrides locally without calling Stripe", async () => {
+  let calls = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    calls++;
+    throw new Error("must not be reached");
+  };
+  try {
+    const cases = [
+      [JSON.stringify({ items: [] }), "items required"],
+      [JSON.stringify({}), "items required"],
+      [JSON.stringify({ items: [{ qty: 1 }] }), "item sku required"],
+      [JSON.stringify({ items: [{ sku: "quantum-teapot" }] }), "unknown sku: quantum-teapot"],
+      [JSON.stringify({ items: [{ sku: "tshirt", unit_amount: -5 }] }), "invalid unit_amount for tshirt"],
+      [JSON.stringify({ items: [{ sku: "tshirt", unit_amount: 1.5 }] }), "invalid unit_amount for tshirt"],
+      ["not json", "body must be JSON"],
+    ];
+    for (const [body, message] of cases) {
+      const res = await sovereignCheckout(body);
+      assert.equal(res.status, 400, `${body} must be rejected`);
+      assert.deepEqual(await res.json(), { error: message });
+    }
+    const get = new Request("https://entheai.com/api/stripe/checkout");
+    const res = await handleStripeCheckout(get, licenseEnv({ STRIPE_SECRET_KEY: "sk_test_live" }));
+    assert.equal(res.status, 405);
+    assert.equal(res.headers.get("allow"), "POST");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(calls, 0, "validation failures never reach Stripe");
+});
+
+test("sovereign: checkout surfaces Stripe errors and upstream failures", async () => {
+  let mode = "error";
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    if (mode === "error") {
+      return new Response(JSON.stringify({ error: { message: "no such coupon" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (mode === "nourl") {
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    throw new Error("connection refused");
+  };
+  try {
+    const err = await sovereignCheckout(JSON.stringify({ items: [{ sku: "tshirt" }] }));
+    assert.equal(err.status, 400);
+    assert.deepEqual(await err.json(), { error: "no such coupon" });
+
+    mode = "nourl";
+    const noUrl = await sovereignCheckout(JSON.stringify({ items: [{ sku: "tshirt" }] }));
+    assert.equal(noUrl.status, 502);
+    assert.deepEqual(await noUrl.json(), { error: "stripe returned no url" });
+
+    mode = "down";
+    const down = await sovereignCheckout(JSON.stringify({ items: [{ sku: "tshirt" }] }));
+    assert.equal(down.status, 502);
+    assert.deepEqual(await down.json(), { error: "stripe unreachable" });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("sovereign: webhook mints a vkd token when metadata.tier is member and never when absent", async () => {
+  const e = licenseEnv({ SOVEREIGN_SIGNING_KEY: TEST_SEED });
+  const res = await handleStripe(
+    await webhook(checkoutEvent({ id: "cs_member_1", metadata: { tier: "member" } })),
+    e
+  );
+  assert.equal(res.status, 200);
+  const token = await e.LICENSES.get("vkd:license:backer@example.com");
+  assert.ok(token && token.startsWith("vkd_sk_"), "sovereign token minted under vkd:license:<email>");
+  const payload = decodePayload(token);
+  assert.equal(payload.sub, "backer@example.com");
+  assert.equal(payload.tier, "member");
+  assert.deepEqual(payload.ent, TIER_ENTITLEMENTS.member);
+  assert.equal(payload.exp - payload.iat, SOVEREIGN_TTL_SECS.member);
+  // The entheai license path is untouched: still one ENTH- license + session.
+  assert.match(await e.LICENSES.get("session:cs_member_1"), /^ENTH-/);
+
+  // No metadata.tier → no sovereign keys at all.
+  const plain = licenseEnv({ SOVEREIGN_SIGNING_KEY: TEST_SEED });
+  await handleStripe(await webhook(checkoutEvent({ id: "cs_plain_1" })), plain);
+  for (const k of plain.LICENSES.store.keys()) {
+    assert.ok(!k.startsWith("vkd:"), `default path must not mint vkd keys (saw ${k})`);
+  }
+});
+
+test("sovereign: webhook mints per-tier entitlements and honors sub fallbacks", async () => {
+  const cases = [
+    { tier: "presence", ent: TIER_ENTITLEMENTS.presence, ttl: SOVEREIGN_TTL_SECS.presence },
+    { tier: "backer", ent: TIER_ENTITLEMENTS.backer, ttl: SOVEREIGN_TTL_SECS.backer },
+  ];
+  for (const [i, c] of cases.entries()) {
+    const e = licenseEnv({ SOVEREIGN_SIGNING_KEY: TEST_SEED });
+    await handleStripe(
+      await webhook(checkoutEvent({ id: `cs_tier_${i}`, metadata: { tier: c.tier } })),
+      e
+    );
+    const payload = decodePayload(await e.LICENSES.get("vkd:license:backer@example.com"));
+    assert.equal(payload.tier, c.tier);
+    assert.deepEqual(payload.ent, c.ent);
+    assert.equal(payload.exp - payload.iat, c.ttl);
+  }
+
+  // email absent → metadata.sub; neither → session id.
+  const subFallback = licenseEnv({ SOVEREIGN_SIGNING_KEY: TEST_SEED });
+  await handleStripe(
+    await webhook(
+      checkoutEvent({ id: "cs_sub_1", customer_details: {}, metadata: { tier: "backer", sub: "wallet-abc" } })
+    ),
+    subFallback
+  );
+  assert.ok(await subFallback.LICENSES.get("vkd:license:wallet-abc"), "metadata.sub fallback");
+
+  const idFallback = licenseEnv({ SOVEREIGN_SIGNING_KEY: TEST_SEED });
+  await handleStripe(
+    await webhook(checkoutEvent({ id: "cs_id_1", customer_details: {}, metadata: { tier: "backer" } })),
+    idFallback
+  );
+  assert.ok(await idFallback.LICENSES.get("vkd:license:cs_id_1"), "session id fallback");
+});
+
+test("sovereign: webhook skips the mint for entheai-backer and unconfigured signing keys", async () => {
+  const e = licenseEnv({ SOVEREIGN_SIGNING_KEY: TEST_SEED });
+  await handleStripe(
+    await webhook(checkoutEvent({ id: "cs_enth_1", metadata: { tier: "entheai-backer" } })),
+    e
+  );
+  for (const k of e.LICENSES.store.keys()) {
+    assert.ok(!k.startsWith("vkd:"), `entheai-backer must not mint sovereign keys (saw ${k})`);
+  }
+
+  const unconfigured = licenseEnv();
+  const res = await handleStripe(
+    await webhook(checkoutEvent({ id: "cs_nokey_1", metadata: { tier: "member" } })),
+    unconfigured
+  );
+  assert.equal(res.status, 200, "missing signing key never fails the webhook");
+  for (const k of unconfigured.LICENSES.store.keys()) {
+    assert.ok(!k.startsWith("vkd:"), `unconfigured must not mint sovereign keys (saw ${k})`);
+  }
+});
+
+test("sovereign: the sovereign mint is idempotent per session like the entheai one", async () => {
+  const e = licenseEnv({ SOVEREIGN_SIGNING_KEY: TEST_SEED });
+  const body = checkoutEvent({ id: "cs_replay_1", metadata: { tier: "member" } });
+  assert.equal((await handleStripe(await webhook(body), e)).status, 200);
+  const token = await e.LICENSES.get("vkd:license:backer@example.com");
+  assert.equal(e.LICENSES.store.size, 3, "license + session + vkd");
+  assert.equal((await handleStripe(await webhook(body), e)).status, 200);
+  assert.equal(await e.LICENSES.get("vkd:license:backer@example.com"), token, "no second mint on replay");
+  assert.equal(e.LICENSES.store.size, 3, "replay adds nothing");
+});
+
+test("sovereign: an end-to-end store purchase verifies on the verify endpoint", async () => {
+  const pubB64 = await pubKeyB64FromSeed(TEST_SEED);
+  const e = licenseEnv({ SOVEREIGN_SIGNING_KEY: TEST_SEED, SOVEREIGN_PUBLIC_KEY: pubB64 });
+  await handleStripe(
+    await webhook(checkoutEvent({ id: "cs_e2e_1", metadata: { tier: "presence" } })),
+    e
+  );
+  const token = await e.LICENSES.get("vkd:license:backer@example.com");
+  const ok = await sovereignVerify(token, e);
+  assert.equal(ok.status, 200);
+  assert.deepEqual(await ok.json(), {
+    ok: true,
+    tier: "presence",
+    ent: TIER_ENTITLEMENTS.presence,
+    sub: "backer@example.com",
+    exp: decodePayload(token).exp,
+  });
+});
+
+test("the sovereign routes reach their handlers, not the asset pipeline", async () => {
+  let assetHits = 0;
+  const e = {
+    ...licenseEnv({ STRIPE_SECRET_KEY: undefined, SOVEREIGN_SIGNING_KEY: TEST_SEED }),
+    ASSETS: {
+      async fetch() {
+        assetHits++;
+        return new Response("asset", { status: 200 });
+      },
+    },
+  };
+  const checkout = new Request("https://entheai.com/api/stripe/checkout", {
+    method: "POST",
+    body: JSON.stringify({ items: [{ sku: "tshirt" }] }),
+  });
+  assert.equal((await worker.fetch(checkout, e)).status, 503, "checkout reached its handler (no secret)");
+  const verifyReq = new Request("https://entheai.com/api/sovereign/verify", {
+    method: "POST",
+    body: JSON.stringify({ key: "vkd_sk_bogus" }),
+  });
+  assert.equal((await worker.fetch(verifyReq, e)).status, 401, "verify reached its handler");
+  assert.equal(
+    (await worker.fetch(new Request("https://entheai.com/.well-known/sovereign.pub"), e)).status,
+    200
+  );
+  assert.equal((await worker.fetch(new Request("https://entheai.com/api/sovereign/pub"), e)).status, 200);
+  assert.equal(assetHits, 0, "sovereign API paths never fall through to assets");
 });
