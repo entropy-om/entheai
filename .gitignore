@@ -24,3 +24,6 @@ target-repro-b/
 
 working_memory.md
 .slim/deepwork/
+
+# Stripe Projects CLI cache (project root is the workspace, not this repo)
+.projects/
