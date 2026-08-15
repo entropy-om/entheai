@@ -56,6 +56,11 @@ base_url = ""
 model_dir = "/Users/lodripeter/workspace/peterlodri-sec/pocoo.vaked.dev/demos/quantal"
 kind = "ternary"
 
+# ── Inference Parameters ───────────────────────────────────────────────────────
+[inference]
+temperature = 0.3
+max_tokens = 2048
+
 # ── Multi-Agent Fan-Out Orchestration ──────────────────────────────────────────
 # Fleet Ollama + DeepSeek + Google Ultra + Coder Premium for parallel sub-agents
 
