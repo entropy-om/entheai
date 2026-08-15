@@ -1,100 +1,113 @@
 # ==============================================================================
-# ENTHEAI FULL CONFIGURATION — 8B.IS / VAKED SOVEREIGN CONSTELLATION
+# ENTHEAI CONFIGURATION — 8B.IS / VAKED SOVEREIGN FLEET (DEEPSEEK + GOOGLE ULTRA)
 # ==============================================================================
 
-default_model = "openai/gpt-4o-mini"
+# DeepSeek is the primary default provider
+default_model = "deepseek/deepseek-chat"
 
 # ── Inference Providers ────────────────────────────────────────────────────────
 
-# DeepSeek direct API
+# 1. DeepSeek direct API (Main Engine: V3 chat & R1 reasoning)
 [providers.deepseek]
 base_url = "https://api.deepseek.com/v1"
 api_key_env = "DEEPSEEK_API_KEY"
 
-# OpenRouter aggregator
-[providers.openrouter]
-base_url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
+# 2. Google Gemini (Google Ultra setup: Gemini 2.5 Pro / Flash via OpenAI-compatible endpoint)
+[providers.gemini]
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+api_key_env = "GEMINI_API_KEY"
 
-# OpenAI direct API
-[providers.openai]
-base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
+# 3. Fleet Ollama (Tailnet distributed worker inference on Apple Silicon / Hetzner)
+[providers.fleet-ollama]
+base_url = "http://lodris-macbook-pro.tail2870dc.ts.net:11434/v1"
 
-# Anthropic direct API (via OpenAI-compatible gateway / OpenRouter)
-[providers.anthropic]
-base_url = "https://api.anthropic.com/v1"
-api_key_env = "ANTHROPIC_API_KEY"
+# 4. Local Ollama (Local macOS loopback inference)
+[providers.local-ollama]
+base_url = "http://127.0.0.1:11434/v1"
 
-# Hugging Face Inference router
-[providers.hf]
-base_url = "https://router.huggingface.co/v1"
-api_key_env = "HUGGINGFACE_API_KEY"
+# 5. coder.vaked.dev — Free Community Lane (nixai-base Tailnet)
+[providers.coder]
+base_url = "https://nixai-base.tail2870dc.ts.net/v1"
+api_key_env = "CODER_VAKED_FREE_KEY"
 
-# OpenCode Zen (DeepSeek V4 Pro, Flash, Qwen)
+# 6. coder.vaked.dev — Premium Dedicated Lane (Peter's Sovereign High-Priority Key)
+[providers.coder-premium]
+base_url = "https://nixai-base.tail2870dc.ts.net/v1"
+api_key_env = "CODER_VAKED_PETER_KEY"
+
+# 7. OpenCode Zen Gateway
 [providers.zen]
 base_url = "https://opencode.ai/zen/v1"
 api_key_env = "OPENCODE_API_KEY"
 
-# Vaked Sovereign Community Node (nixai-base tailnet)
-[providers.vaked]
-base_url = "https://nixai-base.tail2870dc.ts.net/v1"
-api_key_env = "VAKED_API_KEY"
+# 8. OpenRouter Aggregator
+[providers.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
 
-# Ocean High-Compute Cluster
-[providers.ocean]
-base_url = "https://ocean.vaked.dev/v1"
-api_key_env = "OCEAN_API_KEY"
+# 9. OpenAI Direct API
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
 
-# Local private inference via Osaurus (Apple Silicon MLX)
-[providers.osaurus]
-base_url = "http://127.0.0.1:1337/v1"
-
-# Native Ternary (BitNet b1.58) offline inference engine
+# 10. Native 1.58-Bit Ternary Engine (BitNet offline)
 [providers.quantal]
 base_url = ""
 model_dir = "/Users/lodripeter/workspace/peterlodri-sec/pocoo.vaked.dev/demos/quantal"
 kind = "ternary"
 
-# OpenClaw Droplet Gateway (DigitalOcean)
-[providers.openclaw]
-base_url = "https://do-openclaw.tail2870dc.ts.net/v1"
-api_key_env = "OPENCLAW_GATEWAY_TOKEN"
-
-# Coder Vaked Tiers
-[providers.coder]
-base_url = "https://nixai-base.tail2870dc.ts.net/v1"
-api_key_env = "CODER_VAKED_PETER_KEY"
-
-[providers.coder-premium]
-base_url = "https://nixai-base.tail2870dc.ts.net/v1"
-api_key_env = "CODER_VAKED_PETER_KEY"
-
 # ── Multi-Agent Fan-Out Orchestration ──────────────────────────────────────────
+# Fleet Ollama + DeepSeek + Google Ultra + Coder Premium for parallel sub-agents
 
 [fanout]
 enabled = true
 max_parallel_coders = 6
 worktree_isolation = true
 depth_guard = 3
-executor = "agy" # Antigravity CLI integration for recursive development
+executor = "agy" # Google Ultra Antigravity CLI integration for recursive coding
 
+# Exploration: DeepSeek V3 + Gemini Flash + Fleet Ollama
 [agents.explore]
-model = ["openai/gpt-4o-mini", "zen/deepseek-v4-flash"]
+model = [
+  "deepseek/deepseek-chat",
+  "gemini/gemini-2.5-flash",
+  "fleet-ollama/qwen2.5-coder:7b"
+]
 
+# Coders: DeepSeek V3 + Coder Premium (DeepSeek-V4-Pro) + Gemini Pro + Fleet Ollama
 [agents.coder]
-model = ["openai/gpt-4o-mini", "zen/deepseek-v4-pro", "vaked/coder"]
+model = [
+  "deepseek/deepseek-chat",
+  "coder-premium/deepseek-v4-pro",
+  "gemini/gemini-2.5-pro",
+  "fleet-ollama/qwen2.5-coder:14b",
+  "coder/qwen3-coder"
+]
 
+# Reviewers: DeepSeek R1 (reasoner) + Gemini 2.5 Pro + DeepSeek V3
 [agents.reviewer]
-model = ["openai/gpt-4o", "zen/deepseek-v4-pro"]
+model = [
+  "deepseek/deepseek-reasoner",
+  "gemini/gemini-2.5-pro",
+  "deepseek/deepseek-chat"
+]
 
+# Test Generators & Runners: Fleet Ollama + Local Ollama + DeepSeek V3
 [agents.test]
-model = ["openai/gpt-4o-mini", "osaurus/qwen3-coder"]
+model = [
+  "fleet-ollama/qwen2.5-coder:7b",
+  "local-ollama/qwen2.5-coder",
+  "deepseek/deepseek-chat"
+]
 
+# Documentation: Gemini Flash + DeepSeek V3
 [agents.docs]
-model = ["openai/gpt-4o-mini"]
+model = [
+  "gemini/gemini-2.5-flash",
+  "deepseek/deepseek-chat"
+]
 
-# ── Cognitive Vector Memory (MEM|8 Holographic Resonance) ─────────────────────
+# ── Cognitive Vector Memory (MEM|8 Resonance) ─────────────────────────────────
 
 [memory]
 enabled = true
@@ -112,7 +125,7 @@ scratch = true
 
 [memory.judge]
 enabled = true
-model = "openai/gpt-4o-mini"
+model = "deepseek/deepseek-chat"
 confidence_threshold = 0.82
 
 # ── Model Context Protocol (MCP) Servers ──────────────────────────────────────
@@ -148,7 +161,7 @@ stream_url = "https://music.vaked.dev/feed.xml"
 tuning_hz = 432.0
 volume = 0.65
 
-# ── NATS Federation & Distributed Swarm ───────────────────────────────────────
+# ── NATS Federation & Distributed Fleet Swarm ─────────────────────────────────
 
 [nats]
 enabled = true
@@ -172,5 +185,5 @@ enabled = true
 coders = "local"
 gate = "advisory"
 block_confidence = 0.8
-model = "openai/gpt-4o-mini"
+model = "deepseek/deepseek-reasoner"
 openclaw_url = "https://do-openclaw.tail2870dc.ts.net"
