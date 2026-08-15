@@ -131,7 +131,8 @@ pub async fn entheai_job_status(args: Value, _server_cwd: PathBuf) -> anyhow::Re
     if !path.exists() {
         return Ok(json!({"job_id": job_id, "status": "not_found"}));
     }
-    let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     let rec: JobRecord = serde_json::from_str(&text)?;
     Ok(serde_json::to_value(rec)?)
 }
@@ -234,12 +235,8 @@ async fn run_fanout_core(req: &JobRequest) -> anyhow::Result<Value> {
 
     let pool = WorkerPool::new(cfg.router.max_parallel.max(1));
     let memory = build_memory(&cfg)?;
-    let runtime = memory.map(|m| {
-        Arc::new(MemoryRuntime::new(
-            m,
-            memory_runtime_config(&cfg.memory),
-        ))
-    });
+    let runtime =
+        memory.map(|m| Arc::new(MemoryRuntime::new(m, memory_runtime_config(&cfg.memory))));
     let scope = MemoryScope {
         session_id: uuid::Uuid::new_v4().simple().to_string(),
         task_id: "fanout".to_string(),
@@ -248,25 +245,23 @@ async fn run_fanout_core(req: &JobRequest) -> anyhow::Result<Value> {
     };
 
     let run = match req.deadline_minutes {
-        Some(min) if min > 0 => {
-            tokio::time::timeout(
-                Duration::from_secs(min * 60),
-                entheai_orchestrator::run_fanout_detailed(
-                    &cfg,
-                    &root,
-                    &req.task,
-                    None,
-                    pool,
-                    fed_exec,
-                    entheai_orchestrator::oracle_for_config(&cfg),
-                    runtime,
-                    scope,
-                    None,
-                ),
-            )
-            .await
-            .map_err(|_| anyhow::anyhow!("fan-out job exceeded the {min}-minute deadline"))??
-        }
+        Some(min) if min > 0 => tokio::time::timeout(
+            Duration::from_secs(min * 60),
+            entheai_orchestrator::run_fanout_detailed(
+                &cfg,
+                &root,
+                &req.task,
+                None,
+                pool,
+                fed_exec,
+                entheai_orchestrator::oracle_for_config(&cfg),
+                runtime,
+                scope,
+                None,
+            ),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("fan-out job exceeded the {min}-minute deadline"))??,
         _ => {
             entheai_orchestrator::run_fanout_detailed(
                 &cfg,
@@ -422,9 +417,18 @@ mod tests {
 
     #[test]
     fn job_status_serde_uses_lowercase() {
-        assert_eq!(serde_json::to_string(&JobStatus::Queued).unwrap(), "\"queued\"");
-        assert_eq!(serde_json::to_string(&JobStatus::Running).unwrap(), "\"running\"");
+        assert_eq!(
+            serde_json::to_string(&JobStatus::Queued).unwrap(),
+            "\"queued\""
+        );
+        assert_eq!(
+            serde_json::to_string(&JobStatus::Running).unwrap(),
+            "\"running\""
+        );
         assert_eq!(serde_json::to_string(&JobStatus::Done).unwrap(), "\"done\"");
-        assert_eq!(serde_json::to_string(&JobStatus::Error).unwrap(), "\"error\"");
+        assert_eq!(
+            serde_json::to_string(&JobStatus::Error).unwrap(),
+            "\"error\""
+        );
     }
 }

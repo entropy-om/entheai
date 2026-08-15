@@ -260,10 +260,18 @@ impl Default for OracleConfig {
     }
 }
 
-fn default_oracle_coders() -> String { "local".to_string() }
-fn default_oracle_gate() -> String { "advisory".to_string() }
-fn default_oracle_block_confidence() -> f32 { 0.8 }
-fn default_oracle_model() -> String { "vaked/qwen3-coder:30b".to_string() }
+fn default_oracle_coders() -> String {
+    "local".to_string()
+}
+fn default_oracle_gate() -> String {
+    "advisory".to_string()
+}
+fn default_oracle_block_confidence() -> f32 {
+    0.8
+}
+fn default_oracle_model() -> String {
+    "vaked/qwen3-coder:30b".to_string()
+}
 
 impl Default for FanoutConfig {
     fn default() -> Self {
@@ -666,7 +674,10 @@ mod tests {
             q.model_dir.as_deref(),
             Some("/Users/lodripeter/workspace/peterlodri-sec/pocoo.vaked.dev/demos/quantal")
         );
-        assert_eq!(cfg.default_model.as_deref(), Some("quantal/qwen2.5-0.5b-quantal"));
+        assert_eq!(
+            cfg.default_model.as_deref(),
+            Some("quantal/qwen2.5-0.5b-quantal")
+        );
     }
 
     #[test]

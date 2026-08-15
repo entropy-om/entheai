@@ -104,9 +104,7 @@ pub async fn entheai_memory_list(args: Value, server_cwd: PathBuf) -> anyhow::Re
 
 fn parse_ns(s: String) -> anyhow::Result<Namespace> {
     s.parse::<Namespace>().map_err(|_| {
-        anyhow::anyhow!(
-            "unknown namespace '{s}' (codebase|learnings|trajectories|tools|subagents)"
-        )
+        anyhow::anyhow!("unknown namespace '{s}' (codebase|learnings|trajectories|tools|subagents)")
     })
 }
 

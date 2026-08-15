@@ -38,7 +38,10 @@ pub enum Verdict {
     Approve,
     /// The phase needs another pass — `dispatch_to` (when set) names the fleet
     /// backend that should do the rework; `None` = re-run the same coder.
-    Rework { reason: String, dispatch_to: Option<OracleBackend> },
+    Rework {
+        reason: String,
+        dispatch_to: Option<OracleBackend>,
+    },
     /// The phase is rejected (advisory: recorded; block: run stops).
     Reject { reason: String },
 }
@@ -161,7 +164,12 @@ impl FusionOracle {
     /// Build from config. Step 1: no fleet backends are contacted until
     /// `enabled = true` AND a backend is registered — a disabled Oracle is a
     /// no-op pass-through (today's behavior unchanged).
-    pub fn new(config: Config, model: impl Into<String>, gate: GateMode, block_confidence: f32) -> Self {
+    pub fn new(
+        config: Config,
+        model: impl Into<String>,
+        gate: GateMode,
+        block_confidence: f32,
+    ) -> Self {
         Self {
             backends: Vec::new(),
             config,
@@ -213,7 +221,9 @@ impl Oracle for FusionOracle {
                 OracleBackend::Hermes { api, .. } => hermes_alive(api).await,
                 OracleBackend::OpenClaw { endpoint } => openclaw_alive(endpoint).await,
                 OracleBackend::AgentField { control } => agentfield_alive(control).await,
-                OracleBackend::OpenAICompatible { base, .. } => http_alive(base, "openai-compatible").await,
+                OracleBackend::OpenAICompatible { base, .. } => {
+                    http_alive(base, "openai-compatible").await
+                }
                 OracleBackend::Native { model } => {
                     // Native is always "alive"; it IS the fallback.
                     let _ = model;
@@ -263,7 +273,10 @@ async fn hermes_alive(api: &str) -> bool {
     // Hermes's /health answers {"status":"ok",...} — the fleet runtime's
     // adjudication surface. Reuse the shared probe but verify the body says ok.
     let url = format!("{}/health", api.trim_end_matches('/'));
-    let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(4)).build() {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(4))
+        .build()
+    {
         Ok(c) => c,
         Err(e) => {
             log::warn!("oracle: hermes client build failed: {e}");
@@ -296,7 +309,10 @@ async fn agentfield_alive(control: &str) -> bool {
 /// Shared 4s-timeout liveness probe for a fleet backend endpoint.
 async fn http_alive(url: &str, who: &str) -> bool {
     let url = url.trim_end_matches('/');
-    let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(4)).build() {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(4))
+        .build()
+    {
         Ok(c) => c,
         Err(e) => {
             log::warn!("oracle: {who} client build failed: {e}");
@@ -325,15 +341,12 @@ impl FusionOracle {
     /// orchestrator uses), prompted with the phase + context. Parses the
     /// model's reply as a JSON verdict; any parse/model failure degrades to
     /// Approve at low confidence (never blocks on a broken adjudicator).
-    async fn native_adjudicate(
-        &self,
-        phase: Phase,
-        context: &OracleContext,
-    ) -> (Verdict, f32) {
+    async fn native_adjudicate(&self, phase: Phase, context: &OracleContext) -> (Verdict, f32) {
         let system = "You are the Oracle of a coding fan-out. You adjudicate one phase. \
             Reply with ONLY a JSON object: {\"verdict\":\"approve\"|\"rework\"|\"reject\",\
             \"reason\":\"...\",\"confidence\":0.0}";
-        let user = format!("Phase: {phase:?}\nTask: {}\nMapped files: {}\nDiffs: {}",
+        let user = format!(
+            "Phase: {phase:?}\nTask: {}\nMapped files: {}\nDiffs: {}",
             context.task,
             context.mapped_files.len(),
             context.diffs.len(),
@@ -375,10 +388,20 @@ fn parse_verdict(reply: &str) -> Option<(Verdict, f32)> {
     let slice = &reply[start..=end];
     let v: serde_json::Value = serde_json::from_str(slice).ok()?;
     let confidence = v.get("confidence").and_then(|c| c.as_f64()).unwrap_or(0.0) as f32;
-    let reason = v.get("reason").and_then(|r| r.as_str()).unwrap_or("").to_string();
+    let reason = v
+        .get("reason")
+        .and_then(|r| r.as_str())
+        .unwrap_or("")
+        .to_string();
     match v.get("verdict").and_then(|x| x.as_str()) {
         Some("approve") => Some((Verdict::Approve, confidence)),
-        Some("rework") => Some((Verdict::Rework { reason, dispatch_to: None }, confidence)),
+        Some("rework") => Some((
+            Verdict::Rework {
+                reason,
+                dispatch_to: None,
+            },
+            confidence,
+        )),
         Some("reject") => Some((Verdict::Reject { reason }, confidence)),
         _ => None,
     }
@@ -449,13 +472,20 @@ pub fn sphere_attestations() -> Vec<Attestation> {
         out.push(Attestation {
             ts: v.get("ts").and_then(|x| x.as_u64()).unwrap_or(0),
             pid: v.get("pid").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
-            proc: v.get("proc").and_then(|x| x.as_str()).unwrap_or("sphere").to_string(),
+            proc: v
+                .get("proc")
+                .and_then(|x| x.as_str())
+                .unwrap_or("sphere")
+                .to_string(),
             kind: match v.get("kind").and_then(|x| x.as_str()) {
                 Some("egress") => AttestationKind::Egress,
                 Some("merge") => AttestationKind::Merge,
                 _ => AttestationKind::FileOp,
             },
-            path: v.get("path").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            path: v
+                .get("path")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
             hash: [0u8; 32],
         });
     }
@@ -467,10 +497,12 @@ mod tests {
     use super::*;
 
     fn test_config() -> Config {
-        Config::from_toml_str(r#"[oracle]
+        Config::from_toml_str(
+            r#"[oracle]
 enabled = true
 model = "vaked/qwen3-coder:30b"
-"#)
+"#,
+        )
         .unwrap()
     }
 
@@ -481,9 +513,11 @@ model = "vaked/qwen3-coder:30b"
         // adjudicates (the bug the live e2e exposed). Verified via a disabled
         // config returning None (today's behavior) + the enabled path carrying
         // the model through to the Native backend the same way FusionOracle does.
-        let off = Config::from_toml_str(r#"[oracle]
+        let off = Config::from_toml_str(
+            r#"[oracle]
 enabled = false
-"#)
+"#,
+        )
         .unwrap();
         assert!(oracle_for_config(&off).is_none());
 
@@ -521,9 +555,16 @@ enabled = false
         // the pure `would_block` + backend_label paths.
         let cfg = test_config();
         let mut o = FusionOracle::new(cfg, "vaked/qwen3-coder:30b", GateMode::Advisory, 0.8);
-        o.register_backend(OracleBackend::Native { model: "vaked/qwen3-coder:30b".into() });
+        o.register_backend(OracleBackend::Native {
+            model: "vaked/qwen3-coder:30b".into(),
+        });
         assert_eq!(o.backends.len(), 1);
-        assert!(o.backends[0] == OracleBackend::Native { model: "vaked/qwen3-coder:30b".into() });
+        assert!(
+            o.backends[0]
+                == OracleBackend::Native {
+                    model: "vaked/qwen3-coder:30b".into()
+                }
+        );
         assert!(backend_label(&o.backends[0]).starts_with("native@"));
     }
 
@@ -531,7 +572,9 @@ enabled = false
     fn parse_verdict_handles_json_and_malformed() {
         let ok = parse_verdict(r#"{"verdict":"rework","reason":"too broad","confidence":0.9}"#);
         assert!(matches!(ok, Some((Verdict::Rework { .. }, c)) if (c - 0.9).abs() < 0.01));
-        let prose = parse_verdict("The plan is fine.\n```json\n{\"verdict\":\"approve\",\"confidence\":0.6}\n```");
+        let prose = parse_verdict(
+            "The plan is fine.\n```json\n{\"verdict\":\"approve\",\"confidence\":0.6}\n```",
+        );
         assert!(matches!(prose, Some((Verdict::Approve, c)) if (c - 0.6).abs() < 0.01));
         assert!(parse_verdict("not json at all").is_none());
     }
@@ -543,16 +586,25 @@ enabled = false
         // OpenClaw falls through to the next backend (Native).
         let cfg = test_config();
         let mut o = FusionOracle::new(cfg, "vaked/qwen3-coder:30b", GateMode::Advisory, 0.8);
-        o.register_backend(OracleBackend::OpenClaw { endpoint: "http://127.0.0.1:1".into() });
-        o.register_backend(OracleBackend::Native { model: "vaked/qwen3-coder:30b".into() });
+        o.register_backend(OracleBackend::OpenClaw {
+            endpoint: "http://127.0.0.1:1".into(),
+        });
+        o.register_backend(OracleBackend::Native {
+            model: "vaked/qwen3-coder:30b".into(),
+        });
         assert_eq!(o.backends.len(), 2);
         assert!(backend_label(&o.backends[0]).starts_with("openclaw@"));
         // Would-block is independent of backend type — verify it composes.
-        let mut o_block = FusionOracle::new(test_config(), "vaked/qwen3-coder:30b", GateMode::Block, 0.8);
-        o_block.register_backend(OracleBackend::OpenClaw { endpoint: "http://127.0.0.1:1".into() });
+        let mut o_block =
+            FusionOracle::new(test_config(), "vaked/qwen3-coder:30b", GateMode::Block, 0.8);
+        o_block.register_backend(OracleBackend::OpenClaw {
+            endpoint: "http://127.0.0.1:1".into(),
+        });
         let adj = OracleAdjudication {
             phase: Phase::CoderDiff,
-            verdict: Verdict::Reject { reason: "sandbox escape".into() },
+            verdict: Verdict::Reject {
+                reason: "sandbox escape".into(),
+            },
             confidence: 0.95,
             attestations: vec![],
         };
@@ -565,10 +617,19 @@ enabled = false
         // falls through to Native (dispatch order preserved).
         let cfg = test_config();
         let mut o = FusionOracle::new(cfg, "vaked/qwen3-coder:30b", GateMode::Advisory, 0.8);
-        o.register_backend(OracleBackend::Hermes { api: "http://127.0.0.1:1".into(), key_env: "X".into() });
-        o.register_backend(OracleBackend::OpenClaw { endpoint: "http://127.0.0.1:1".into() });
-        o.register_backend(OracleBackend::AgentField { control: "http://127.0.0.1:1".into() });
-        o.register_backend(OracleBackend::Native { model: "vaked/qwen3-coder:30b".into() });
+        o.register_backend(OracleBackend::Hermes {
+            api: "http://127.0.0.1:1".into(),
+            key_env: "X".into(),
+        });
+        o.register_backend(OracleBackend::OpenClaw {
+            endpoint: "http://127.0.0.1:1".into(),
+        });
+        o.register_backend(OracleBackend::AgentField {
+            control: "http://127.0.0.1:1".into(),
+        });
+        o.register_backend(OracleBackend::Native {
+            model: "vaked/qwen3-coder:30b".into(),
+        });
         assert_eq!(o.backends.len(), 4);
         assert!(backend_label(&o.backends[2]).starts_with("agentfield@"));
         assert!(backend_label(&o.backends[0]).starts_with("hermes@"));
@@ -591,11 +652,14 @@ enabled = false
             backend_label(&o.backends[0]),
             "openai@https://coder.vaked.dev/v1:qwen3-coder:30b"
         );
-        assert!(o.backends[0] == OracleBackend::OpenAICompatible {
-            base: "https://coder.vaked.dev/v1".into(),
-            model: "qwen3-coder:30b".into(),
-            key_env: String::new(),
-        });
+        assert!(
+            o.backends[0]
+                == OracleBackend::OpenAICompatible {
+                    base: "https://coder.vaked.dev/v1".into(),
+                    model: "qwen3-coder:30b".into(),
+                    key_env: String::new(),
+                }
+        );
     }
 
     #[test]
@@ -636,4 +700,3 @@ enabled = false
         assert!(!o.gate_would_block(&adj));
     }
 }
-

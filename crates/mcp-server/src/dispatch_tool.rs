@@ -27,8 +27,8 @@ pub async fn entheai_dispatch(args: Value, server_cwd: PathBuf) -> anyhow::Resul
     let cfg = load_config_for(&cwd)?;
 
     let role = opt_str(&args, "role").unwrap_or_else(|| "coder".to_string());
-    let deadline_secs = crate::engine::opt_u64(&args, "deadline_secs")
-        .unwrap_or(cfg.federation.deadline_secs);
+    let deadline_secs =
+        crate::engine::opt_u64(&args, "deadline_secs").unwrap_or(cfg.federation.deadline_secs);
 
     let opts = FedOptions::from_config(&cfg.nats, &cfg.federation);
     let Some(fed) = Federation::connect(&opts).await else {
