@@ -26,19 +26,36 @@
 // Everything else    → the static asset pipeline (public/), unchanged.
 //
 // Bindings (wrangler.jsonc): ASSETS (assets), LICENSES (KV namespace),
-// REDIS_PUBLIC_URL (secret via `wrangler secret put REDIS_PUBLIC_URL`),
+// REDIS_PUBLIC_URL (secret via `wrangler secret put REDIS_PUBLIC_URL`) or the
+// preferred pair REDIS_GATEWAY_URL / REDIS_GATEWAY_TOKEN (HTTPS to the Redis
+// gateway in gateway/; the license store prefers these over TCP),
 // ENTROPY (KV namespace, commented until provisioned), ENTROPY_TOKEN (secret),
 // STRIPE_WEBHOOK_SECRET / STRIPE_SECRET_KEY / SOVEREIGN_SIGNING_KEY (secrets
 // via `wrangler secret put`). Sovereign tokens live under the `vkd:` KV prefix
 // so they can never collide with the live entheai backer keys.
 
-import { redis } from "./redis.mjs";
+import { redis, redisHttp } from "./redis.mjs";
 
-// The license store: Redis (Railway) at REDIS_PUBLIC_URL or KV fallback.
-// Returns null when unconfigured so handlers answer a clean 503. Tests inject
-// env.__store (an in-memory { get, set } double) to avoid a real socket.
+// The license store, in precedence order:
+//   1. env.__store         — tests inject an in-memory { get, set } double.
+//   2. REDIS_GATEWAY_URL + REDIS_GATEWAY_TOKEN — HTTPS path to the Railway
+//      Redis gateway (gateway/). Preferred: the gateway sits on Railway's
+//      private network, so the Redis password never transits public links.
+//   3. REDIS_PUBLIC_URL    — legacy direct-TCP path (redis() over the Workers
+//      connect() API). Kept intact as a fallback.
+// Returns null when unconfigured so handlers answer a clean 503.
 function licenseStore(env) {
   if (env.__store) return env.__store;
+  if (env.REDIS_GATEWAY_URL && env.REDIS_GATEWAY_TOKEN) {
+    return {
+      async get(key) {
+        return redisHttp(env.REDIS_GATEWAY_URL, env.REDIS_GATEWAY_TOKEN, "GET", key);
+      },
+      async set(key, value) {
+        return redisHttp(env.REDIS_GATEWAY_URL, env.REDIS_GATEWAY_TOKEN, "PUT", key, value);
+      },
+    };
+  }
   if (env.REDIS_PUBLIC_URL) {
     const url = new URL(env.REDIS_PUBLIC_URL);
     return {

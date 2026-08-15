@@ -6,6 +6,11 @@
 //
 // The `connect` import is deliberately dynamic (inside redis()) so the pure
 // encode/decode helpers are importable + testable in plain Node.
+//
+// HTTP mode: redisHttp() talks to the Railway Redis gateway (see ../gateway/)
+// over HTTPS instead of TCP. The gateway runs on Railway's private network, so
+// the Redis password never transits public links — only the gateway bearer
+// token does. redis() (TCP) stays intact as the fallback.
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -104,4 +109,39 @@ export async function redis(url, ...parts) {
   } finally {
     await socket.close();
   }
+}
+
+// redisHttp(baseUrl, token, method, key, value) — HTTP path to the Redis
+// gateway (gateway/, deployed on Railway next to the Redis database).
+//
+// Mirrors redis()'s contract for the license store: GET returns the string
+// value or null (404 = missing key); PUT stores `value` as the raw string;
+// DELETE removes the key. `method` is "GET" | "PUT" | "DELETE".
+//
+// baseUrl = env.REDIS_GATEWAY_URL (e.g. https://gw.up.railway.app),
+// token    = env.REDIS_GATEWAY_TOKEN. The token rides the Authorization
+// header; the Redis password never appears on this link.
+export async function redisHttp(baseUrl, token, method, key, value) {
+  if (!baseUrl || !token) throw new Error("redisHttp: REDIS_GATEWAY_URL + REDIS_GATEWAY_TOKEN required");
+  const base = String(baseUrl).replace(/\/+$/, "");
+  const url = `${base}/${encodeURIComponent(String(key))}`;
+  const headers = { Authorization: `Bearer ${token}` };
+  let body;
+  if (method === "PUT") {
+    headers["Content-Type"] = "text/plain";
+    body = String(value ?? "");
+  }
+  const res = await fetch(url, { method, headers, body });
+  if (res.status === 404) return null; // GET miss (the gateway only 404s GETs)
+  if (!res.ok) throw new Error(`redisHttp: ${method} ${key} -> ${res.status}`);
+  if (method === "GET") {
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      throw new Error(`redisHttp: GET ${key} returned non-JSON`);
+    }
+    return typeof data.value === "string" ? data.value : null;
+  }
+  return true; // PUT / DELETE acknowledged
 }

@@ -24,6 +24,7 @@ import worker, {
   TIER_ENTITLEMENTS,
   STORE_CATALOG,
 } from "../src/worker.mjs";
+import { redisHttp } from "../src/redis.mjs";
 
 /** Minimal in-memory KV double (get/put are all the worker uses). */
 function fakeKv() {
@@ -996,4 +997,136 @@ test("the sovereign routes reach their handlers, not the asset pipeline", async 
   );
   assert.equal((await worker.fetch(new Request("https://entheai.com/api/sovereign/pub"), e)).status, 200);
   assert.equal(assetHits, 0, "sovereign API paths never fall through to assets");
+});
+
+// ---- Redis gateway (REDIS_GATEWAY_URL / REDIS_GATEWAY_TOKEN) --------------
+// The license store prefers the HTTPS gateway over the legacy TCP path when
+// both gateway env vars are set, and still answers 503 when neither a store,
+// the gateway pair, nor REDIS_PUBLIC_URL is configured. The gateway path is
+// exercised against a stubbed fetch so no socket or real network is touched.
+
+/** Replace globalThis.fetch for the duration of one test. */
+async function withFetch(mock, fn) {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = mock;
+  try {
+    return await fn();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+/** A fetch stub that records (url, init) calls and answers from `routes`. */
+function fetchMock(routes, log = []) {
+  return async (url, init) => {
+    log.push({ url: String(url), init });
+    const hit = routes.find((r) => r.test && r.test.test(String(url)));
+    if (!hit) return new Response(JSON.stringify({ error: "unmocked" }), { status: 501 });
+    if (hit.status === 404) return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+    if (hit.status) return new Response(JSON.stringify(hit.body ?? {}), { status: hit.status });
+    return new Response(JSON.stringify(hit.body ?? {}), { status: 200 });
+  };
+}
+
+test("licenseStore prefers the Redis gateway when both gateway vars are set", async () => {
+  const calls = [];
+  await withFetch(
+    fetchMock([{ test: /\/session%3Acs_gw/, body: { value: "ENTH-GATEWAY-AAAA-AAAA" } }], calls),
+    async () => {
+      const e = licenseEnv({
+        __store: undefined,
+        REDIS_PUBLIC_URL: undefined,
+        REDIS_GATEWAY_URL: "https://gw.up.railway.app",
+        REDIS_GATEWAY_TOKEN: "gw-token",
+      });
+      const req = new Request("https://entheai.com/api/license/claim?session_id=cs_gw");
+      const res = await handleClaim(req, e);
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), { key: "ENTH-GATEWAY-AAAA-AAAA" });
+    }
+  );
+  assert.equal(calls.length, 1, "exactly one gateway call");
+  assert.equal(calls[0].url, "https://gw.up.railway.app/session%3Acs_gw");
+  assert.equal(calls[0].init.headers.Authorization, "Bearer gw-token");
+});
+
+test("licenseStore ignores REDIS_PUBLIC_URL once the gateway pair is set", async () => {
+  const calls = [];
+  await withFetch(
+    fetchMock(
+      [{ test: /\/license%3AENTH-GW/, body: { value: JSON.stringify({ entitlements: ["beta"], email: "gw@example.com" }) } }],
+      calls
+    ),
+    async () => {
+      const e = licenseEnv({
+        __store: undefined,
+        REDIS_PUBLIC_URL: "redis://default:pw@host.proxy.rlwy.net:6379",
+        REDIS_GATEWAY_URL: "https://gw.up.railway.app",
+        REDIS_GATEWAY_TOKEN: "gw-token",
+      });
+      // handleLicense calls get("license:ENTH-GW") — must go over the gateway.
+      const req = new Request("https://entheai.com/api/license/verify", {
+        method: "POST",
+        body: JSON.stringify({ key: "enth-gw" }),
+      });
+      const res = await handleLicense(req, e);
+      assert.equal(res.status, 200);
+    }
+  );
+  assert.equal(calls.length, 1, "only the gateway is consulted, never the TCP URL");
+  assert.equal(calls[0].url, "https://gw.up.railway.app/license%3AENTH-GW");
+});
+
+test("licenseStore needs BOTH gateway vars; partial config falls back to 503", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("fetch must not run for partial gateway config");
+  };
+  try {
+    const urlOnly = licenseEnv({
+      __store: undefined,
+      REDIS_PUBLIC_URL: undefined,
+      REDIS_GATEWAY_URL: "https://gw.up.railway.app",
+    });
+    assert.equal(
+      (await handleClaim(new Request("https://entheai.com/api/license/claim?session_id=cs_1"), urlOnly)).status,
+      503
+    );
+
+    const tokenOnly = licenseEnv({
+      __store: undefined,
+      REDIS_PUBLIC_URL: undefined,
+      REDIS_GATEWAY_TOKEN: "gw-token",
+    });
+    assert.equal(
+      (await handleClaim(new Request("https://entheai.com/api/license/claim?session_id=cs_1"), tokenOnly)).status,
+      503
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("redisHttp PUT/DELETE hit the gateway with the raw body and bearer token", async () => {
+  const calls = [];
+  const result = await withFetch(
+    fetchMock([{ test: /\/license%3AENTH-W/, body: { ok: true } }], calls),
+    () =>
+      Promise.all([
+        redisHttp("https://gw.up.railway.app/", "tok", "PUT", "license:ENTH-W", "raw-value"),
+        redisHttp("https://gw.up.railway.app", "tok", "DELETE", "license:ENTH-W"),
+      ])
+  );
+  assert.deepEqual(result, [true, true]);
+  assert.equal(calls.length, 2);
+  const put = calls[0];
+  assert.equal(put.url, "https://gw.up.railway.app/license%3AENTH-W");
+  assert.equal(put.init.method, "PUT");
+  assert.equal(put.init.body, "raw-value");
+  assert.equal(put.init.headers["Content-Type"], "text/plain");
+  assert.equal(put.init.headers.Authorization, "Bearer tok");
+  const del = calls[1];
+  assert.equal(del.init.method, "DELETE");
+  assert.equal(del.init.body, undefined);
+  assert.equal(del.url, "https://gw.up.railway.app/license%3AENTH-W", "trailing slash normalized");
 });

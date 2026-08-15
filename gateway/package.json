@@ -1,0 +1,16 @@
+{
+  "name": "entheai-redis-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TLS-terminating HTTP gateway for the entheai Worker's Railway Redis store. Zero runtime deps (node:http + node:net RESP2 client).",
+  "type": "module",
+  "main": "server.mjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  },
+  "license": "ISC"
+}
