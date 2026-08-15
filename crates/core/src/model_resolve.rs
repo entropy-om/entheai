@@ -17,6 +17,15 @@ fn ternary_cache() -> &'static Mutex<HashMap<String, Arc<dyn adk_rust::Llm>>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Process-wide cache of built OpenAI-compatible clients, keyed by
+/// `(base_url, api_key, model)`. The TUI rebuilds the agent every turn, so
+/// without this each turn re-builds the client (and its underlying reqwest
+/// `Client`). Same `Arc<dyn Llm>` shareability argument as `ternary_cache`.
+fn openai_cache() -> &'static Mutex<HashMap<String, Arc<dyn adk_rust::Llm>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<dyn adk_rust::Llm>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 /// Resolve a `"<provider>/<model>"` spec (e.g. `"osaurus/qwen3-coder"`) into a
 /// live adk-rust model client, using the same `[providers.<name>]` config
 /// shape entheai already reads (`base_url` + optional `api_key_env`).
@@ -100,10 +109,23 @@ fn resolve_openai(
         })?,
         None => "not-needed".to_string(),
     };
+    let cache_key = format!("{}\x1f{}\x1f{}", pc.base_url, api_key, model_name);
+    if let Some(cached) = openai_cache()
+        .lock()
+        .expect("openai cache poisoned")
+        .get(&cache_key)
+    {
+        return Ok(Arc::clone(cached));
+    }
     let config = OpenAIConfig::compatible(&api_key, &pc.base_url, model_name);
     let client = OpenAIClient::new(config)
         .with_context(|| format!("building client for provider {provider_name:?}"))?;
-    Ok(Arc::new(client))
+    let llm: Arc<dyn adk_rust::Llm> = Arc::new(client);
+    openai_cache()
+        .lock()
+        .expect("openai cache poisoned")
+        .insert(cache_key, Arc::clone(&llm));
+    Ok(llm)
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@
 //! `StubMesh` short-circuits, so the success path never fires in production; the
 //! ingest side is what is live and testable.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use log::warn;
@@ -361,7 +362,7 @@ impl PromptProcessor {
     pub async fn ingest_transcript(
         &self,
         scope: &MemoryScope,
-        messages: &[(String, String)],
+        messages: &[(Arc<str>, Arc<str>)],
         final_answer: &str,
     ) {
         let mut buf = String::new();
@@ -515,7 +516,7 @@ mod tests {
             allowed: true,
         };
         pp.ingest_tool(&scope(), &ev).await;
-        let msgs = vec![("user".to_string(), "hi".to_string())];
+        let msgs: Vec<(Arc<str>, Arc<str>)> = vec![("user".into(), "hi".into())];
         pp.ingest_transcript(&scope(), &msgs, "done").await;
         assert_eq!(
             pp.raw().count().await.unwrap(),
@@ -716,7 +717,7 @@ mod tests {
 
         // Simulate a run's ingest.
         let sc = scope();
-        let msgs = vec![("user".to_string(), "fix the auth bug".to_string())];
+        let msgs: Vec<(Arc<str>, Arc<str>)> = vec![("user".into(), "fix the auth bug".into())];
         pp.ingest_transcript(&sc, &msgs, "fixed it").await;
         let ev = entheai_memory::ToolEvidence {
             call_id: "c".into(),

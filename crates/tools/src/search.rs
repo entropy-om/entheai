@@ -1,7 +1,9 @@
 use async_trait::async_trait;
+use std::io::BufRead;
 use std::path::PathBuf;
 use walkdir::WalkDir;
 
+use crate::fs::MAX_FILE_BYTES;
 use crate::{Tool, ToolError};
 
 pub struct Search {
@@ -69,14 +71,26 @@ impl Tool for Search {
                 if !entry.file_type().is_file() {
                     continue;
                 }
-                if let Ok(text) = std::fs::read_to_string(entry.path()) {
-                    for (i, line) in text.lines().enumerate() {
-                        if line.contains(&query_for_search) {
-                            let rel = entry.path().strip_prefix(&root).unwrap_or(entry.path());
-                            hits.push(format!("{}:{}: {}", rel.display(), i + 1, line.trim()));
-                            if hits.len() >= max_results {
-                                return (hits, true);
-                            }
+                let Ok(file) = std::fs::File::open(entry.path()) else {
+                    continue;
+                };
+                let mut bytes = 0usize;
+                for (line_no, line) in std::io::BufReader::new(file).lines().enumerate() {
+                    let Ok(line) = line else { break };
+                    bytes += line.len();
+                    if bytes > MAX_FILE_BYTES as usize || line.as_bytes().contains(&0) {
+                        break;
+                    }
+                    if line.contains(&query_for_search) {
+                        let rel = entry.path().strip_prefix(&root).unwrap_or(entry.path());
+                        hits.push(format!(
+                            "{}:{}: {}",
+                            rel.display(),
+                            line_no + 1,
+                            line.trim()
+                        ));
+                        if hits.len() >= max_results {
+                            return (hits, true);
                         }
                     }
                 }
