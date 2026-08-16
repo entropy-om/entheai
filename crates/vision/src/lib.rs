@@ -162,7 +162,29 @@ impl VisionProcessor {
         image: &ImageInput,
     ) -> Result<(Option<tempfile::TempDir>, PathBuf), VisionError> {
         match image {
-            ImageInput::Path(path) => Ok((None, path.clone())),
+            ImageInput::Path(path) => {
+                // A user-supplied path can contain spaces (every macOS
+                // screenshot: "Screenshot 2026-08-16 at 10.00.00.png" is not
+                // a valid unescaped `@`-reference for the Gemini CLI, so
+                // `agy` either errors or silently answers without the
+                // image) — copy into a tempdir under a fixed, space-free
+                // name instead of passing the path through verbatim.
+                let dir = tempfile::tempdir()
+                    .map_err(|e| VisionError::AgyFailed(format!("tempdir: {e}")))?;
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .filter(|e| e.chars().all(|c| c.is_ascii_alphanumeric()))
+                    .unwrap_or("bin");
+                let dest = dir.path().join(format!("img.{ext}"));
+                tokio::fs::copy(path, &dest)
+                    .await
+                    .map_err(|e| VisionError::Read {
+                        path: path.clone(),
+                        reason: e.to_string(),
+                    })?;
+                Ok((Some(dir), dest))
+            }
             ImageInput::Pasted { mime_type, bytes } => {
                 let dir = tempfile::tempdir()
                     .map_err(|e| VisionError::AgyFailed(format!("tempdir: {e}")))?;
@@ -305,6 +327,29 @@ mod tests {
         vec![
             0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 1, 2, 3,
         ]
+    }
+
+    #[tokio::test]
+    async fn agy_path_copies_a_spaced_path_to_a_space_free_name() {
+        let dir = tempfile::tempdir().unwrap();
+        // Every macOS screenshot looks like this.
+        let src = dir.path().join("Screenshot 2026-08-16 at 10.00.00.png");
+        tokio::fs::write(&src, png_bytes()).await.unwrap();
+
+        let vp = VisionProcessor::new(
+            Arc::new(FakeLlm {
+                response: String::new(),
+            }),
+            "model",
+        );
+        let (_guard, resolved) = vp.agy_path(&ImageInput::path(&src)).await.unwrap();
+
+        assert!(
+            !resolved.display().to_string().contains(' '),
+            "resolved path must be space-free for the Gemini CLI @-reference: {}",
+            resolved.display()
+        );
+        assert_eq!(tokio::fs::read(&resolved).await.unwrap(), png_bytes());
     }
 
     #[test]
