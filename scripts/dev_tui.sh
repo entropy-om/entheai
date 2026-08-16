@@ -3,7 +3,7 @@
 # so the tool sandbox (cwd) and .env resolve correctly. Extra flags pass through:
 #   ./scripts/dev_tui.sh                                     # plain interactive TUI
 #   ./scripts/dev_tui.sh --yolo                              # auto-approve tool calls
-#   ./scripts/dev_tui.sh --model openrouter/deepseek/deepseek-chat
+#   ./scripts/dev_tui.sh --model deepseek/deepseek-v4-pro
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export RUST_BACKTRACE=1

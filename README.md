@@ -51,9 +51,9 @@ Built fresh in **Rust**, taking the best ideas from [Crush](https://github.com/c
 
 ## Highlights
 
-- **Tiered hybrid brain** — cloud orchestrator plans; fast local Osaurus workers execute; escalation when it's hard.
+- **Tiered hybrid brain** — a cloud orchestrator (DeepSeek V4 Pro) plans; model-matched workers execute (DeepSeek V4 Flash for light roles by default, or fast local Osaurus models if you point a role at them); escalation when it's hard.
 - **Fan-out orchestration** — effort-gated decomposition → parallel *model-matched* coders in isolated git worktrees → merge + verify (build & test).
-- **Recursive development** *(opt-in)* — set `[fanout] executor = "agy"` and every fan-out coder runs on the **Antigravity CLI** (Google's Ultra models) inside its worktree, so **entheai develops entheai** — bounded by a depth guard (`ENTHEAI_FANOUT_DEPTH ≤ 3`) and layer-aware prompts.
+- **Recursive development** *(opt-in)* — set `[fanout] executor = "agy"` and every fan-out coder runs on the **Antigravity CLI** inside its worktree, routed to Gemini via `[fanout].agy_model` (default `gemini-3.6-flash-high`; bypasses `[agents.coder]`), so **entheai develops entheai** — bounded by a depth guard (`ENTHEAI_FANOUT_DEPTH ≤ 3`) and layer-aware prompts. Other executors: `"auto"` (default; federation when `[federation].enabled` and a worker answers, else local), `"local"` (always in-process on the `[agents.*]` models), `"copilot"`.
 - **Deeply extensible** — native tools · **skills** (`SKILL.md` discovery + the `skill` tool) · **MCP** servers (spawned at startup, tools exposed to the agent).
 - **Memory that compounds** — a five-namespace store (codebase, learnings, trajectories, tool results, sub-agent scratch), wired into the loop with pre-task retrieval + tool-output spillover.
 - **Federation** *(opt-in)* — a NATS **event bus** streams every fan-out run to the tailnet (F1); a **distributed swarm** runs coder sub-tasks on other nodes over a JetStream work-queue with git-bundle transport (F2.1); fan-out **offloads** coders to the fleet (F2.2); and each remote coder runs **sandboxed** — a Landlock filesystem jail + seccomp syscall denylist + drop-root on Linux (F2.3). Fully fail-safe — off or unreachable, runs stay local.
@@ -182,22 +182,30 @@ git clone https://github.com/entropy-om/entheai.git
 cd entheai && cargo build --release
 ```
 
-A fresh `entheai` **works out of the box on the free tier — no config, no API key.** With no `entheai.toml` it defaults to the free community node on `coder.vaked.dev` (`vaked/qwen3-coder:30b`, a Qwen3-Coder-30B; it runs on CPU, so it's slow but genuinely free), and the fan-out falls back to it too:
+A fresh `entheai` **works out of the box with one key: `DEEPSEEK_API_KEY`.** With no `entheai.toml` it defaults to the DeepSeek direct API (`api.deepseek.com`) — `deepseek/deepseek-v4-flash` (fast, cheap, 1M context) for interactive runs and the light fan-out roles, `deepseek/deepseek-v4-pro` as the fan-out orchestrator and for the coder/reviewer roles. Without the key, `--fanout` automatically degrades to the free community node on `coder.vaked.dev` (`vaked/qwen3-coder:30b`, a Qwen3-Coder-30B; it runs on CPU, so it's slow but genuinely free), and interactive runs take it via `--model`:
 
 ```bash
+export DEEPSEEK_API_KEY=sk-...          # or put it in .env / ~/.config/entheai/.env
 entheai "Reply with exactly: pong"     # one-shot execution
 entheai                                 # interactive TUI session
 entheai --fanout "add a CONTRIBUTING.md and a .editorconfig"   # parallel fan-out coders
+entheai --model vaked/qwen3-coder:30b "Reply with exactly: pong"   # keyless, on the free tier
 ```
 
-To pin the model or add your own providers, drop an `entheai.toml` in the repo (the free node still needs no key):
+To pin the model or add your own providers, drop an `entheai.toml` in the repo (`deepseek`, `gemini`, `openrouter` and the keyless `vaked` are built in — no `[providers.*]` block needed for them):
 
 ```bash
 cat > entheai.toml <<'TOML'
-default_model = "vaked/qwen3-coder:30b"
+default_model = "deepseek/deepseek-v4-flash"
 
-[providers.vaked]
-base_url = "https://coder.vaked.dev/v1"
+[router]
+orchestrator = "deepseek/deepseek-v4-pro"
+
+# Per-role fallback chains: the first entry whose provider is available wins.
+[agents.coder]
+model = ["deepseek/deepseek-v4-pro", "gemini/gemini-3.1-pro-preview", "openrouter/deepseek/deepseek-v4-pro"]
+[agents.explore]
+model = ["deepseek/deepseek-v4-flash", "gemini/gemini-3.6-flash", "openrouter/deepseek/deepseek-v4-flash"]
 TOML
 ```
 
@@ -216,6 +224,8 @@ base_url = "https://opencode.ai/zen/v1"
 api_key_env = "OPENCODE_API_KEY"
 ```
 
+Config resolution: `./entheai.toml` (or `--config <path>`) → `~/.config/entheai/entheai.toml` → `~/.config/entheai/config.toml` → built-in defaults. Every key is documented in [`docs/configuration.md`](docs/configuration.md).
+
 Run the checks: `./scripts/check.sh` (fmt + clippy `-D warnings` + tests).
 
 ## Usage
@@ -232,7 +242,8 @@ entheai --yolo "run the refactor, no permission prompts"    # auto-approve (use 
 Model routing is `<provider>/<model>` (split on the first `/`):
 
 ```bash
-entheai --model vaked/qwen3-coder:30b "reply with pong"   # pin a specific model
+entheai --model deepseek/deepseek-v4-pro "reply with pong"  # pin a specific model
+entheai --model vaked/qwen3-coder:30b "reply with pong"    # keyless free tier
 entheai --model quantal/quantal "…"                        # (ternary native backend — see below)
 ```
 
@@ -450,7 +461,7 @@ infinite reflections of a single point of light between two dark mirrors, the re
 
 ## Thanks to OpenCode 🙏
 
-entheai leans hard on [OpenCode Zen](https://opencode.ai) for cloud inference — DeepSeek V4 Pro/Flash, Qwen, GLM, Kimi, and more through a single OpenAI-compatible key. Genuinely the smoothest model gateway I've used, and the team keeps shipping.
+entheai's cloud inference grew up on [OpenCode Zen](https://opencode.ai), and it remains a supported provider (`zen/*`) — DeepSeek V4 Pro/Flash, Qwen, GLM, Kimi, and more through a single OpenAI-compatible key — even though the default engine is now DeepSeek's direct API. Genuinely the smoothest model gateway I've used, and the team keeps shipping.
 
 **Try it — you get $5 in credit, they get $5 too → [opencode.ai/go](https://opencode.ai/go?ref=BG9E87CD74)**. Honestly the best referral I've ever seen. Thank you to the whole OpenCode team for all their work. 💛
 

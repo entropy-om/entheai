@@ -31,9 +31,10 @@ graph TD
     end
 
     subgraph Providers ["Inference Provider Tier"]
-        ZEN["OpenCode Zen Cloud\n(DeepSeek V4 Pro/Flash)"]
+        DS["DeepSeek Direct API\n(V4 Pro / V4 Flash)"]
+        FB["Fallbacks\n(Gemini, OpenRouter, vaked free tier)"]
         OSA["Osaurus Local Engine\n(127.0.0.1:1337 / MLX)"]
-        AGY["Antigravity CLI\n(Google Ultra / agy)"]
+        AGY["Antigravity CLI\n(Gemini via agy_model / agy)"]
     end
 
     subgraph Execution ["Execution & Federation Fleet"]
@@ -46,7 +47,8 @@ graph TD
     APP --> TUI
     COMP -.-> TUI
     AG --> RT
-    RT --> ZEN
+    RT --> DS
+    RT --> FB
     RT --> OSA
     AG --> FO
     FO --> GW
@@ -104,8 +106,8 @@ Cargo.toml                          # Workspace root (resolver=2)
 
 | Compute Tier | Provider | Primary Models | Role & Responsibilities |
 |---|---|---|---|
-| **Cloud Orchestrator** | OpenCode Zen (`https://opencode.ai/zen/v1`) | `zen/deepseek-v4-pro`, `zen/qwen3-max` | High-level planning, DAG task decomposition, architectural decisions, and edge-case resolution. |
-| **Model-Matched Coders** | OpenCode Zen / Antigravity | `zen/deepseek-v4-flash`, `zen/qwen3-coder`, `agy` | Rapid sub-agent code implementation inside isolated git worktrees. |
+| **Cloud Orchestrator** | DeepSeek direct (`https://api.deepseek.com/v1`) | `deepseek/deepseek-v4-pro` (also coder + reviewer); fallbacks `gemini/gemini-3.1-pro-preview`, `openrouter/deepseek/deepseek-v4-pro` | High-level planning, DAG task decomposition, architectural decisions, and edge-case resolution. |
+| **Model-Matched Sub-Agents** | DeepSeek direct / Gemini / OpenRouter / Antigravity | `deepseek/deepseek-v4-flash` (explore, test, docs); fallbacks `gemini/gemini-3.6-flash`, `openrouter/deepseek/deepseek-v4-flash`; keyless last resort `vaked/qwen3-coder:30b`; `agy` when `[fanout] executor = "agy"` | Rapid sub-agent code implementation inside isolated git worktrees. |
 | **Local Low-Latency** | Osaurus (`http://127.0.0.1:1337/v1`) | `osaurus/qwen3-coder`, local embeddings | Offline tasks, rapid code inspection, privacy-sensitive runs, and local embedding generation. |
 
 ---
@@ -144,8 +146,8 @@ sequenceDiagram
 
 ### Recursive Development (`agy` integration)
 When `[fanout] executor = "agy"` is configured:
-1. Every fan-out sub-agent spawns an **Antigravity CLI** process inside its dedicated git worktree.
-2. Google Antigravity agents execute using Ultra-tier reasoning models.
+1. Every fan-out coder spawns an **Antigravity CLI** process inside its dedicated git worktree (bypassing `[agents.coder]`).
+2. Antigravity agents run on Gemini via `[fanout] agy_model` (default `gemini-3.6-flash-high`).
 3. Execution depth is guarded by `ENTHEAI_FANOUT_DEPTH <= 3` to prevent infinite recursion traps.
 
 <p align="center">

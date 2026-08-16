@@ -9,12 +9,16 @@ Every model spec in `entheai` follows the `<provider>/<model>` convention:
 
 ```toml
 # Examples of valid model specifications
-vaked/coder
+deepseek/deepseek-v4-flash            # default: fast/cheap, 1M context
+deepseek/deepseek-v4-pro              # strong tier: orchestrator, coder, reviewer
+gemini/gemini-3.6-flash
+gemini/gemini-3.1-pro-preview
+openrouter/deepseek/deepseek-v4-pro
+vaked/qwen3-coder:30b                 # keyless free tier
 osaurus/qwen3-coder
-zen/deepseek-v4-pro
-deepseek/deepseek-reasoner
-openrouter/anthropic/claude-3.5-sonnet
 ```
+
+DeepSeek V4 is the default: `deepseek/deepseek-v4-flash` when `--model` is omitted, `deepseek/deepseek-v4-pro` for the fan-out orchestrator. The legacy `deepseek-chat` / `deepseek-reasoner` ids were discontinued on 2026-07-24; use the V4 ids above.
 
 ## Resolution Mechanics
 

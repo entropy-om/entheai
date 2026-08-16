@@ -1,189 +1,146 @@
 # ==============================================================================
-# ENTHEAI CONFIGURATION — 8B.IS / VAKED SOVEREIGN FLEET (DEEPSEEK + GOOGLE ULTRA)
+# ENTHEAI CONFIGURATION — DEEPSEEK V4 (FLASH | PRO) ALL THE WAY DOWN
 # ==============================================================================
+# Every key in this file exists in crates/config (entheai-config). The parser
+# ignores unknown keys silently, so keep this file honest — see
+# docs/configuration.md for the full reference.
+#
+# Model ids are "<provider>/<model>". Credits today: deepseek (default engine)
+# and gemini; openrouter is declared as a key-only third fallback. All three are
+# also injected as built-ins by entheai-config; the blocks below make the intent
+# explicit.
 
-# DeepSeek is the primary default provider
-default_model = "deepseek/deepseek-chat"
+# Interactive default (`entheai`, `entheai "prompt"`, `--model` unset):
+# DeepSeek V4 Flash — fast + cheap, 1M context.
+default_model = "deepseek/deepseek-v4-flash"
 
 # ── Inference Providers ────────────────────────────────────────────────────────
 
-# 1. DeepSeek direct API (Main Engine: V3 chat & R1 reasoning)
+# 1. DeepSeek direct API — V4 Flash (fast/cheap) + V4 Pro (strong)
 [providers.deepseek]
 base_url = "https://api.deepseek.com/v1"
 api_key_env = "DEEPSEEK_API_KEY"
 
-# 2. Google Gemini (Google Ultra setup: Gemini 2.5 Pro / Flash via OpenAI-compatible endpoint)
+# 2. Google Gemini — first fallback. kind = "gemini" = adk-rust's native Gemini
+#    client (Gemini 3.x tool calls need it; the OpenAI-compatible endpoint drops
+#    the thought_signature round-trip and 400s on the second turn).
 [providers.gemini]
-base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"   # unused for kind = "gemini"
 api_key_env = "GEMINI_API_KEY"
+kind = "gemini"
 
-# 3. Fleet Ollama (Tailnet distributed worker inference on Apple Silicon / Hetzner)
-[providers.fleet-ollama]
-base_url = "http://lodris-macbook-pro.tail2870dc.ts.net:11434/v1"
-
-# 4. Local Ollama (Local macOS loopback inference)
-[providers.local-ollama]
-base_url = "http://127.0.0.1:11434/v1"
-
-# 5. coder.vaked.dev — Free Community Lane (nixai-base Tailnet)
-[providers.coder]
-base_url = "https://nixai-base.tail2870dc.ts.net/v1"
-api_key_env = "CODER_VAKED_FREE_KEY"
-
-# 6. coder.vaked.dev — Premium Dedicated Lane (Peter's Sovereign High-Priority Key)
-[providers.coder-premium]
-base_url = "https://nixai-base.tail2870dc.ts.net/v1"
-api_key_env = "CODER_VAKED_PETER_KEY"
-
-# 7. OpenCode Zen Gateway
-[providers.zen]
-base_url = "https://opencode.ai/zen/v1"
-api_key_env = "OPENCODE_API_KEY"
-
-# 8. OpenRouter Aggregator
+# 3. OpenRouter aggregator — second fallback (deepseek/* + google/* ids)
 [providers.openrouter]
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 
-# 9. OpenAI Direct API
-[providers.openai]
-base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
-
-# 10. Native 1.58-Bit Ternary Engine (BitNet offline)
-[providers.quantal]
-base_url = ""
-model_dir = "/Users/lodripeter/workspace/peterlodri-sec/pocoo.vaked.dev/demos/quantal"
-kind = "ternary"
-
-# ── Inference Parameters ───────────────────────────────────────────────────────
+# ── Inference Parameters (applied to every LLM call) ───────────────────────────
 [inference]
 temperature = 0.3
 max_tokens = 2048
 
-# ── Multi-Agent Fan-Out Orchestration ──────────────────────────────────────────
-# Fleet Ollama + DeepSeek + Google Ultra + Coder Premium for parallel sub-agents
+# ── Router / Fan-out Orchestration ────────────────────────────────────────────
+[router]
+# Plans, decomposes and synthesizes — the strongest model in the swarm.
+orchestrator = "deepseek/deepseek-v4-pro"
+# Max sub-agents running concurrently during `--fanout`.
+max_parallel = 6
 
 [fanout]
-enabled = true
-max_parallel_coders = 6
-worktree_isolation = true
-depth_guard = 3
-executor = "agy" # Google Ultra Antigravity CLI integration for recursive coding
+# "local": every coder runs in-process on the [agents.*] models below.
+# "auto" would dispatch to the federation when [federation] is on and a worker
+# answers; "agy" / "copilot" would run coders on those CLIs instead (bypassing
+# [agents.coder]) — not what "DeepSeek all the way down" wants.
+executor = "local"
+# Never trust self-reported success: changed worktrees must pass `verify`
+# (auto-detected ./scripts/check.sh when unset) before integration.
+verify_required = true
+# Per-coder timeout before it is force-aborted.
+coder_timeout_secs = 600
 
-# Exploration: DeepSeek V3 + Gemini Flash + Fleet Ollama
+# Per-role preference chains: the FIRST entry whose provider is available
+# (declared + key in env) wins; a role with no usable entry falls back to the
+# orchestrator, and fan-out degrades to the keyless vaked free tier last.
+# Light roles ride V4 Flash, code-writing/judging roles ride V4 Pro.
+
 [agents.explore]
 model = [
-  "deepseek/deepseek-chat",
-  "gemini/gemini-2.5-flash",
-  "fleet-ollama/qwen2.5-coder:7b"
+  "deepseek/deepseek-v4-flash",
+  "gemini/gemini-3.6-flash",
+  "openrouter/deepseek/deepseek-v4-flash",
 ]
 
-# Coders: DeepSeek V3 + Coder Premium (DeepSeek-V4-Pro) + Gemini Pro + Fleet Ollama
 [agents.coder]
 model = [
-  "deepseek/deepseek-chat",
-  "coder-premium/deepseek-v4-pro",
-  "gemini/gemini-2.5-pro",
-  "fleet-ollama/qwen2.5-coder:14b",
-  "coder/qwen3-coder"
+  "deepseek/deepseek-v4-pro",
+  "gemini/gemini-3.1-pro-preview",
+  "openrouter/deepseek/deepseek-v4-pro",
 ]
 
-# Reviewers: DeepSeek R1 (reasoner) + Gemini 2.5 Pro + DeepSeek V3
 [agents.reviewer]
 model = [
-  "deepseek/deepseek-reasoner",
-  "gemini/gemini-2.5-pro",
-  "deepseek/deepseek-chat"
+  "deepseek/deepseek-v4-pro",
+  "gemini/gemini-3.1-pro-preview",
+  "openrouter/deepseek/deepseek-v4-pro",
 ]
 
-# Test Generators & Runners: Fleet Ollama + Local Ollama + DeepSeek V3
 [agents.test]
 model = [
-  "fleet-ollama/qwen2.5-coder:7b",
-  "local-ollama/qwen2.5-coder",
-  "deepseek/deepseek-chat"
+  "deepseek/deepseek-v4-flash",
+  "gemini/gemini-3.6-flash",
+  "openrouter/deepseek/deepseek-v4-flash",
 ]
 
-# Documentation: Gemini Flash + DeepSeek V3
 [agents.docs]
 model = [
-  "gemini/gemini-2.5-flash",
-  "deepseek/deepseek-chat"
+  "deepseek/deepseek-v4-flash",
+  "gemini/gemini-3.6-flash",
+  "openrouter/deepseek/deepseek-v4-flash",
 ]
-
-# ── Cognitive Vector Memory (MEM|8 Resonance) ─────────────────────────────────
-
-[memory]
-enabled = true
-database_path = "~/.entheai/memory.db"
-vector_dim = 1536
-resonance_bands = ["gamma_8hz", "beta_4hz", "alpha_2hz", "theta_1hz"]
-max_context_recall = 8
-
-[memory.namespaces]
-codebase = true
-learnings = true
-trajectories = true
-tool_results = true
-scratch = true
-
-[memory.judge]
-enabled = true
-model = "deepseek/deepseek-chat"
-confidence_threshold = 0.82
-
-# ── Model Context Protocol (MCP) Servers ──────────────────────────────────────
-
-# Smart Tree: AST Context Compression, Symbol Extraction & Security Sentinel (8b-is/smart-tree)
-[mcp.smart-tree]
-command = "st"
-args = ["--mcp"]
-
-# DeepSeek Harness (dsh): Plugin-First Agent Runtime & Trajectory Engine (deepseek-ai/deepseek-harness)
-[mcp.deepseek-harness]
-command = "npx"
-args = ["-y", "@deepseek-ai/dsh", "mcp"]
-
-# ── Companion Floating Session Beacon ──────────────────────────────────────────
-
-[companion]
-enabled = true
-always_on_top = true
-window_size = [180, 180]
-tailnet_qr = true
-
-# ── Procedural Radio & Audio Synthesis ────────────────────────────────────────
-
-[radio]
-enabled = true
-stream_url = "https://music.vaked.dev/feed.xml"
-tuning_hz = 432.0
-volume = 0.65
-
-# ── NATS Federation & Distributed Fleet Swarm ─────────────────────────────────
-
-[nats]
-enabled = true
-url = "nats://dev-cx53.tail2870dc.ts.net:4222"
-cluster_nodes = [
-  "dev-cx53.tail2870dc.ts.net",
-  "hetzner-cax31.tail2870dc.ts.net"
-]
-
-[federation]
-enabled = true
-role = "auto"
-deadline_secs = 600
-sandbox = "permissive"
-max_concurrent_coders = 4
 
 # ── The Oracle (Adjudication Seam) ────────────────────────────────────────────
-
 [oracle]
 enabled = true
 coders = "local"
 gate = "advisory"
 block_confidence = 0.8
-model = "deepseek/deepseek-reasoner"
-openclaw_url = "https://do-openclaw.tail2870dc.ts.net"
+model = "deepseek/deepseek-v4-pro"
+
+# ── Memory (5-namespace SQLite + vector store) ────────────────────────────────
+# Defaults: path = ~/.cache/entheai/memory.db, embed_model = nomic-embed-text.
+[memory]
+enabled = true
+
+# ── Model Context Protocol (MCP) Servers ──────────────────────────────────────
+
+# Smart Tree: AST context compression, symbol extraction (8b-is/smart-tree)
+[mcp.smart-tree]
+command = "st"
+args = ["--mcp"]
+
+# DeepSeek Harness (dsh): plugin-first agent runtime (deepseek-ai/deepseek-harness)
+[mcp.deepseek-harness]
+command = "npx"
+args = ["-y", "@deepseek-ai/dsh", "mcp"]
+
+# ── Companion Floating Session Beacon ──────────────────────────────────────────
+[companion]
+enabled = true
+always_on_top = true
+
+# ── NATS Federation & Distributed Fleet Swarm ─────────────────────────────────
+# The NATS URL/token come from the environment (NATS_URL / NATS_TOKEN), never
+# from this file. [nats] drives the fan-out event bus; [federation] still serves
+# the read-only `/fleet` roster, the MCP `entheai_dispatch` tool and
+# entheai-worker — but with [fanout].executor = "local" above, `--fanout`
+# coders always run in-process.
+[nats]
+enabled = true
+url_env = "NATS_URL"
+token_env = "NATS_TOKEN"
+
+[federation]
+enabled = true
+deadline_secs = 600
+sandbox = "permissive"
+max_concurrent_coders = 4

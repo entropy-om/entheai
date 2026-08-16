@@ -640,11 +640,15 @@ async fn event_loop(
                 entheai_orchestrator::CopilotExecutor::new(config.fanout.copilot_model.clone())
                     as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>,
             )
-        } else {
+        } else if config.fanout.federates(&config.federation) {
             fleet_fed.clone().map(|f| {
                 entheai_federation::FederationExecutor::new(f, root.clone())
                     as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>
             })
+        } else {
+            // `executor = "local"`: in-process coders even with `[federation]` on
+            // (`fleet_fed` stays connected for the read-only `/fleet` roster).
+            None
         };
 
     let (perm_tx, mut perm_rx) = mpsc::channel::<PermissionRequest>(8);
@@ -1753,13 +1757,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                         app.viz_swarm = !app.viz_swarm;
                     }
                     4 => {
-                        if app.model_label == "zen/deepseek-v4-pro" {
-                            app.model_label = "zen/deepseek-v4-flash".to_string();
-                        } else if app.model_label == "zen/deepseek-v4-flash" {
-                            app.model_label = "osaurus/qwen3-coder".to_string();
-                        } else {
-                            app.model_label = "zen/deepseek-v4-pro".to_string();
-                        }
+                        app.model_label = next_model_label(&app.model_label).to_string();
                     }
                     5 => {} // Read-only Local Osaurus status
                     6 => {
@@ -1794,13 +1792,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Enter => match step_idx {
                 0 => {
-                    if app.model_label == "zen/deepseek-v4-pro" {
-                        app.model_label = "zen/deepseek-v4-flash".to_string();
-                    } else if app.model_label == "zen/deepseek-v4-flash" {
-                        app.model_label = "osaurus/qwen3-coder".to_string();
-                    } else {
-                        app.model_label = "zen/deepseek-v4-pro".to_string();
-                    }
+                    app.model_label = next_model_label(&app.model_label).to_string();
                 }
                 1 => {
                     app.mode = match app.mode {
@@ -3808,11 +3800,28 @@ fn status_line(app: &App) -> Line<'static> {
     Line::from(status_spans)
 }
 
+/// The in-session model cycle shared by the config menu ("Default Model") and
+/// the first-run setup ("Model Backend"): DeepSeek V4 Flash → V4 Pro → Gemini
+/// flash → the keyless vaked free tier → back to Flash. Any other label (e.g.
+/// a `--model` override) steps to the Flash default first. Every id resolves
+/// against a provider entheai-config injects, and the vaked stop guarantees a
+/// working option even with no API key.
+fn next_model_label(current: &str) -> &'static str {
+    match current {
+        "deepseek/deepseek-v4-flash" => "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v4-pro" => "gemini/gemini-3.6-flash",
+        "gemini/gemini-3.6-flash" => "vaked/qwen3-coder:30b",
+        _ => "deepseek/deepseek-v4-flash",
+    }
+}
+
 /// The model's context-window size in tokens, by model-id substring. Approximate
 /// — enough to show "how full is the window". Falls back to 128k.
 fn max_context_window(model: &str) -> usize {
     let m = model.to_ascii_lowercase();
-    if m.contains("deepseek") {
+    if m.contains("deepseek-v4") {
+        1_048_576 // DeepSeek V4 flash/pro — 1M
+    } else if m.contains("deepseek") {
         131_072 // DeepSeek V3.x — 128k
     } else if m.contains("qwen") {
         32_768
@@ -4161,7 +4170,7 @@ mod tests {
             status: Status::Idle,
             scroll: 0,
             follow: true,
-            model_label: "deepseek/deepseek-chat".into(),
+            model_label: "deepseek/deepseek-v4-flash".into(),
             pending_permission: None,
             run_started: None,
             spinner_frame: 0,
@@ -5240,5 +5249,42 @@ mod tests {
         assert_eq!(dash_phase(&app), "integrating");
         app.swarm.done(None, 1, 0);
         assert_eq!(dash_phase(&app), "done");
+    }
+
+    #[test]
+    fn model_cycle_is_deepseek_v4_first() {
+        assert_eq!(
+            next_model_label("deepseek/deepseek-v4-flash"),
+            "deepseek/deepseek-v4-pro"
+        );
+        assert_eq!(
+            next_model_label("deepseek/deepseek-v4-pro"),
+            "gemini/gemini-3.6-flash"
+        );
+        assert_eq!(
+            next_model_label("gemini/gemini-3.6-flash"),
+            "vaked/qwen3-coder:30b"
+        );
+        // The keyless free tier closes the loop, and a `--model` override or
+        // any unknown label steps to the Flash default.
+        assert_eq!(
+            next_model_label("vaked/qwen3-coder:30b"),
+            "deepseek/deepseek-v4-flash"
+        );
+        assert_eq!(
+            next_model_label("osaurus/qwen3-coder"),
+            "deepseek/deepseek-v4-flash"
+        );
+    }
+
+    #[test]
+    fn context_window_knows_deepseek_v4_is_1m() {
+        assert_eq!(max_context_window("deepseek/deepseek-v4-flash"), 1_048_576);
+        assert_eq!(
+            max_context_window("openrouter/deepseek/deepseek-v4-pro"),
+            1_048_576
+        );
+        assert_eq!(max_context_window("deepseek/deepseek-chat"), 131_072);
+        assert_eq!(max_context_window("gemini/gemini-3.6-flash"), 1_048_576);
     }
 }

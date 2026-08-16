@@ -74,56 +74,22 @@ struct Cli {
 /// built-in configs when absent (an explicit `--config <other>` must exist).
 const DEFAULT_CONFIG_PATH: &str = "entheai.toml";
 
-/// Built-in configuration used when no `entheai.toml` is found in the working
-/// directory or `~/.config/entheai/`. Defaults to the free public vaked node
-/// (`coder.vaked.dev`, no API key) so a fresh `entheai` runs out of the box with
-/// zero setup; the other providers stay listed for anyone who adds a key and
-/// switches `default_model`. Deliberately omits user-specific MCP servers/paths.
-const DEFAULT_CONFIG_TOML: &str = r#"default_model = "vaked/qwen3-coder:30b"
-
-# The free, public vaked inference node — no API key required, so a fresh entheai
-# works immediately. It's CPU-slow today; add a key below and change default_model
-# for a faster model, or subscribe at coder.vaked.dev for the unlimited/priority tiers.
-[providers.vaked]
-base_url = "https://coder.vaked.dev/v1"
-
-[providers.deepseek]
-base_url = "https://api.deepseek.com/v1"
-api_key_env = "DEEPSEEK_API_KEY"
-
-[providers.openrouter]
-base_url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
-
-[providers.hf]
-base_url = "https://router.huggingface.co/v1"
-api_key_env = "HUGGINGFACE_API_KEY"
-
-[providers.zen]
-base_url = "https://opencode.ai/zen/v1"
-api_key_env = "OPENCODE_API_KEY"
-
-[providers.osaurus]
-base_url = "http://127.0.0.1:1337/v1"
-
-[router]
-orchestrator = "vaked/qwen3-coder:30b"
-max_parallel = 4
-"#;
+/// Global per-user config filenames probed under `~/.config/entheai/`, in
+/// order: the canonical `entheai.toml`, then `config.toml` (the name most
+/// `~/.config/<app>/` conventions — and existing installs — use).
+const GLOBAL_CONFIG_NAMES: [&str; 2] = [DEFAULT_CONFIG_PATH, "config.toml"];
 
 /// Load the config, tolerating a missing default file so `entheai` runs from any
 /// directory (fixes a hard `reading config entheai.toml: No such file or
 /// directory` when launched outside a project). Resolution order:
 ///   1. `path` in the cwd — a file that *is* present must parse (a broken config
 ///      is a real error, never silently ignored).
-///   2. `~/.config/entheai/entheai.toml` — the per-user global config.
-///   3. Built-in defaults ([`DEFAULT_CONFIG_TOML`]).
+///   2. `~/.config/entheai/entheai.toml`, then `~/.config/entheai/config.toml`
+///      — the per-user global config ([`GLOBAL_CONFIG_NAMES`]).
+///   3. Built-in defaults ([`entheai_config::BUILTIN_CONFIG_TOML`]).
 ///
 /// An *explicitly* passed `--config <other>` that is missing stays a hard error;
 /// only the default filename falls through to the global / built-in configs.
-///
-/// Registers any custom `[viz.palette.*]` themes from the raw TOML before
-/// returning, so palette lookups work from startup.
 fn load_config(path: &str) -> anyhow::Result<Config> {
     if std::path::Path::new(path).exists() {
         let text =
@@ -135,18 +101,20 @@ fn load_config(path: &str) -> anyhow::Result<Config> {
         anyhow::bail!("reading config {path}: No such file or directory (os error 2)");
     }
 
-    let global = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+    let global_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
         .join(".config")
-        .join("entheai")
-        .join(DEFAULT_CONFIG_PATH);
-    if global.exists() {
-        let text = std::fs::read_to_string(&global)
-            .with_context(|| format!("reading config {}", global.display()))?;
-        eprintln!(
-            "entheai: no ./{DEFAULT_CONFIG_PATH} — using {}",
-            global.display()
-        );
-        return Ok(Config::from_toml_str(&text)?);
+        .join("entheai");
+    for name in GLOBAL_CONFIG_NAMES {
+        let global = global_dir.join(name);
+        if global.exists() {
+            let text = std::fs::read_to_string(&global)
+                .with_context(|| format!("reading config {}", global.display()))?;
+            eprintln!(
+                "entheai: no ./{DEFAULT_CONFIG_PATH} — using {}",
+                global.display()
+            );
+            return Ok(Config::from_toml_str(&text)?);
+        }
     }
 
     let cwd = std::env::current_dir()
@@ -154,14 +122,11 @@ fn load_config(path: &str) -> anyhow::Result<Config> {
         .unwrap_or_else(|_| ".".into());
     eprintln!(
         "entheai: no {DEFAULT_CONFIG_PATH} in {cwd} or {} — using built-in defaults \
-         (provider keys still come from the environment / .env; run from a project \
-         with an entheai.toml, or `entheai --config <path>`, for custom settings)",
-        global
-            .parent()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default(),
+         (DeepSeek V4; provider keys still come from the environment / .env; run from \
+         a project with an entheai.toml, or `entheai --config <path>`, for custom settings)",
+        global_dir.display(),
     );
-    Ok(Config::from_toml_str(DEFAULT_CONFIG_TOML)?)
+    Ok(Config::from_toml_str(entheai_config::BUILTIN_CONFIG_TOML)?)
 }
 
 #[tokio::main]
@@ -256,7 +221,7 @@ async fn main() -> anyhow::Result<()> {
         .model
         .clone()
         .or(cfg.default_model.clone())
-        .unwrap_or_else(|| entheai_router::DEFAULT_ORCHESTRATOR.to_string());
+        .unwrap_or_else(|| entheai_router::DEFAULT_FLASH_MODEL.to_string());
     let yolo = cli.yolo || cfg.permission.yolo;
     // YOLO lifts the turn cap entirely — a long autonomous run shouldn't be cut
     // off at `[router].max_turns` (default 200).
@@ -314,9 +279,10 @@ async fn main() -> anyhow::Result<()> {
                     entheai_bus::Bus::connect(&entheai_bus::BusOptions::from_config(&cfg.nats))
                         .await;
                 let (events, bus_session) = entheai_bus::tee(bus, session_id.clone(), None);
-                // Federation dispatch (F2.2): when `[federation]` is on and a
-                // worker is serving, coders run on the fleet; otherwise run_fanout
-                // runs them locally. Connect failure → None → local (fail-safe).
+                // Federation dispatch (F2.2): under the "auto" executor with
+                // `[federation]` on and a worker serving, coders run on the fleet;
+                // otherwise (incl. `executor = "local"`) run_fanout runs them
+                // locally. Connect failure → None → local (fail-safe).
                 let fed_exec: Option<std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>> =
                     if cfg.fanout.executor == "agy" {
                         // Recursive-dev path: each coder runs via the Antigravity CLI
@@ -332,7 +298,7 @@ async fn main() -> anyhow::Result<()> {
                             cfg.fanout.copilot_model.clone(),
                         )
                             as std::sync::Arc<dyn entheai_orchestrator::CoderExecutor>)
-                    } else if cfg.federation.enabled {
+                    } else if cfg.fanout.federates(&cfg.federation) {
                         entheai_federation::Federation::connect(
                             &entheai_federation::FedOptions::from_config(
                                 &cfg.nats,
@@ -872,7 +838,7 @@ fn resolve_bare_model_llm(
 /// Lovari -> English -> Mandarin (translating by meaning, never by sound) and
 /// print every hop, then exit. Args are joined into one prompt (mirrors
 /// `--memory search <ns> <query...>`'s joining). Model resolution matches the
-/// main run: `--model`, else `[default_model]`, else the built-in orchestrator.
+/// main run: `--model`, else `[default_model]`, else the built-in flash tier.
 async fn run_relay_cmd(
     cfg: &Config,
     cli_model: Option<&str>,
@@ -885,7 +851,7 @@ async fn run_relay_cmd(
     let model_id = cli_model
         .map(str::to_string)
         .or_else(|| cfg.default_model.clone())
-        .unwrap_or_else(|| entheai_router::DEFAULT_ORCHESTRATOR.to_string());
+        .unwrap_or_else(|| entheai_router::DEFAULT_FLASH_MODEL.to_string());
     let (llm, model) = resolve_bare_model_llm(&model_id, cfg)?;
     let relayed = entheai_relay::Relay::new(llm, model).run(&text).await?;
 
@@ -924,7 +890,7 @@ async fn run_caligraph_cmd(
     let model_id = cli_model
         .map(str::to_string)
         .or_else(|| cfg.default_model.clone())
-        .unwrap_or_else(|| entheai_router::DEFAULT_ORCHESTRATOR.to_string());
+        .unwrap_or_else(|| entheai_router::DEFAULT_FLASH_MODEL.to_string());
     let (llm, model) = resolve_bare_model_llm(&model_id, cfg)?;
     let processor =
         entheai_vision::VisionProcessor::new(llm, model).with_agy(cfg.fanout.agy_model.clone());

@@ -2,7 +2,7 @@
 
 Osaurus can proxy to cloud providers, so its local `:1337` endpoint serves **both** your local MLX models **and** cloud models like DeepSeek V4 Pro via [OpenCode Zen](https://opencode.ai) — one endpoint, one config in `entheai`. This guide adds Zen as a custom Osaurus provider.
 
-> **Simpler alternative (skip Osaurus):** point `entheai` *directly* at Zen — uncomment the `[providers.zen]` block in `entheai.toml`, `export OPENCODE_API_KEY=…`, set `default_model = "zen/deepseek-v4-pro"`. Use this guide only if you specifically want Osaurus as a unified local gateway.
+> **Simpler alternative (skip Osaurus):** point `entheai` *directly* at Zen — add a `[providers.zen]` block to `entheai.toml` (`base_url = "https://opencode.ai/zen/v1"`, `api_key_env = "OPENCODE_API_KEY"`), `export OPENCODE_API_KEY=…`, set `default_model = "zen/deepseek-v4-pro"`. Use this guide only if you specifically want Osaurus as a unified local gateway.
 
 ## 0. First, that 401 ("No access keys configured")
 

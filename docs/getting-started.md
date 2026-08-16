@@ -28,21 +28,24 @@ The release binary lands at `target/release/entheai`.
 
 ## Configure
 
-Create `entheai.toml` in the project root:
+Create `entheai.toml` in the project root (or rely on the built-in defaults, which set exactly this — `deepseek`, `gemini`, `openrouter` and the keyless `vaked` providers are built in):
 
 ```toml
-[providers.zen]
-base_url = "https://opencode.ai/zen/v1"
-api_key_env = "OPENCODE_API_KEY"
+default_model = "deepseek/deepseek-v4-flash"   # interactive: V4 Flash
 
-default_model = "zen/deepseek-v4-pro"
+[router]
+orchestrator = "deepseek/deepseek-v4-pro"       # fan-out planning, coder + reviewer: V4 Pro
 ```
+
+Note: `default_model` alone also becomes the fan-out model for every role — set `[router].orchestrator` (as above) to keep planning, coder and reviewer on V4 Pro while chatting on Flash.
 
 Set your API key:
 
 ```bash
-export OPENCODE_API_KEY="your-key-here"
+export DEEPSEEK_API_KEY="your-key-here"
 ```
+
+No key at all? Pass `--model vaked/qwen3-coder:30b` to run on the keyless free tier (`--fanout` degrades to it automatically). Config lookup order: `./entheai.toml` (or `--config <path>`) -> `~/.config/entheai/entheai.toml` -> `~/.config/entheai/config.toml` -> built-in defaults. Full key reference: [configuration.md](configuration.md).
 
 ## Run
 
@@ -57,7 +60,7 @@ cargo run
 cargo run -- --yolo "fix all clippy warnings"
 
 # Custom config, custom model
-cargo run -- --config my-config.toml --model zen/deepseek-v4-flash "refactor the auth module"
+cargo run -- --config my-config.toml --model deepseek/deepseek-v4-pro "refactor the auth module"
 ```
 
 ## First session

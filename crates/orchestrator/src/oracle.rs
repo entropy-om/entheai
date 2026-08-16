@@ -439,18 +439,21 @@ pub fn oracle_for_config(config: &Config) -> Option<Arc<dyn Oracle>> {
     } else {
         GateMode::Advisory
     };
+    // Same fan-out rule as every leaf: the configured adjudicator when its
+    // provider is usable, else the built-in pro chain (Gemini / OpenRouter),
+    // else the keyless free tier — so a missing key degrades to a real
+    // adjudication (logged by the router) instead of a silent build failure.
+    let model = entheai_router::available_or_free(config, entheai_router::oracle_model(config));
     let mut oracle = FusionOracle::new(
         config.clone(),
-        config.oracle.model.clone(),
+        model.clone(),
         gate,
         config.oracle.block_confidence,
     );
     // The configured model is always registered as the Native backend — the
     // adjudicator that fires when no fleet backend reports alive. Without this
     // the enabled Oracle would loop over an empty registry and never adjudicate.
-    oracle.register_backend(OracleBackend::Native {
-        model: config.oracle.model.clone(),
-    });
+    oracle.register_backend(OracleBackend::Native { model });
     Some(Arc::new(oracle))
 }
 

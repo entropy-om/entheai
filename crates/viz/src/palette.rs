@@ -174,6 +174,10 @@ pub fn next_after(name: &str) -> &'static Palette {
         Some(i) => names[(i + 1) % names.len()],
         None => ALL[0].name,
     };
+    // Release the guard before `by_name` re-locks CUSTOM (std Mutex is not
+    // re-entrant — holding it here deadlocked the palette tests).
+    drop(names);
+    drop(custom);
     by_name(next_name)
 }
 

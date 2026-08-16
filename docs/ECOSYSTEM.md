@@ -24,13 +24,14 @@ The three orgs, in one line each:
 ## Providers / inference — what the router points at
 
 entheai routes `"<provider>/<model>"` ids against `[providers]` (`crates/router`,
-`crates/core/model_resolve.rs`). The stock config ships six providers.
+`crates/core/model_resolve.rs`). The stock config ships five providers: `deepseek` (default engine), `gemini`, `openrouter`, `vaked` and `osaurus`; the first four are also injected as built-ins by `entheai-config`.
 
 | Repo (org) | Layer role | State |
 |------------|-----------|-------|
 | **coder.vaked.dev** (peterlodri-sec) | The free-tier GPU node — Qwen3-Coder-30B, OpenAI-compatible, **keyless**. Injected as the built-in `[providers.vaked]` and the **fan-out fallback** (`vaked/qwen3-coder:30b`) when nothing else is available. | ● |
 | **osaurus** (peterlodri-sec) | Local macOS MLX harness on `127.0.0.1:1337`, OpenAI-compatible — zero-network local inference. | ● |
-| deepseek · openrouter · hf · zen | External providers listed in the default config; add a key and switch `default_model`. | ● |
+| **deepseek** (direct API) | The default engine: `deepseek/deepseek-v4-flash` interactive, `deepseek/deepseek-v4-pro` orchestrator/coder/reviewer (`DEEPSEEK_API_KEY`). | ● |
+| gemini · openrouter | Fallback providers in the stock role chains (`GEMINI_API_KEY`, `OPENROUTER_API_KEY`); zen / hf work as extra `[providers.*]` blocks. | ● |
 | **MLX-QUANT** (8b-is) | MLX fork with native ternary (BitNet b1.58) CPU kernels — the substrate under fast local ternary inference. | ◐ |
 | **rivaquant** / **rivaquant420b** (entropy-om) | From-scratch BitNet b1.58 models — the weights a vaked/osaurus node serves. | ◐ |
 | **attestal** / **witness-ai** (entropy-om) | Verified BYOC fine-tuning control plane — produces the models entheai then routes to. | ◐ |

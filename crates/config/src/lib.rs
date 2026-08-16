@@ -5,7 +5,35 @@ use std::collections::HashMap;
 pub enum ConfigError {
     #[error("failed to parse config TOML: {0}")]
     Toml(#[from] toml::de::Error),
+    #[error("invalid config: {0}")]
+    Invalid(String),
 }
+
+/// The accepted `[fanout].executor` values.
+pub const FANOUT_EXECUTORS: [&str; 4] = ["auto", "local", "agy", "copilot"];
+
+/// Built-in configuration used by the CLI and the MCP server when no
+/// `entheai.toml` is found in the working directory or `~/.config/entheai/`.
+/// DeepSeek V4 all the way down: V4 Flash for the interactive default, V4 Pro
+/// for the fan-out orchestrator (per-role tiers and their Gemini / OpenRouter
+/// fallbacks come from `entheai_router`'s built-in chains), with the deepseek /
+/// gemini / openrouter / vaked providers injected by [`Config::from_toml_str`].
+/// Needs `DEEPSEEK_API_KEY` in the environment / `.env`; without it the
+/// interactive run errors loudly, while fan-out degrades to the free public
+/// vaked node (`vaked/qwen3-coder:30b`, keyless, CPU-slow). Pass
+/// `--model vaked/qwen3-coder:30b` to run keyless interactively. Deliberately
+/// omits user-specific MCP servers/paths.
+pub const BUILTIN_CONFIG_TOML: &str = r#"default_model = "deepseek/deepseek-v4-flash"
+
+# Local Osaurus (MLX) inference, keyless — declared so `osaurus/<model>` ids
+# resolve out of the box; deepseek / gemini / openrouter / vaked are built in.
+[providers.osaurus]
+base_url = "http://127.0.0.1:1337/v1"
+
+[router]
+orchestrator = "deepseek/deepseek-v4-pro"
+max_parallel = 4
+"#;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -122,6 +150,34 @@ pub const VAKED_PROVIDER: &str = "vaked";
 /// Base URL for the built-in [`VAKED_PROVIDER`] free tier.
 pub const VAKED_BASE_URL: &str = "https://coder.vaked.dev/v1";
 
+/// Built-in keyed providers, injected into every parsed config (never
+/// overriding a user-declared `[providers.<name>]`) so the DeepSeek V4 defaults
+/// (`deepseek/deepseek-v4-pro|flash`) and the gemini / openrouter fallbacks
+/// resolve in a bare config as soon as the matching key is in the environment:
+/// `(name, base_url, api_key_env, kind)`. Gemini rides adk-rust's native
+/// client (`kind = "gemini"`): Gemini 3.x tool-call turns need the
+/// `thought_signature` round-trip the OpenAI-compatible endpoint path drops.
+pub const BUILTIN_KEYED_PROVIDERS: &[(&str, &str, &str, Option<&str>)] = &[
+    (
+        "deepseek",
+        "https://api.deepseek.com/v1",
+        "DEEPSEEK_API_KEY",
+        None,
+    ),
+    (
+        "gemini",
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        "GEMINI_API_KEY",
+        Some("gemini"),
+    ),
+    (
+        "openrouter",
+        "https://openrouter.ai/api/v1",
+        "OPENROUTER_API_KEY",
+        None,
+    ),
+];
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ProviderConfig {
     pub base_url: String,
@@ -134,8 +190,9 @@ pub struct ProviderConfig {
     /// correction #4).
     #[serde(default)]
     pub model_dir: Option<String>,
-    /// Provider backend: `"openai"` (default; `base_url` + `api_key_env`) or
-    /// `"ternary"` (native `model_dir` runner).
+    /// Provider backend: `"openai"` (default; `base_url` + `api_key_env`),
+    /// `"gemini"` (adk-rust's native Gemini client over `api_key_env`;
+    /// `base_url` ignored) or `"ternary"` (native `model_dir` runner).
     #[serde(default)]
     pub kind: Option<String>,
 }
@@ -206,9 +263,11 @@ pub struct FanoutConfig {
     /// must not block the rest of the fan-out batch. Default: 600 (10 min).
     #[serde(default = "default_coder_timeout_secs")]
     pub coder_timeout_secs: u64,
-    /// Coder execution backend: "auto" (federation if enabled, else local) |
-    /// "agy" (run each coder via the Antigravity CLI — recursive dev) |
-    /// "copilot" (run each coder via the GitHub Copilot CLI) | "local".
+    /// Coder execution backend: "auto" (federation if `[federation]` is on and a
+    /// worker answers, else local) | "local" (always in-process, on the
+    /// `[agents.<role>]` models — never federates) | "agy" (run each coder via
+    /// the Antigravity CLI on `agy_model` — recursive dev; bypasses
+    /// `[agents.coder]`) | "copilot" (run each coder via the GitHub Copilot CLI).
     #[serde(default = "default_fanout_executor")]
     pub executor: String,
     /// Model the "agy" executor runs fan-out coders on.
@@ -242,8 +301,8 @@ pub struct OracleConfig {
     /// gate = "block". Default 0.8.
     #[serde(default = "default_oracle_block_confidence")]
     pub block_confidence: f32,
-    /// The Oracle's adjudication model (router-resolved). Defaults to the
-    /// coder.vaked.dev free tier — the fleet's keyless gateway.
+    /// The Oracle's adjudication model (router-resolved; degrades to the free
+    /// tier when its provider is unavailable). Defaults to DeepSeek V4 Pro.
     #[serde(default = "default_oracle_model")]
     pub model: String,
 }
@@ -270,7 +329,7 @@ fn default_oracle_block_confidence() -> f32 {
     0.8
 }
 fn default_oracle_model() -> String {
-    "vaked/qwen3-coder:30b".to_string()
+    "deepseek/deepseek-v4-pro".to_string()
 }
 
 impl Default for FanoutConfig {
@@ -288,6 +347,14 @@ impl Default for FanoutConfig {
 }
 
 impl FanoutConfig {
+    /// Whether fan-out coders may be dispatched to the federation: only the
+    /// "auto" executor with `[federation].enabled`. `"local"` (and the CLI
+    /// executors) never federate, so an operator pinning `executor = "local"`
+    /// gets in-process coders even with `[federation]` on.
+    pub fn federates(&self, federation: &FederationConfig) -> bool {
+        self.executor == "auto" && federation.enabled
+    }
+
     /// The effective verify command for a repo rooted at `root`: the configured
     /// `[fanout].verify` when set, else `./scripts/check.sh` when that script
     /// exists at the root (the repo's own empirical gate), else `None`.
@@ -571,14 +638,21 @@ pub struct TelemetryConfig {
 impl Config {
     pub fn from_toml_str(s: &str) -> Result<Self, ConfigError> {
         let mut cfg: Config = toml::from_str(s)?;
+        if !FANOUT_EXECUTORS.contains(&cfg.fanout.executor.as_str()) {
+            return Err(ConfigError::Invalid(format!(
+                "[fanout].executor = {:?} is not one of {:?}",
+                cfg.fanout.executor, FANOUT_EXECUTORS
+            )));
+        }
         cfg.inject_builtin_providers();
         Ok(cfg)
     }
 
-    /// Ensure the built-in keyless free-tier provider ([`VAKED_PROVIDER`] →
-    /// coder.vaked.dev) is present, so the fan-out level can always fall back to
-    /// a working model when nothing else is configured. Never overrides a
-    /// user-declared `[providers.vaked]`.
+    /// Ensure the built-in providers are present: the keyless free tier
+    /// ([`VAKED_PROVIDER`] → coder.vaked.dev) so the fan-out level can always
+    /// fall back to a working model, plus the keyed [`BUILTIN_KEYED_PROVIDERS`]
+    /// (deepseek / gemini / openrouter) so the DeepSeek V4 defaults resolve
+    /// without a `[providers.*]` block. Never overrides a user-declared entry.
     fn inject_builtin_providers(&mut self) {
         self.providers
             .entry(VAKED_PROVIDER.to_string())
@@ -588,6 +662,16 @@ impl Config {
                 model_dir: None,
                 kind: None,
             });
+        for (name, base_url, api_key_env, kind) in BUILTIN_KEYED_PROVIDERS {
+            self.providers
+                .entry((*name).to_string())
+                .or_insert_with(|| ProviderConfig {
+                    base_url: (*base_url).to_string(),
+                    api_key_env: Some((*api_key_env).to_string()),
+                    model_dir: None,
+                    kind: kind.map(str::to_string),
+                });
+        }
     }
 }
 
@@ -656,6 +740,100 @@ mod tests {
     }
 
     #[test]
+    fn injects_builtin_keyed_providers_deepseek_gemini_openrouter() {
+        let cfg = Config::from_toml_str("").unwrap();
+        for (name, base_url, api_key_env, kind) in BUILTIN_KEYED_PROVIDERS {
+            let p = cfg
+                .providers
+                .get(*name)
+                .unwrap_or_else(|| panic!("built-in provider {name} injected"));
+            assert_eq!(p.base_url, *base_url);
+            assert_eq!(p.api_key_env.as_deref(), Some(*api_key_env));
+            assert_eq!(p.kind.as_deref(), *kind);
+        }
+        assert_eq!(cfg.providers["gemini"].kind.as_deref(), Some("gemini"));
+        assert_eq!(
+            cfg.providers["deepseek"].base_url,
+            "https://api.deepseek.com/v1"
+        );
+    }
+
+    #[test]
+    fn user_declared_keyed_provider_is_not_overridden() {
+        let cfg = Config::from_toml_str(
+            r#"
+            [providers.deepseek]
+            base_url = "https://my-proxy/v1"
+            api_key_env = "MY_DEEPSEEK_KEY"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.providers["deepseek"].base_url, "https://my-proxy/v1");
+        assert_eq!(
+            cfg.providers["deepseek"].api_key_env.as_deref(),
+            Some("MY_DEEPSEEK_KEY")
+        );
+    }
+
+    #[test]
+    fn oracle_model_defaults_to_deepseek_v4_pro() {
+        let cfg = Config::from_toml_str("[oracle]\nenabled = true\n").unwrap();
+        assert_eq!(cfg.oracle.model, "deepseek/deepseek-v4-pro");
+    }
+
+    #[test]
+    fn unknown_fanout_executor_is_a_config_error() {
+        let err = Config::from_toml_str("[fanout]\nexecutor = \"federation\"\n").unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)), "{err}");
+        assert!(err.to_string().contains("[fanout].executor"));
+        for ok in FANOUT_EXECUTORS {
+            Config::from_toml_str(&format!("[fanout]\nexecutor = \"{ok}\"\n"))
+                .unwrap_or_else(|e| panic!("{ok}: {e}"));
+        }
+    }
+
+    #[test]
+    fn builtin_config_parses_and_is_deepseek_first() {
+        let cfg = Config::from_toml_str(BUILTIN_CONFIG_TOML).unwrap();
+        assert_eq!(
+            cfg.default_model.as_deref(),
+            Some("deepseek/deepseek-v4-flash")
+        );
+        assert_eq!(
+            cfg.router.orchestrator.as_deref(),
+            Some("deepseek/deepseek-v4-pro")
+        );
+        assert_eq!(cfg.router.max_parallel, 4);
+        for p in [
+            "deepseek",
+            "gemini",
+            "openrouter",
+            VAKED_PROVIDER,
+            "osaurus",
+        ] {
+            assert!(
+                cfg.providers.contains_key(p),
+                "{p} missing from built-in config"
+            );
+        }
+    }
+
+    #[test]
+    fn fanout_federates_only_under_auto_with_federation_on() {
+        let auto_on = Config::from_toml_str("[federation]\nenabled = true\n").unwrap();
+        assert_eq!(auto_on.fanout.executor, "auto");
+        assert!(auto_on.fanout.federates(&auto_on.federation));
+
+        let local_on =
+            Config::from_toml_str("[fanout]\nexecutor = \"local\"\n[federation]\nenabled = true\n")
+                .unwrap();
+        assert!(!local_on.fanout.federates(&local_on.federation));
+
+        let auto_off = Config::from_toml_str("").unwrap();
+        assert!(!auto_off.fanout.federates(&auto_off.federation));
+    }
+
+    #[test]
     fn parses_ternary_provider_kind_and_model_dir() {
         let cfg = Config::from_toml_str(
             r#"
@@ -699,23 +877,26 @@ mod tests {
         let cfg = Config::from_toml_str(
             r#"
             [router]
-            orchestrator = "zen/deepseek-v4-pro"
+            orchestrator = "deepseek/deepseek-v4-pro"
             max_parallel = 4
 
             [agents.coder]
-            model = ["deepseek/deepseek-chat"]
+            model = ["deepseek/deepseek-v4-flash", "gemini/gemini-3.6-flash"]
             "#,
         )
         .unwrap();
 
         assert_eq!(
             cfg.router.orchestrator.as_deref(),
-            Some("zen/deepseek-v4-pro")
+            Some("deepseek/deepseek-v4-pro")
         );
         assert_eq!(cfg.router.max_parallel, 4);
         assert_eq!(
             cfg.agents["coder"].model,
-            vec!["deepseek/deepseek-chat".to_string()]
+            vec![
+                "deepseek/deepseek-v4-flash".to_string(),
+                "gemini/gemini-3.6-flash".to_string()
+            ]
         );
     }
 

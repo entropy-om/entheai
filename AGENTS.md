@@ -125,14 +125,18 @@ Register in `main.rs` with `registry.register(Box::new(MyTool::new(root.clone())
 - **Hard caps exist everywhere**: `[router].max_turns` (default 200, `u32::MAX` under `--yolo`) tool-dispatch turns per `EntheaiAgent`, 120s shell timeout, 200 max search results, 100KB max shell output. These prevent runaway API costs and memory blowup.
 - **`[inference].request_timeout_secs`/`.retries` are inert.** adk-rust 1.0.0's `OpenAIClient` hardcodes `reqwest::Client::new()` with no timeout/retry builder surface — a confirmed gap, not a bug in entheai's wiring. `temperature`/`max_tokens` still work (`LlmAgentBuilder::temperature`/`max_output_tokens`).
 - **Sentry DSN is hardcoded** in `bin/entheai/src/main.rs`. Override via `SENTRY_DSN` env var. No PII is sent (`send_default_pii: false`).
-- **Model ID format is `<provider>/<model>`** (e.g. `osaurus/qwen3-coder`, `zen/deepseek-v4-pro`). The string is split on the first `/` in `entheai_core::model_resolve::resolve_model`.
-- **Config file is `entheai.toml`** by default. The `[providers.<name>]` key is used to look up the provider config. `api_key_env` names an environment variable to read (not the key itself).
+- **Model ID format is `<provider>/<model>`** (e.g. `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-pro`, `gemini/gemini-3.6-flash`, `openrouter/deepseek/deepseek-v4-pro`, `osaurus/qwen3-coder`, `vaked/qwen3-coder:30b`). The string is split on the first `/` in `entheai_core::model_resolve::resolve_model`. `[agents.<role>].model` is a preference-ordered fallback chain: the first entry whose provider is available (declared in `[providers]` with its `api_key_env` set) wins; if none is, the role falls back to `[router].orchestrator` → `default_model` → the built-in chain (coder/reviewer → `deepseek/deepseek-v4-pro` → `gemini/gemini-3.1-pro-preview` → `openrouter/deepseek/deepseek-v4-pro`; explore/test/docs → `deepseek/deepseek-v4-flash` → `gemini/gemini-3.6-flash` → `openrouter/deepseek/deepseek-v4-flash`; see `entheai_router::DEFAULT_PRO_CHAIN` / `DEFAULT_FLASH_CHAIN`). Only the fan-out path degrades further to the keyless `vaked/qwen3-coder:30b` (logged); interactive runs error loudly. `[fanout].executor` must be one of `auto` / `local` / `agy` / `copilot` (anything else is a config error).
+- **Config file is `entheai.toml`** by default: `./entheai.toml` (or `--config <path>`) → `~/.config/entheai/entheai.toml` → `~/.config/entheai/config.toml` → built-in defaults (DeepSeek V4, needs `DEEPSEEK_API_KEY`). The `[providers.<name>]` key is used to look up the provider config; `deepseek`, `gemini`, `openrouter` and the keyless `vaked` are injected into every parsed config by `entheai-config` (a user block with the same name wins). `api_key_env` names an environment variable to read (not the key itself). Full key reference: `docs/configuration.md`.
 - **Only macOS/Apple Silicon**. Hardware-specific tuning (`target-cpu=native`, `mimalloc`, `-Wl,-dead_strip`) means the binary won't run on Intel Macs or other platforms.
 
 ## External services
 
+- **DeepSeek direct API** (default engine): `https://api.deepseek.com/v1`, `DEEPSEEK_API_KEY` — `deepseek/deepseek-v4-flash` (interactive default, light roles) and `deepseek/deepseek-v4-pro` (orchestrator, coder/reviewer, `[oracle].model`)
+- **Gemini** (fallback): native Gemini API via adk-rust (`kind = "gemini"`, `GEMINI_API_KEY`; the OpenAI-compatible endpoint breaks Gemini 3.x tool calls) — `gemini/gemini-3.6-flash`, `gemini/gemini-3.1-pro-preview`; also the Antigravity CLI target for `[fanout] executor = "agy"` (`agy_model = "gemini-3.6-flash-high"`)
+- **OpenRouter** (third fallback): `https://openrouter.ai/api/v1`, `OPENROUTER_API_KEY` — `openrouter/deepseek/deepseek-v4-flash`, `openrouter/deepseek/deepseek-v4-pro`
+- **vaked** (keyless free tier): `https://coder.vaked.dev/v1` — `vaked/qwen3-coder:30b`
 - **Osaurus**: local inference server on `http://127.0.0.1:1337/v1` (OpenAI-compatible)
-- **OpenCode Zen**: cloud gateway at `https://opencode.ai/zen/v1` (DeepSeek V4 Pro/Flash, Qwen, etc.)
+- **OpenCode Zen** (optional): cloud gateway at `https://opencode.ai/zen/v1` (DeepSeek V4 Pro/Flash, Qwen, etc.)
 - **Sentry**: crash/error reporting with hardcoded DSN (opt-out via `SENTRY_DSN` env)
 - **8b.IS Ecosystem**:
   - Documentation Hub: `https://www.8b.is/documentation`

@@ -6,7 +6,7 @@ group: Concepts
 order: 3
 ---
 
-When invoked with `entheai --fanout "<task>"`, the orchestrator plans, section-maps the input via `entheai-mapper`, and fans out execution across parallel sub-agents operating in isolated git worktrees (`.worktrees/`).
+When invoked with `entheai --fanout "<task>"`, the orchestrator (`deepseek/deepseek-v4-pro` by default) plans, section-maps the input via `entheai-mapper`, and fans out execution across parallel sub-agents operating in isolated git worktrees (`.worktrees/`). Sub-agent roles are `explore`, `coder`, `reviewer`, `test` and `docs`; each resolves its model through the `[agents.<role>].model` fallback chain (built-in tier: `deepseek-v4-pro` for coder/reviewer, `deepseek-v4-flash` for the rest), degrading to the keyless `vaked/qwen3-coder:30b` when no configured provider is available.
 
 ## Worktree Isolation & Verification Protocol
 
@@ -22,7 +22,7 @@ When invoked with `entheai --fanout "<task>"`, the orchestrator plans, section-m
 
 ## Recursive Development (`[fanout] executor = "agy"`)
 
-Set `[fanout] executor = "agy"` to run sub-agents via the **Antigravity CLI** (`agy`).
+Set `[fanout] executor = "agy"` to run sub-agents via the **Antigravity CLI** (`agy`). Every coder then runs on Gemini via `[fanout].agy_model` (default `gemini-3.6-flash-high`), bypassing `[agents.coder]`. The other executors are `"auto"` (default: federation when `[federation].enabled` and a worker answers, else local), `"local"` (always in-process on the `[agents.*]` models, never federates) and `"copilot"` (GitHub Copilot CLI).
 
 - **Depth Guard**: `ENTHEAI_FANOUT_DEPTH ≤ 3` (hard-capped to prevent infinite loops).
 - **Turn Ledger**: Every turn logs to `.entheai/recursion.log` as JSONL.

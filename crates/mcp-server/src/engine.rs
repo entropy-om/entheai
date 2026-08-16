@@ -16,15 +16,9 @@ use serde_json::Value;
 
 use entheai_config::Config;
 
-/// Built-in configuration used when neither `cwd/entheai.toml` nor
-/// `~/.config/entheai/entheai.toml` exists (mirrors the CLI's fallback:
-/// the free, keyless public vaked node). `entheai-config` injects the vaked
-/// provider automatically; this just sets the default model.
-const BUILTIN_CONFIG_TOML: &str = r#"default_model = "vaked/qwen3-coder:30b"
-
-[providers.vaked]
-base_url = "https://coder.vaked.dev/v1"
-"#;
+/// Global per-user config filenames probed under `~/.config/entheai/`, in
+/// order (same as the CLI): `entheai.toml`, then `config.toml`.
+const GLOBAL_CONFIG_NAMES: [&str; 2] = [DEFAULT_CONFIG_PATH, "config.toml"];
 
 /// Default `cwd`-relative config filename (same as the CLI).
 const DEFAULT_CONFIG_PATH: &str = "entheai.toml";
@@ -54,17 +48,38 @@ pub fn resolve_cwd(args: &Value, server_cwd: &Path) -> anyhow::Result<PathBuf> {
     }
 }
 
-/// Load `cwd/.env` (non-overriding — an already-set env var wins) so per-repo
-/// secrets resolve exactly like the CLI's `dotenvy::dotenv()`. Called at the
-/// start of every tool invocation; harmless when no `.env` exists.
+/// Load `cwd/.env` plus the same global env files the CLI loads at startup
+/// (`~/.config/entheai/entheai.env`, `~/.config/entheai/.env`,
+/// `~/.entheai/.env`, `~/.env`; all non-overriding — an already-set env var
+/// wins) so provider keys resolve exactly like under the CLI. With the keyed
+/// DeepSeek defaults this matters: without it a bare MCP call would see no
+/// `DEEPSEEK_API_KEY`. Called at the start of every tool invocation; harmless
+/// when a file is missing.
 pub fn load_env_for(cwd: &Path) {
     let _ = dotenvy::from_path(cwd.join(".env"));
+    for rel in [
+        ".config/entheai/entheai.env",
+        ".config/entheai/.env",
+        ".entheai/.env",
+        ".env",
+    ] {
+        let _ = dotenvy::from_path(expand_home(&format!("~/{rel}")));
+    }
 }
 
 /// Load the entheai config rooted at `cwd`, following the CLI's resolution
 /// chain: `cwd/entheai.toml` (a present file must parse), then
-/// `~/.config/entheai/entheai.toml`, then the built-in default.
+/// `~/.config/entheai/entheai.toml`, then `~/.config/entheai/config.toml`
+/// ([`GLOBAL_CONFIG_NAMES`]), then the built-in
+/// [`entheai_config::BUILTIN_CONFIG_TOML`].
 pub fn load_config_for(cwd: &Path) -> anyhow::Result<Config> {
+    load_config_in(cwd, &expand_home("~/.config/entheai/"))
+}
+
+/// [`load_config_for`] with an explicit global config directory (the CLI's
+/// `~/.config/entheai/`), so the resolution chain is testable without touching
+/// `HOME`.
+pub fn load_config_in(cwd: &Path, global_dir: &Path) -> anyhow::Result<Config> {
     let local = cwd.join(DEFAULT_CONFIG_PATH);
     if local.exists() {
         let text = std::fs::read_to_string(&local)
@@ -72,20 +87,22 @@ pub fn load_config_for(cwd: &Path) -> anyhow::Result<Config> {
         return Ok(Config::from_toml_str(&text)?);
     }
 
-    let global = expand_home("~/.config/entheai/entheai.toml");
-    if global.exists() {
-        let text = std::fs::read_to_string(&global)
-            .with_context(|| format!("reading config {}", global.display()))?;
-        log::warn!(
-            "no {} in {:?} — using {}",
-            DEFAULT_CONFIG_PATH,
-            cwd,
-            global.display()
-        );
-        return Ok(Config::from_toml_str(&text)?);
+    for name in GLOBAL_CONFIG_NAMES {
+        let global = global_dir.join(name);
+        if global.exists() {
+            let text = std::fs::read_to_string(&global)
+                .with_context(|| format!("reading config {}", global.display()))?;
+            log::warn!(
+                "no {} in {:?} — using {}",
+                DEFAULT_CONFIG_PATH,
+                cwd,
+                global.display()
+            );
+            return Ok(Config::from_toml_str(&text)?);
+        }
     }
 
-    Ok(Config::from_toml_str(BUILTIN_CONFIG_TOML)?)
+    Ok(Config::from_toml_str(entheai_config::BUILTIN_CONFIG_TOML)?)
 }
 
 /// A prompter for unattended (non-interactive) runs: children of an MCP call
@@ -203,4 +220,59 @@ pub fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(dir: &Path, name: &str, body: &str) {
+        std::fs::write(dir.join(name), body).unwrap();
+    }
+
+    #[test]
+    fn config_resolution_walks_cwd_then_global_names_then_builtin() {
+        let cwd = tempfile::tempdir().unwrap();
+        let global = tempfile::tempdir().unwrap();
+
+        // Nothing anywhere → the built-in DeepSeek-first config.
+        let cfg = load_config_in(cwd.path(), global.path()).unwrap();
+        assert_eq!(
+            cfg.default_model.as_deref(),
+            Some("deepseek/deepseek-v4-flash")
+        );
+        assert_eq!(
+            cfg.router.orchestrator.as_deref(),
+            Some("deepseek/deepseek-v4-pro")
+        );
+
+        // Only the conventional ~/.config/entheai/config.toml → picked up.
+        write(
+            global.path(),
+            "config.toml",
+            "default_model = \"g/config\"\n",
+        );
+        let cfg = load_config_in(cwd.path(), global.path()).unwrap();
+        assert_eq!(cfg.default_model.as_deref(), Some("g/config"));
+
+        // The canonical entheai.toml wins over config.toml when both exist.
+        write(
+            global.path(),
+            "entheai.toml",
+            "default_model = \"g/entheai\"\n",
+        );
+        let cfg = load_config_in(cwd.path(), global.path()).unwrap();
+        assert_eq!(cfg.default_model.as_deref(), Some("g/entheai"));
+
+        // A cwd entheai.toml wins over everything — and must parse.
+        write(
+            cwd.path(),
+            "entheai.toml",
+            "default_model = \"local/model\"\n",
+        );
+        let cfg = load_config_in(cwd.path(), global.path()).unwrap();
+        assert_eq!(cfg.default_model.as_deref(), Some("local/model"));
+        write(cwd.path(), "entheai.toml", "default_model = [broken\n");
+        assert!(load_config_in(cwd.path(), global.path()).is_err());
+    }
 }

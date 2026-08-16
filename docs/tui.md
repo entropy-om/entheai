@@ -8,7 +8,7 @@
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│ entheai · zen/deepseek-v4-pro · idle · wk 0 · nats ● · ctx 12% ♪ Mesa   │ ← status bar
+│ entheai · deepseek/deepseek-v4-flash · idle · wk 0 · nats ● · ctx 12% ♪ │ ← status bar
 ├────────────────────────────────────────────────────────────────────────┤
 │ you> explain the router crate                                          │
 │ entheai> The router crate selects the best model per role...           │ ← scrollable history

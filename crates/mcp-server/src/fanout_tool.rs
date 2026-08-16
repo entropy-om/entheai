@@ -210,7 +210,8 @@ async fn run_fanout_core(req: &JobRequest) -> anyhow::Result<Value> {
     }
 
     // Executor selection mirrors bin/entheai's `--fanout` path: agy/copilot
-    // executors when configured, else federation when enabled, else local.
+    // executors when configured, else federation under "auto" when enabled,
+    // else local.
     let fed_exec: Option<Arc<dyn entheai_orchestrator::CoderExecutor>> =
         if cfg.fanout.executor == "agy" {
             Some(
@@ -222,7 +223,7 @@ async fn run_fanout_core(req: &JobRequest) -> anyhow::Result<Value> {
                 entheai_orchestrator::CopilotExecutor::new(cfg.fanout.copilot_model.clone())
                     as Arc<dyn entheai_orchestrator::CoderExecutor>,
             )
-        } else if cfg.federation.enabled {
+        } else if cfg.fanout.federates(&cfg.federation) {
             Federation::connect(&FedOptions::from_config(&cfg.nats, &cfg.federation))
                 .await
                 .map(|f| {

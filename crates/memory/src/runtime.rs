@@ -486,7 +486,7 @@ mod tests {
         );
         rt.record_final_answer(
             &test_scope(),
-            "zen/deepseek-v4-pro",
+            "deepseek/deepseek-v4-pro",
             "final answer text",
             &[ToolEvidence {
                 call_id: "c1".into(),

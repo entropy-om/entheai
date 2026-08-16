@@ -48,7 +48,7 @@ npx -y @deepseek-ai/dsh run "Analyze the git repository state"
 
 | Feature | DeepSeek Harness (`dsh`) | Entheai Ecosystem |
 |---|---|---|
-| **Primary Model** | DeepSeek V3 / R1 | DeepSeek V3/R1 + Google Ultra Gemini |
+| **Primary Model** | DeepSeek V4 Flash / Pro | DeepSeek V4 Flash/Pro (direct API) + Gemini fallback |
 | **Tool Layer** | Cordis Plugins | Native Rust Tools + `smart-tree` (`st`) + `magiscanner` |
 | **Memory** | Local Event Log | 5-Namespace Vector Memory (MEM|8 4-Band Resonance) |
 | **Orchestration** | Spatiotemporal Composability | Parallel Git Worktree Fan-Out + NATS JetStream Swarm |

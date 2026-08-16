@@ -23,7 +23,7 @@ pub async fn entheai_run(args: Value, server_cwd: PathBuf) -> anyhow::Result<Val
 
     let model = crate::engine::opt_str(&args, "model")
         .or_else(|| cfg.default_model.clone())
-        .unwrap_or_else(|| entheai_router::DEFAULT_ORCHESTRATOR.to_string());
+        .unwrap_or_else(|| entheai_router::DEFAULT_FLASH_MODEL.to_string());
     let yolo = crate::engine::opt_bool(&args, "yolo");
     let timeout_secs = crate::engine::opt_u64(&args, "timeout_secs").unwrap_or(300);
     let max_iterations: u32 = if yolo {

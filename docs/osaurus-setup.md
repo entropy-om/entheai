@@ -2,7 +2,7 @@
 
 This walks you from zero to `entheai` reading files and running tools **entirely on your Mac**, using [Osaurus](https://github.com/osaurus-ai/osaurus) as the local model server. No cloud, no API key.
 
-> **Prefer the cloud?** Skip all of this: point `entheai.toml` at OpenCode Zen (`base_url = "https://opencode.ai/zen/v1"`, `api_key_env = "OPENCODE_API_KEY"`, `default_model = "zen/deepseek-v4-pro"`) and `export OPENCODE_API_KEY=…`. This guide is the local path.
+> **Prefer the cloud?** Skip all of this: `export DEEPSEEK_API_KEY=…` and run `entheai` — the built-in default is DeepSeek V4 (`deepseek/deepseek-v4-flash`; `deepseek/deepseek-v4-pro` for fan-out). See [providers.md](providers.md) for Gemini/OpenRouter fallbacks and optional gateways like OpenCode Zen. This guide is the local path.
 
 ## Prerequisites
 

@@ -46,7 +46,7 @@ Worker compiles a subset of the workspace (`--no-default-features`, macOS-only c
 | Crate | Included? | Why |
 |---|---|---|
 | `core` | ✅ | Agent loop, orchestration, event bus |
-| `providers` | ✅ | OpenAI-compatible client (Zen, Osaurus, etc.) |
+| `providers` | ✅ | OpenAI-compatible client (DeepSeek, Gemini, Osaurus, etc.) |
 | `router` | ✅ | Model selection per dispatched role |
 | `agents` | ✅ | Sub-agent execution, worktree isolation |
 | `memory` | ✅ | Local SQLite + vector store |
@@ -97,7 +97,7 @@ The worker **does not** accept a prompt on the CLI. It listens for dispatched su
      "task_id": "uuid",
      "role": "coder",
      "prompt": "Implement the User struct in src/models/user.rs",
-     "model": "osaurus/qwen3-coder",
+     "model": "deepseek/deepseek-v4-pro",
      "worktree_base": "abc123...",
      "skills": ["superpowers/test-driven-development"],
      "tools": ["fs", "shell", "search"]
@@ -205,7 +205,7 @@ evicted from the cache.
 
 ## Memory & learning
 
-The worker runs its own `memory` crate instance (local SQLite + Osaurus embeddings). After task completion:
+The worker runs its own `memory` crate instance (local SQLite + optional `embed_provider` embeddings, e.g. Osaurus). After task completion:
 - `learnings` and `trajectories` are **pushed back** to the orchestrator
 - `tools` namespace is ephemeral (cleared per task)
 - `subagents` namespace is shared with the orchestrator over the tailnet bus
@@ -215,7 +215,11 @@ The orchestrator merges worker trajectories into its own ReasoningBank, improvin
 ## Configuration
 
 ```toml
-# worker.toml (subset of entheai.toml; shared [providers] section)
+# worker.toml (subset of entheai.toml; shared [providers] section).
+# NOTE: [worker] and [comms] are design-level tables — the worker binary reads
+# the standard entheai config schema (see docs/configuration.md); the keys the
+# runtime actually consumes are [providers.*], [agents.*], [federation], [nats]
+# and [memory].
 
 [worker]
 name = "studio-m3-max"
@@ -223,20 +227,22 @@ capabilities = ["coder", "test", "merge"]
 # Coder confinement is NOT set here — it lives under [federation] sandbox
 # ("strict" | "permissive" | "off"); see the Sandboxing section above.
 
-[providers]
-# Same as main entheai.toml; worker uses local Osaurus or cloud providers
-zen.api_key_env = "OPENCODE_API_KEY"
+# [providers.*]: same as the main entheai.toml. deepseek / gemini / openrouter /
+# vaked are built in (no block needed); declare local Osaurus explicitly:
+[providers.osaurus]
+base_url = "http://127.0.0.1:1337/v1"
 
-[router]
-coder = ["osaurus/qwen3-coder", "zen/deepseek-v4-flash"]
+[agents.coder]
+# Preference-ordered fallback chain: first entry whose provider is available wins
+model = ["deepseek/deepseek-v4-pro", "gemini/gemini-3.1-pro-preview", "openrouter/deepseek/deepseek-v4-pro"]
 
 [comms]
 tailnet = "peterlodri-sec.tailnet.ts.net"
 heartbeat_interval_s = 5
 
 [memory]
-db_path = "/var/lib/entheai/worker.db"
-embedding_url = "http://127.0.0.1:1337/v1"
+path = "/var/lib/entheai/worker.db"
+embed_provider = "osaurus"
 ```
 
 ## Open questions

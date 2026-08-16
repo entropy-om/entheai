@@ -5,16 +5,10 @@ group: "Getting started"
 order: 3
 ---
 
-Start using `entheai` out-of-the-box with zero API key configuration by connecting to the free community node on `coder.vaked.dev`:
+Out of the box `entheai` runs on DeepSeek V4: `deepseek/deepseek-v4-flash` interactively and `deepseek/deepseek-v4-pro` as the fan-out orchestrator. No `entheai.toml` is needed; export `DEEPSEEK_API_KEY` and go:
 
 ```bash
-# Create an initial entheai.toml
-cat > entheai.toml <<'TOML'
-default_model = "vaked/coder"
-
-[providers.vaked]
-base_url = "https://coder.vaked.dev/v1"
-TOML
+export DEEPSEEK_API_KEY=sk-...
 
 # Run a one-shot query
 entheai "summarize this repository"
@@ -23,6 +17,16 @@ entheai "summarize this repository"
 entheai
 
 # Run parallel fan-out coders in isolated worktrees
+entheai --fanout "add a CONTRIBUTING.md and .editorconfig"
+```
+
+You can also start with zero API key configuration by connecting to the free community node on `coder.vaked.dev` (`vaked` is built in, no `[providers.vaked]` block needed):
+
+```bash
+# Interactive keyless run on the free tier
+entheai --model vaked/qwen3-coder:30b "summarize this repository"
+
+# Fan-out degrades to vaked/qwen3-coder:30b automatically when DEEPSEEK_API_KEY is unset
 entheai --fanout "add a CONTRIBUTING.md and .editorconfig"
 ```
 

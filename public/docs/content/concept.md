@@ -23,9 +23,9 @@ User Request
     ▼
 Orchestrator (DeepSeek V4 Pro) ──▶ Decomposes task into role-tagged sub-tasks
     │
-    ├─▶ Coder Sub-Agent (vaked/coder / osaurus/qwen3-coder) [Worktree A]
-    ├─▶ Coder Sub-Agent (vaked/coder)                       [Worktree B]
-    └─▶ Reviewer Sub-Agent (deepseek-reasoner)               [Worktree C]
+    ├─▶ Coder Sub-Agent (deepseek-v4-pro -> gemini-3.1-pro)  [Worktree A]
+    ├─▶ Coder Sub-Agent (deepseek-v4-pro)                    [Worktree B]
+    └─▶ Reviewer Sub-Agent (deepseek-v4-pro)                 [Worktree C]
             │
             ▼
    Empirical Verification Gate (`./scripts/check.sh`)
