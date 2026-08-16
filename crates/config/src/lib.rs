@@ -12,6 +12,9 @@ pub enum ConfigError {
 /// The accepted `[fanout].executor` values.
 pub const FANOUT_EXECUTORS: [&str; 4] = ["auto", "local", "agy", "copilot"];
 
+/// The accepted `[oracle].gate` values.
+pub const ORACLE_GATES: [&str; 2] = ["advisory", "block"];
+
 /// Built-in configuration used by the CLI and the MCP server when no
 /// `entheai.toml` is found in the working directory or `~/.config/entheai/`.
 /// DeepSeek V4 all the way down: V4 Flash for the interactive default, V4 Pro
@@ -36,6 +39,7 @@ max_parallel = 4
 "#;
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub providers: HashMap<String, ProviderConfig>,
@@ -91,6 +95,7 @@ pub struct Config {
 /// ring of the Zen field. Status only — one tiny GET per node per interval,
 /// no auth, no data ingestion. Empty list = ring absent.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KinConfig {
     /// Status URLs of kin nodes. The display name is the host's first label
     /// (`https://riva.vaked.dev/` → "riva").
@@ -120,6 +125,7 @@ fn default_kin_poll_secs() -> u64 {
 /// `origin` remote is the destination — no URL lives in config or code.
 /// The operator hand-picks folder links to share; no other integration.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChennoConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -179,6 +185,7 @@ pub const BUILTIN_KEYED_PROVIDERS: &[(&str, &str, &str, Option<&str>)] = &[
 ];
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
     pub base_url: String,
     #[serde(default)]
@@ -198,6 +205,7 @@ pub struct ProviderConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RouterConfig {
     /// Model id ("<provider>/<model>") for the orchestrator role. Falls back
     /// to `default_model` when unset.
@@ -238,6 +246,7 @@ fn default_max_turns() -> usize {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct AgentConfig {
     /// Preference-ordered model ids ("<provider>/<model>") for this role.
     #[serde(default)]
@@ -245,6 +254,7 @@ pub struct AgentConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FanoutConfig {
     /// Shell command run inside each coder's worktree to decide whether its
     /// changes are integrated (e.g. "cargo test"). Unset = auto-detect
@@ -285,6 +295,7 @@ pub struct FanoutConfig {
 /// The Oracle — entheai's single adjudication seam over the fused fleet.
 /// Step 1 skeleton: advisory-only, disabled by default, darwin-safe.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OracleConfig {
     /// Master switch. Default OFF — today's fan-out behavior is unchanged.
     #[serde(default)]
@@ -388,6 +399,7 @@ fn default_coder_timeout_secs() -> u64 {
 
 /// One MCP server entheai spawns at startup; its tools are exposed to the agent.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
     pub command: String,
     #[serde(default)]
@@ -395,6 +407,7 @@ pub struct McpServerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CompanionConfig {
     /// Whether to spawn the companion window. Default: true.
     #[serde(default = "default_true")]
@@ -435,6 +448,7 @@ impl Default for CompanionConfig {
 
 /// Skill discovery directories (relative to the working root).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SkillsConfig {
     #[serde(default = "default_skill_dirs")]
     pub dirs: Vec<String>,
@@ -454,6 +468,7 @@ fn default_skill_dirs() -> Vec<String> {
 
 /// Visualization settings (viz pillar).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VizConfig {
     /// Show the live fan-out swarm (inline pane + Ctrl-V full view).
     #[serde(default = "default_viz_swarm")]
@@ -523,6 +538,7 @@ fn default_viz_theme() -> String {
 
 /// Provider request defaults (applied to every LLM call).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InferenceConfig {
     #[serde(default = "default_request_timeout_secs")]
     pub request_timeout_secs: u64,
@@ -552,6 +568,7 @@ impl Default for InferenceConfig {
 
 /// Built-in tool caps.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolsConfig {
     #[serde(default = "default_shell_timeout_secs")]
     pub shell_timeout_secs: u64,
@@ -581,6 +598,7 @@ impl Default for ToolsConfig {
 
 /// Permission policy defaults.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PermissionConfig {
     #[serde(default)]
     pub yolo: bool,
@@ -613,6 +631,7 @@ impl Default for PermissionConfig {
 
 /// Cross-cutting MCP settings (siblings of the per-server `[mcp.<name>]` map).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpDefaultsConfig {
     /// Bound on spawning + the initialize handshake + `tools/list` per server.
     #[serde(default = "default_mcp_spawn_timeout_secs")]
@@ -639,6 +658,7 @@ impl Default for McpDefaultsConfig {
 
 /// Telemetry / crash reporting.
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct TelemetryConfig {
     #[serde(default)]
     pub sentry_dsn: Option<String>,
@@ -651,6 +671,12 @@ impl Config {
             return Err(ConfigError::Invalid(format!(
                 "[fanout].executor = {:?} is not one of {:?}",
                 cfg.fanout.executor, FANOUT_EXECUTORS
+            )));
+        }
+        if !ORACLE_GATES.contains(&cfg.oracle.gate.as_str()) {
+            return Err(ConfigError::Invalid(format!(
+                "[oracle].gate = {:?} is not one of {:?}",
+                cfg.oracle.gate, ORACLE_GATES
             )));
         }
         cfg.inject_builtin_providers();
@@ -797,6 +823,29 @@ mod tests {
         assert!(err.to_string().contains("[fanout].executor"));
         for ok in FANOUT_EXECUTORS {
             Config::from_toml_str(&format!("[fanout]\nexecutor = \"{ok}\"\n"))
+                .unwrap_or_else(|e| panic!("{ok}: {e}"));
+        }
+    }
+
+    #[test]
+    fn the_repos_own_entheai_toml_parses_cleanly_under_deny_unknown_fields() {
+        // Regression guard for the `#[serde(deny_unknown_fields)]` sweep: the
+        // repo's real config used to say "the parser ignores unknown keys
+        // silently, so keep this file honest" — now the parser itself
+        // enforces that, so this file must still parse or CI catches the drift.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../entheai.toml");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        Config::from_toml_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    }
+
+    #[test]
+    fn unknown_oracle_gate_is_a_config_error() {
+        let err = Config::from_toml_str("[oracle]\ngate = \"Block\"\n").unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)), "{err}");
+        assert!(err.to_string().contains("[oracle].gate"));
+        for ok in ORACLE_GATES {
+            Config::from_toml_str(&format!("[oracle]\ngate = \"{ok}\"\n"))
                 .unwrap_or_else(|e| panic!("{ok}: {e}"));
         }
     }
@@ -1306,6 +1355,7 @@ mod tests {
 
 /// Memory configuration per the SOTA memory design spec.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryConfig {
     #[serde(default = "default_memory_enabled")]
     pub enabled: bool,
@@ -1398,6 +1448,7 @@ fn default_memory_mode() -> String {
 /// Prompt-processing configuration (spec §Configuration). All fields default,
 /// so `[memory.prompt_processing]` can be omitted entirely.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PromptProcessingConfig {
     /// The mesh sidecar command (Slice 2; unused by the Slice-1 stub).
     #[serde(default = "default_pp_sidecar_cmd")]
@@ -1522,6 +1573,7 @@ impl Default for MemoryConfig {
 
 /// Obsidian wiki-sync layer configuration.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObsidianConfig {
     #[serde(default = "default_obsidian_enabled")]
     pub enabled: bool,
@@ -1590,6 +1642,7 @@ impl Default for ObsidianConfig {
 /// locally. The URL and token are read from the named environment variables
 /// (populated from the gitignored `.env`), never inlined in the tracked config.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NatsConfig {
     /// Master switch. When false, `Bus::connect` short-circuits to `None`.
     #[serde(default)]
@@ -1627,6 +1680,7 @@ fn default_nats_token_env() -> String {
 /// `entheai-worker`, not by this field. `sandbox` sets the coder confinement
 /// posture on a serving worker (see `crates/sandbox`).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -1678,6 +1732,7 @@ fn default_max_concurrent() -> usize {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FrozenConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -1714,6 +1769,7 @@ fn default_frozen_max_bytes() -> usize {
 /// memory soil, under hard daily request budgets). Off by default; requires
 /// prompt-processing memory to be on (the brain IS where current lands).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CurrentConfig {
     #[serde(default)]
     pub enabled: bool,

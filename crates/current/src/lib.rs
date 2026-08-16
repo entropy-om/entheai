@@ -134,6 +134,13 @@ struct LedgerState {
 pub struct BudgetLedger {
     path: PathBuf,
     caps: std::collections::HashMap<String, u32>,
+    /// Serializes the load-modify-save sequence in `try_spend`: the auto-pulse
+    /// task and a manual `/current` pulse share one `Arc<CurrentEngine>` (and
+    /// so one `BudgetLedger`), and an unsynchronized load-modify-save let two
+    /// concurrent spends both pass the cap check with only one recorded.
+    /// In-process only — two separate TUI processes sharing the ledger file
+    /// still race (would need an advisory `flock`, not done here).
+    lock: std::sync::Mutex<()>,
 }
 
 impl BudgetLedger {
@@ -141,6 +148,7 @@ impl BudgetLedger {
         Self {
             path,
             caps: caps.into_iter().collect(),
+            lock: std::sync::Mutex::new(()),
         }
     }
 
@@ -149,17 +157,32 @@ impl BudgetLedger {
     }
 
     fn load(&self) -> LedgerState {
-        let state: LedgerState = std::fs::read_to_string(&self.path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-        if state.date != Self::today() {
-            LedgerState {
+        match std::fs::read_to_string(&self.path) {
+            Ok(s) => match serde_json::from_str::<LedgerState>(&s) {
+                Ok(state) if state.date == Self::today() => state,
+                Ok(_) => LedgerState {
+                    date: Self::today(),
+                    counts: Default::default(),
+                },
+                Err(e) => {
+                    // A truncated/corrupt file (crash mid-write) must not
+                    // silently refund the whole day's budget — treat every
+                    // known source as fully spent instead of resetting to 0.
+                    log::warn!(
+                        "current: budget ledger at {} failed to parse ({e}) — \
+                         treating today's budget as fully spent",
+                        self.path.display()
+                    );
+                    LedgerState {
+                        date: Self::today(),
+                        counts: self.caps.clone(),
+                    }
+                }
+            },
+            Err(_) => LedgerState {
                 date: Self::today(),
                 counts: Default::default(),
-            }
-        } else {
-            state
+            },
         }
     }
 
@@ -167,10 +190,21 @@ impl BudgetLedger {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        if let Ok(json) = serde_json::to_string_pretty(state) {
-            if let Err(e) = std::fs::write(&self.path, json) {
-                log::warn!("current: budget ledger write failed (continuing): {e}");
-            }
+        let Ok(json) = serde_json::to_string_pretty(state) else {
+            return;
+        };
+        // Atomic: a plain truncate-then-write left a truncated file on a
+        // crash mid-write, which `load` used to read back as a parse
+        // failure (and, before this fix, silently reset the budget to 0).
+        let result = (|| -> std::io::Result<()> {
+            let dir = self.path.parent().unwrap_or(&self.path);
+            let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+            std::io::Write::write_all(&mut tmp, json.as_bytes())?;
+            tmp.persist(&self.path).map_err(|e| e.error)?;
+            Ok(())
+        })();
+        if let Err(e) = result {
+            log::warn!("current: budget ledger write failed (continuing): {e}");
         }
     }
 
@@ -181,6 +215,7 @@ impl BudgetLedger {
             Some(c) => *c,
             None => return false, // unknown source: nothing budgeted, nothing spent
         };
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut state = self.load();
         let used = state.counts.get(source).copied().unwrap_or(0);
         if used + n > cap {
@@ -756,6 +791,61 @@ mod tests {
         )
         .unwrap();
         assert!(ledger.try_spend("worldmonitor", 5), "new day, fresh budget");
+    }
+
+    #[test]
+    fn concurrent_try_spend_never_exceeds_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("budget.json");
+        let ledger = std::sync::Arc::new(BudgetLedger::new(
+            path,
+            [("worldmonitor".to_string(), 10u32)],
+        ));
+
+        // 20 threads each try to spend 1 against a cap of 10 — without the
+        // lock, the unsynchronized load-modify-save let concurrent spends
+        // both pass the check and only one got recorded (silent over-spend
+        // when read back sequentially, or under-count either way).
+        let handles: Vec<_> = (0..20)
+            .map(|_| {
+                let ledger = std::sync::Arc::clone(&ledger);
+                std::thread::spawn(move || ledger.try_spend("worldmonitor", 1))
+            })
+            .collect();
+        let granted = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|granted| *granted)
+            .count();
+
+        assert_eq!(granted, 10, "exactly the cap must be granted, no more");
+        assert_eq!(ledger.status("worldmonitor"), (10, 10));
+    }
+
+    #[test]
+    fn a_corrupt_ledger_file_does_not_refund_the_days_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("budget.json");
+        let ledger = BudgetLedger::new(path.clone(), [("worldmonitor".to_string(), 5u32)]);
+        // Simulate a crash mid-write: truncated, invalid JSON for today.
+        std::fs::write(&path, "{\"date\":\"").unwrap();
+
+        assert!(
+            !ledger.try_spend("worldmonitor", 1),
+            "a corrupt file must be treated as fully spent, not reset to 0"
+        );
+        assert_eq!(ledger.status("worldmonitor"), (5, 5));
+    }
+
+    #[test]
+    fn save_writes_valid_json_readable_by_a_fresh_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("budget.json");
+        let a = BudgetLedger::new(path.clone(), [("worldmonitor".to_string(), 5u32)]);
+        assert!(a.try_spend("worldmonitor", 2));
+
+        let b = BudgetLedger::new(path, [("worldmonitor".to_string(), 5u32)]);
+        assert_eq!(b.status("worldmonitor"), (2, 5));
     }
 
     #[test]
