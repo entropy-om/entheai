@@ -118,7 +118,7 @@ coder_timeout_secs = 600
 | Key | Default | Description |
 |---|---|---|
 | `executor` | `"auto"` | `"auto"`: federation when `[federation].enabled` and a worker answers, else local. `"local"`: always in-process on the `[agents.<role>]` models (never federates). `"agy"`: every coder runs on the Antigravity CLI with `agy_model` (Gemini) — bypasses `[agents.coder]`. `"copilot"`: GitHub Copilot CLI with `copilot_model`. Any other value is a config error. |
-| `verify` | auto-detect `./scripts/check.sh` | Shell command run in each coder worktree; a passing run gates integration |
+| `verify` | auto-detect `./scripts/check.sh` | Shell command run in each coder worktree; a passing run gates integration. Bounded to `coder_timeout_secs`. When auto-detected (not set explicitly), the script is pinned to its content at the run's base commit — not the coder's own worktree copy — so a coder can't fake a pass by editing its own gate; an explicit `verify` command is always trusted as configured. |
 | `verify_required` | `true` | When no verify command resolves, leave changed branches unmerged instead of integrating unverified |
 | `coder_timeout_secs` | 600 | Per-coder timeout before it is force-aborted |
 | `agy_model` | `gemini-3.6-flash-high` | Model passed to `agy --model` (agy's own naming, not `<provider>/<model>`) |
