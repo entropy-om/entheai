@@ -87,16 +87,24 @@ fn level_from_env() -> LevelFilter {
     parse_level(&raw)
 }
 
+/// Bound on `entheai.log` before it's truncated on the next open — it is
+/// appended for the life of every session with no rotation, and would
+/// otherwise grow without limit across sessions (fast under `ENTHEAI_LOG=debug`).
+const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
+
 /// Open (append) `~/.cache/entheai/entheai.log`, creating the parent dir.
+/// Truncated first if it has grown past [`MAX_LOG_BYTES`] — a blunt cap
+/// rather than real rotation, but it keeps the file bounded with no extra
+/// moving parts.
 fn open_log_file() -> Option<File> {
     let home = std::env::var("HOME").ok()?;
     let dir = std::path::Path::new(&home).join(".cache").join("entheai");
     std::fs::create_dir_all(&dir).ok()?;
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("entheai.log"))
-        .ok()
+    let path = dir.join("entheai.log");
+    if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > MAX_LOG_BYTES {
+        let _ = std::fs::remove_file(&path);
+    }
+    OpenOptions::new().create(true).append(true).open(path).ok()
 }
 
 /// Install the global logger. `interactive` = an interactive TUI session (logs

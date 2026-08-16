@@ -224,12 +224,23 @@ struct ValyuResult {
     publication_date: Option<String>,
 }
 
+/// A reqwest client bounded to `CURRENT_CLIENT_TIMEOUT` — every current-awareness
+/// upstream client (Valyu, WorldMonitor, dogfood/HF) used a bare
+/// `reqwest::Client::new()` with no timeout, so one stalled upstream request
+/// blocked the whole pulse task indefinitely.
+fn timed_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .unwrap_or_default()
+}
+
 impl ValyuClient {
     pub fn new(base: impl Into<String>, api_key: impl Into<String>) -> Self {
         Self {
             base: base.into(),
             api_key: api_key.into(),
-            http: reqwest::Client::new(),
+            http: timed_http_client(),
         }
     }
 
@@ -298,7 +309,7 @@ impl WorldMonitorClient {
         Self {
             base: base.into(),
             api_key: api_key.into(),
-            http: reqwest::Client::new(),
+            http: timed_http_client(),
         }
     }
 
@@ -454,7 +465,7 @@ impl DogfoodClient {
             base: base.into(),
             repo: repo.into(),
             token: token.into(),
-            http: reqwest::Client::new(),
+            http: timed_http_client(),
         }
     }
 

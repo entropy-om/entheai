@@ -200,6 +200,9 @@ impl Board {
     pub fn new(token: Option<String>) -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
             .user_agent("tantra-agent")
+            // No timeout previously: a stalled GitHub call hung the CLI/agent
+            // indefinitely.
+            .timeout(std::time::Duration::from_secs(20))
             .build()
             .context("building reqwest client")?;
         Ok(Self { client, token })

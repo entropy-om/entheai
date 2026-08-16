@@ -56,7 +56,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("entheai-beacon: NATS connect to {nats} failed: {e}"))?;
     let subject = format!("{ENTROPY_SUBJECT_PREFIX}.>");
     let mut sub = client.subscribe(subject.clone()).await?;
-    let http = reqwest::Client::new();
+    // No timeout previously: a stalled POST blocked the single select! loop,
+    // starving the NATS subscription and snapshot ingestion behind it.
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
     eprintln!("entheai-beacon: watching {subject} -> {url} (≤1 POST / {interval_secs}s)");
 
     let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
