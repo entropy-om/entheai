@@ -5,10 +5,11 @@
 # ignores unknown keys silently, so keep this file honest — see
 # docs/configuration.md for the full reference.
 #
-# Model ids are "<provider>/<model>". Credits today: deepseek (default engine)
-# and gemini; openrouter is declared as a key-only third fallback. All three are
-# also injected as built-ins by entheai-config; the blocks below make the intent
-# explicit.
+# Model ids are "<provider>/<model>". Credits today: deepseek only — every
+# chain below is DeepSeek-only on purpose. gemini / openrouter are still
+# injected as built-in providers by entheai-config (kind = "gemini" for the
+# native client), so re-enabling them later is one line per chain; the built-in
+# router chains only reach them when DEEPSEEK_API_KEY is absent.
 
 # Interactive default (`entheai`, `entheai "prompt"`, `--model` unset):
 # DeepSeek V4 Flash — fast + cheap, 1M context.
@@ -16,23 +17,17 @@ default_model = "deepseek/deepseek-v4-flash"
 
 # ── Inference Providers ────────────────────────────────────────────────────────
 
-# 1. DeepSeek direct API — V4 Flash (fast/cheap) + V4 Pro (strong)
+# DeepSeek direct API — V4 Flash (fast/cheap) + V4 Pro (strong). The only
+# provider with credits right now.
 [providers.deepseek]
 base_url = "https://api.deepseek.com/v1"
 api_key_env = "DEEPSEEK_API_KEY"
 
-# 2. Google Gemini — first fallback. kind = "gemini" = adk-rust's native Gemini
-#    client (Gemini 3.x tool calls need it; the OpenAI-compatible endpoint drops
-#    the thought_signature round-trip and 400s on the second turn).
-[providers.gemini]
-base_url = "https://generativelanguage.googleapis.com/v1beta/openai"   # unused for kind = "gemini"
-api_key_env = "GEMINI_API_KEY"
-kind = "gemini"
-
-# 3. OpenRouter aggregator — second fallback (deepseek/* + google/* ids)
-[providers.openrouter]
-base_url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
+# Parked until they carry credits again (both remain built-in providers):
+# [providers.gemini]     -> gemini/gemini-3.6-flash, gemini/gemini-3.1-pro-preview
+#                           (kind = "gemini": native client; the OpenAI-compatible
+#                            endpoint 400s on Gemini 3.x tool calls)
+# [providers.openrouter] -> openrouter/deepseek/deepseek-v4-flash|pro
 
 # ── Inference Parameters (applied to every LLM call) ───────────────────────────
 [inference]
@@ -60,43 +55,25 @@ coder_timeout_secs = 600
 
 # Per-role preference chains: the FIRST entry whose provider is available
 # (declared + key in env) wins; a role with no usable entry falls back to the
-# orchestrator, and fan-out degrades to the keyless vaked free tier last.
-# Light roles ride V4 Flash, code-writing/judging roles ride V4 Pro.
+# orchestrator, then the router's built-in chain, and fan-out degrades to the
+# keyless vaked free tier last. Light roles ride V4 Flash, code-writing/judging
+# roles ride V4 Pro. DeepSeek-only for now — append e.g.
+# "gemini/gemini-3.6-flash" once Gemini has credits.
 
 [agents.explore]
-model = [
-  "deepseek/deepseek-v4-flash",
-  "gemini/gemini-3.6-flash",
-  "openrouter/deepseek/deepseek-v4-flash",
-]
+model = ["deepseek/deepseek-v4-flash"]
 
 [agents.coder]
-model = [
-  "deepseek/deepseek-v4-pro",
-  "gemini/gemini-3.1-pro-preview",
-  "openrouter/deepseek/deepseek-v4-pro",
-]
+model = ["deepseek/deepseek-v4-pro"]
 
 [agents.reviewer]
-model = [
-  "deepseek/deepseek-v4-pro",
-  "gemini/gemini-3.1-pro-preview",
-  "openrouter/deepseek/deepseek-v4-pro",
-]
+model = ["deepseek/deepseek-v4-pro"]
 
 [agents.test]
-model = [
-  "deepseek/deepseek-v4-flash",
-  "gemini/gemini-3.6-flash",
-  "openrouter/deepseek/deepseek-v4-flash",
-]
+model = ["deepseek/deepseek-v4-flash"]
 
 [agents.docs]
-model = [
-  "deepseek/deepseek-v4-flash",
-  "gemini/gemini-3.6-flash",
-  "openrouter/deepseek/deepseek-v4-flash",
-]
+model = ["deepseek/deepseek-v4-flash"]
 
 # ── The Oracle (Adjudication Seam) ────────────────────────────────────────────
 [oracle]

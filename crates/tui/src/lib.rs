@@ -3801,16 +3801,14 @@ fn status_line(app: &App) -> Line<'static> {
 }
 
 /// The in-session model cycle shared by the config menu ("Default Model") and
-/// the first-run setup ("Model Backend"): DeepSeek V4 Flash → V4 Pro → Gemini
-/// flash → the keyless vaked free tier → back to Flash. Any other label (e.g.
-/// a `--model` override) steps to the Flash default first. Every id resolves
-/// against a provider entheai-config injects, and the vaked stop guarantees a
-/// working option even with no API key.
+/// the first-run setup ("Model Backend"): DeepSeek V4 Flash → V4 Pro → the
+/// keyless vaked free tier → back to Flash. Any other label (e.g. a `--model`
+/// override) steps to the Flash default first. DeepSeek all the way down; the
+/// vaked stop guarantees a working option even with no API key.
 fn next_model_label(current: &str) -> &'static str {
     match current {
         "deepseek/deepseek-v4-flash" => "deepseek/deepseek-v4-pro",
-        "deepseek/deepseek-v4-pro" => "gemini/gemini-3.6-flash",
-        "gemini/gemini-3.6-flash" => "vaked/qwen3-coder:30b",
+        "deepseek/deepseek-v4-pro" => "vaked/qwen3-coder:30b",
         _ => "deepseek/deepseek-v4-flash",
     }
 }
@@ -5259,10 +5257,6 @@ mod tests {
         );
         assert_eq!(
             next_model_label("deepseek/deepseek-v4-pro"),
-            "gemini/gemini-3.6-flash"
-        );
-        assert_eq!(
-            next_model_label("gemini/gemini-3.6-flash"),
             "vaked/qwen3-coder:30b"
         );
         // The keyless free tier closes the loop, and a `--model` override or
