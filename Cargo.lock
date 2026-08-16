@@ -2618,6 +2618,7 @@ dependencies = [
  "entheai-tts",
  "entheai-viz",
  "futures",
+ "log",
  "ratatui",
  "reqwest 0.12.28",
  "serde",

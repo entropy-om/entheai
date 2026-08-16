@@ -230,6 +230,11 @@ pub async fn commit_all(path: &Path, message: &str) -> anyhow::Result<bool> {
         return Ok(false);
     }
 
+    // `--no-verify` (skip hooks) + `commit.gpgsign=false`: the coder's edit is
+    // being committed on its behalf into a throwaway worktree, not on behalf of
+    // a human who set up hooks/signing for their own commits — a repo
+    // pre-commit hook rejecting the edit, or gpgsign prompting pinentry with no
+    // TTY, must not turn a real (committable) diff into a silent failure.
     let (ok, _stdout, stderr) = run_git(
         path,
         &[
@@ -237,7 +242,10 @@ pub async fn commit_all(path: &Path, message: &str) -> anyhow::Result<bool> {
             "user.email=entheai@localhost",
             "-c",
             "user.name=entheai",
+            "-c",
+            "commit.gpgsign=false",
             "commit",
+            "--no-verify",
             "-m",
             message,
         ],
@@ -427,6 +435,62 @@ mod tests {
 
         let committed = commit_all(&wt.path, "noop").await.expect("commit_all");
         assert!(!committed, "expected no commit when nothing changed");
+
+        pool.remove(&wt).await.expect("remove");
+    }
+
+    #[tokio::test]
+    async fn commit_all_bypasses_a_failing_pre_commit_hook() {
+        // A repo's `.git/hooks/pre-commit` runs for every worktree of that
+        // repo. A coder's edit failing it (or gpgsign prompting with no TTY)
+        // must not silently disappear — commit_all runs with `--no-verify`
+        // and `commit.gpgsign=false` precisely so a real, committable diff
+        // still lands, instead of erroring and being mistaken for "no changes"
+        // by a caller doing `.unwrap_or(false)`.
+        let repo = init_repo().await;
+        let root = repo.path();
+        let hooks_dir = root.join(".git").join("hooks");
+        tokio::fs::create_dir_all(&hooks_dir)
+            .await
+            .expect("mkdir hooks");
+        let hook_path = hooks_dir.join("pre-commit");
+        tokio::fs::write(
+            &hook_path,
+            "#!/bin/sh
+exit 1
+",
+        )
+        .await
+        .expect("write pre-commit hook");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = tokio::fs::metadata(&hook_path)
+                .await
+                .expect("stat hook")
+                .permissions();
+            perms.set_mode(0o755);
+            tokio::fs::set_permissions(&hook_path, perms)
+                .await
+                .expect("chmod hook");
+        }
+
+        let pool = WorktreePool::new(root, "hookbypass", "HEAD")
+            .await
+            .expect("pool new");
+        let wt = pool.create(0).await.expect("create");
+        tokio::fs::write(
+            wt.path.join("feature.txt"),
+            "new feature
+",
+        )
+        .await
+        .expect("write feature.txt");
+
+        let committed = commit_all(&wt.path, "add feature despite hostile hook")
+            .await
+            .expect("commit_all must succeed — the hook is bypassed, not swallowed as a failure");
+        assert!(committed);
 
         pool.remove(&wt).await.expect("remove");
     }

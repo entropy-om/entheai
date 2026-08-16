@@ -758,11 +758,6 @@ async fn event_loop(
     // 0ms busy-loop.
     let tick_ms = config.viz.tick_ms.max(16);
     let mut ticker = tokio::time::interval(Duration::from_millis(tick_ms));
-    // Poll the remote fleet on a slow cadence (never per-frame — `list_workers`
-    // pings NATS): feeds the brain panel's `wk N` + `nats ●/○` without stalling a
-    // frame. Skip missed ticks so a slow poll can't burst-catch-up.
-    let mut fleet_poll = tokio::time::interval(Duration::from_millis(1500));
-    fleet_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Throttled poll for local Osaurus endpoint (~5s).
     let mut osaurus_poll = tokio::time::interval(Duration::from_secs(5));
     osaurus_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -811,6 +806,36 @@ async fn event_loop(
 
     // The configured Zen theme ([viz] theme); /theme swaps it live.
     app.palette = entheai_viz::palette::by_name(&config.viz.theme);
+
+    // Poll the remote fleet on its own task (never inline in the select! loop —
+    // `list_workers` blocks up to 600ms per call, waiting out its whole window
+    // regardless of how fast NATS answers, which froze the event loop 40% of
+    // every 1.5s cycle: keys, streamed tokens and permission modals all stall
+    // during it). Results are drained non-blocking in the tick arm, same
+    // pattern as the kin poll right below.
+    let (fleet_tx, mut fleet_rx) = mpsc::unbounded_channel::<Vec<(String, bool)>>();
+    if let Some(fed) = fleet_fed.clone() {
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(1500));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                let workers = fed.list_workers(Duration::from_millis(600)).await;
+                let tuples: Vec<(String, bool)> = workers
+                    .iter()
+                    .map(|w| {
+                        (
+                            w.node_id.clone(),
+                            matches!(w.state, entheai_federation::WorkerState::Working { .. }),
+                        )
+                    })
+                    .collect();
+                if fleet_tx.send(tuples).is_err() {
+                    break; // UI gone — stop polling
+                }
+            }
+        });
+    }
 
     // Kin constellation liveness poll ([kin] nodes): one tiny GET per node per
     // interval, results drained in the tick arm. No nodes = no task, no ring.
@@ -874,7 +899,8 @@ async fn event_loop(
             let history_height = size
                 .height
                 .saturating_sub(STATUS_ROWS + PROGRESS_ROWS + INPUT_ROWS + plan_rows + swarm_rows);
-            let lines = line_cache.get_or_build(&app.messages, size.width);
+            let lines =
+                line_cache.get_or_build(&app.messages, history_pane_width(&app, size.width));
             let max_scroll = (lines.len() as u16).saturating_sub(history_height);
             if app.follow {
                 app.scroll = max_scroll;
@@ -1463,6 +1489,13 @@ async fn event_loop(
                         dirty = true;
                     }
                 }
+                // Drain fleet liveness polls (spawned above; federation off ->
+                // never sends -> the ring stays empty, matching the old default).
+                while let Ok(tuples) = fleet_rx.try_recv() {
+                    app.brain.set_fleet(&tuples);
+                    app.brain.set_nats(true); // responded → NATS reachable
+                    dirty = true;
+                }
                 // Drain kin liveness polls — the field's outermost ring.
                 while let Ok(kin) = kin_rx.try_recv() {
                     app.brain.set_kin(&kin);
@@ -1573,32 +1606,6 @@ async fn event_loop(
                     dirty = true;
                 }
             }
-            _ = fleet_poll.tick() => {
-                match &fleet_fed {
-                    Some(fed) => {
-                        let workers = fed.list_workers(Duration::from_millis(600)).await;
-                        let tuples: Vec<(String, bool)> = workers
-                            .iter()
-                            .map(|w| {
-                                (
-                                    w.node_id.clone(),
-                                    matches!(w.state, entheai_federation::WorkerState::Working { .. }),
-                                )
-                            })
-                            .collect();
-                        app.brain.set_fleet(&tuples);
-                        app.brain.set_nats(true); // responded → NATS reachable
-                        dirty = true;
-                    }
-                    None => {
-                        // Federation off: keep the fleet ring empty.
-                        if !app.brain.fleet.is_empty() {
-                            app.brain.set_fleet(&[]);
-                            dirty = true;
-                        }
-                    }
-                }
-            }
             _ = osaurus_poll.tick() => {
                 // Spawn the probe on a separate task so the 600ms HTTP timeout
                 // never blocks the event loop (the loop stays responsive to
@@ -1641,6 +1648,19 @@ const MIN_WIDTH_FOR_BRAIN: u16 = 72;
 /// wide enough to spare `brain_width` columns without crowding the chat.
 fn show_brain(enabled: bool, term_width: u16) -> bool {
     enabled && term_width >= MIN_WIDTH_FOR_BRAIN
+}
+
+/// Width of the history/chat pane at `term_width`: the brain side panel
+/// (`Constraint::Length(app.brain_width)`, `render`'s horizontal split) takes
+/// its slice off the right when shown, else the pane is the full width. The
+/// wrap call below and `render`'s layout must agree on this or history rows
+/// get wrapped at one width and drawn (unwrapped, clipped) into another.
+fn history_pane_width(app: &App, term_width: u16) -> u16 {
+    if app.view != ViewMode::Zen && show_brain(app.brain_enabled, term_width) {
+        term_width.saturating_sub(app.brain_width)
+    } else {
+        term_width
+    }
 }
 const INPUT_ROWS: u16 = 3;
 /// Window within which a repeated Esc / Ctrl-C counts as a deliberate
@@ -3017,6 +3037,8 @@ fn render(
     let full = frame.area();
     // Zen takes the WHOLE screen — the field is the brain, so the side panel
     // would be redundant chrome. Every other view keeps the optional panel.
+    // Same gate as `history_pane_width`, which the caller used to wrap `lines`
+    // at this pane's width — keep them in lockstep or history rows clip.
     let show = app.view != ViewMode::Zen && show_brain(app.brain_enabled, full.width);
     let (area, brain_area) = if show {
         let [left, right] =
@@ -3026,6 +3048,7 @@ fn render(
     } else {
         (full, None)
     };
+    debug_assert_eq!(area.width, history_pane_width(app, full.width));
 
     // Draw the always-on brain side panel first so it appears in both the chat
     // and full-screen swarm views (the Swarm branch below returns early).
@@ -5247,6 +5270,27 @@ mod tests {
         assert_eq!(dash_phase(&app), "integrating");
         app.swarm.done(None, 1, 0);
         assert_eq!(dash_phase(&app), "done");
+    }
+
+    #[test]
+    fn history_pane_width_matches_render_split() {
+        let mut app = test_app();
+        app.brain_enabled = true;
+        app.brain_width = 26;
+        app.view = ViewMode::Chat;
+        // Wide enough for the brain panel: pane is term_width - brain_width,
+        // not the full terminal width (the bug: history was wrapped at the
+        // full width, then drawn — unwrapped — into the narrower left pane).
+        assert_eq!(history_pane_width(&app, 100), 74);
+        // Too narrow for the panel (show_brain gates it off) -> full width.
+        assert_eq!(history_pane_width(&app, 50), 50);
+        // Zen never shows the panel regardless of width.
+        app.view = ViewMode::Zen;
+        assert_eq!(history_pane_width(&app, 100), 100);
+        // Panel disabled -> full width.
+        app.view = ViewMode::Chat;
+        app.brain_enabled = false;
+        assert_eq!(history_pane_width(&app, 100), 100);
     }
 
     #[test]

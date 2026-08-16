@@ -702,6 +702,25 @@ pub enum VerifyStatus {
     Failed(String),
 }
 
+/// Human status line for one coder's `FanoutEvent::CoderFinished`. Matches on
+/// `verify` FIRST: a commit failure sets `committed = false` with
+/// `VerifyStatus::Failed(..)` (see the commit_result match above) and must
+/// report as that, not fall into a generic "no changes" just because
+/// `committed` happens to be false too — that conflation is exactly what
+/// silently hid a real commit failure behind the benign "coder made no edits"
+/// case.
+fn coder_status_label(committed: bool, verify: &VerifyStatus) -> &'static str {
+    match verify {
+        VerifyStatus::Failed(_) if !committed => "commit failed — not integrated",
+        VerifyStatus::Failed(_) => "verify failed",
+        _ if !committed => "no changes",
+        VerifyStatus::Passed(_) => "verified + sealed",
+        VerifyStatus::Skipped => "changes committed (unverified)",
+        VerifyStatus::Unverifiable => "unverifiable — not integrated",
+        VerifyStatus::NoChanges => "no changes",
+    }
+}
+
 /// Last `n` chars of `s` (char-boundary safe — a byte-index slice could split a
 /// multi-byte UTF-8 char, e.g. mid-emoji in a test's output).
 fn tail_chars(s: &str, n: usize) -> String {
@@ -851,6 +870,49 @@ pub async fn run_fanout(
     .report)
 }
 
+/// RAII tracking for spawned-but-not-yet-joined [`WorkerId`]s. `run_fanout_detailed`
+/// is itself an aborted future when the caller cancels a run (TUI `Action::CancelRun`
+/// aborts the task running it; the MCP fanout tool wraps it in a `tokio::time::timeout`),
+/// but the coders it spawned via `pool.spawn` are detached `tokio::spawn` tasks owned
+/// by the long-lived `WorkerPool` — dropping this future does NOT stop them. Without
+/// this guard a cancelled run left every still-running coder issuing LLM calls and
+/// writing into worktrees for up to `coder_timeout_secs`, while its own worktree
+/// directories were being force-removed out from under it by `WorktreeGuard`'s drop.
+///
+/// `track` on spawn, `joined` right after a normal `pool.join` + `pool.reap`; whatever
+/// remains in `ids` when this drops (including via an unwound/aborted future) gets
+/// `pool.stop` + `pool.reap`.
+struct PendingWorkers<'a> {
+    pool: &'a WorkerPool,
+    ids: Vec<WorkerId>,
+}
+
+impl<'a> PendingWorkers<'a> {
+    fn new(pool: &'a WorkerPool) -> Self {
+        Self {
+            pool,
+            ids: Vec::new(),
+        }
+    }
+
+    fn track(&mut self, id: WorkerId) {
+        self.ids.push(id);
+    }
+
+    fn joined(&mut self, id: WorkerId) {
+        self.ids.retain(|&i| i != id);
+    }
+}
+
+impl Drop for PendingWorkers<'_> {
+    fn drop(&mut self) {
+        for &id in &self.ids {
+            self.pool.stop(id);
+            self.pool.reap(id);
+        }
+    }
+}
+
 /// The structured fan-out entrypoint: identical execution to [`run_fanout`],
 /// but returns the report together with the run identity and the per-coder
 /// outcomes — so callers get the full [`MergeSeal`] per verified coder, not
@@ -952,6 +1014,17 @@ pub async fn run_fanout_detailed(
     // timed-out / no-change) are kept alive for recovery.
     let mut guard = worktree::WorktreeGuard::new(wt_pool);
 
+    // Tracks every coder WorkerId spawned below that hasn't been joined yet.
+    // Declared right AFTER `guard` so it drops FIRST on unwind (including a
+    // dropped/aborted future when the TUI's `Action::CancelRun` aborts this
+    // whole `run_fanout` task) — Drop calls `pool.stop`/`pool.reap` on every
+    // still-pending id, killing the coder subprocess/LLM call BEFORE `guard`'s
+    // drop force-removes the worktree it was writing into. Without this, a
+    // cancelled fan-out left detached coder tasks (owned by the long-lived
+    // `pool`, not this future) running for up to `coder_timeout_secs` against
+    // directories that no longer existed.
+    let mut pending = PendingWorkers::new(&pool);
+
     // 2. Create one worktree per sub-task, sequentially (git worktree creation
     // isn't safe to parallelize against the same root repo).
     let mut wts: Vec<(worktree::Worktree, SubTask)> = Vec::with_capacity(subtasks.len());
@@ -983,6 +1056,7 @@ pub async fn run_fanout_detailed(
                 scope.clone(),
             ),
         );
+        pending.track(id);
         worker_ids.push((id, wt, st));
     }
 
@@ -1016,6 +1090,7 @@ pub async fn run_fanout_detailed(
         // `/workers` keeps listing finished coders (Bug 4). Workers not yet joined
         // stay tracked, so `/workers` still shows in-flight coders during the run.
         pool.reap(id);
+        pending.joined(id); // already joined + reaped — PendingWorkers::drop must skip it
         runs.push(run);
     }
 
@@ -1054,23 +1129,31 @@ pub async fn run_fanout_detailed(
             });
             continue;
         }
-        let committed = worktree::commit_all(
+        // A commit failure (repo pre-commit hook rejecting the edit, gpgsign
+        // with no agent, ...) is NOT "no changes" — the coder's edits are real
+        // and uncommitted, and this worktree is about to be force-removed by
+        // `WorktreeGuard`. Distinguish it (`VerifyStatus::Failed`, excluded from
+        // integration just like a failed verify) instead of collapsing it into
+        // the benign "coder made no edits" case via `.unwrap_or(false)`.
+        let commit_result = worktree::commit_all(
             &run.path,
             &format!("entheai fan-out [{}]: {}", run.role, run.task),
         )
-        .await
-        .unwrap_or(false);
+        .await;
         let verify_cmd = config.fanout.resolve_verify(root);
-        let verify = if committed {
-            verify_worktree(
-                &run.path,
-                &base,
-                verify_cmd.as_deref(),
-                config.fanout.verify_required,
-            )
-            .await
-        } else {
-            VerifyStatus::NoChanges
+        let (committed, verify) = match commit_result {
+            Ok(true) => (
+                true,
+                verify_worktree(
+                    &run.path,
+                    &base,
+                    verify_cmd.as_deref(),
+                    config.fanout.verify_required,
+                )
+                .await,
+            ),
+            Ok(false) => (false, VerifyStatus::NoChanges),
+            Err(e) => (false, VerifyStatus::Failed(format!("commit failed: {e}"))),
         };
         // Roadmap 3.1/3.2: execution outcomes are soil, not noise. A failure
         // feeds its raw traceback to the trajectory sink; a sealed success
@@ -1113,21 +1196,10 @@ pub async fn run_fanout_detailed(
             }
         }
         if let Some(tx) = &events {
-            let status = if !committed {
-                "no changes"
-            } else {
-                match &verify {
-                    VerifyStatus::Failed(_) => "verify failed",
-                    VerifyStatus::Passed(_) => "verified + sealed",
-                    VerifyStatus::Skipped => "changes committed (unverified)",
-                    VerifyStatus::Unverifiable => "unverifiable — not integrated",
-                    VerifyStatus::NoChanges => "no changes",
-                }
-            };
             let _ = tx.send(FanoutEvent::CoderFinished {
                 index: run.index,
                 committed,
-                status: status.to_string(),
+                status: coder_status_label(committed, &verify).to_string(),
             });
         }
         // ── Oracle G2 (advisory): adjudicate the coder's diff. ONLY gates
@@ -1464,6 +1536,95 @@ pub fn format_v2_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn pending_workers_stops_and_reaps_untracked_ids_on_drop() {
+        // Simulates the cancellation path: the async fn owning `pending` is
+        // dropped mid-fan-out (e.g. the caller aborted the task) before every
+        // spawned coder was joined — the still-running one must be stopped,
+        // not left to run to `coder_timeout_secs` against a worktree the
+        // caller's WorktreeGuard is about to remove.
+        fn fake_run(index: usize) -> CoderRun {
+            CoderRun {
+                index,
+                role: "coder".into(),
+                task: "test".into(),
+                branch: format!("entheai/test/coder-{index}"),
+                path: std::path::PathBuf::from(format!("/tmp/entheai-test-pending-{index}")),
+                output: "done".into(),
+            }
+        }
+        let pool = WorkerPool::new(4);
+        let long_running = pool.spawn(
+            "coder",
+            "hangs",
+            std::time::Duration::from_secs(30),
+            async {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                fake_run(0)
+            },
+        );
+        let already_done = pool.spawn(
+            "coder",
+            "quick",
+            std::time::Duration::from_secs(30),
+            async { fake_run(1) },
+        );
+        // Let the quick one actually finish before we "join" it below.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        {
+            let mut pending = PendingWorkers::new(&pool);
+            pending.track(long_running);
+            pending.track(already_done);
+            // Normal-path join for one of them — must not be touched by drop.
+            let _ = pool.join(already_done).await;
+            pool.reap(already_done);
+            pending.joined(already_done);
+            // `pending` drops here WITHOUT `long_running` ever having been
+            // joined — this is the cancellation scenario.
+        }
+
+        // `PendingWorkers::drop` calls `stop` (aborts + marks Killed) THEN `reap`
+        // (removes the tracked entry) — so `None` here is the drop having acted;
+        // the pre-fix bug left it tracked and `Running` forever (never joined,
+        // never reaped) because nothing called `stop`/`reap` on cancellation.
+        assert_eq!(
+            pool.status(long_running),
+            None,
+            "the never-joined worker must be stopped + reaped by PendingWorkers::drop"
+        );
+        // Already joined+reaped by the explicit test code above — drop must be a
+        // no-op for it (double-reap would be a logic error, though harmless here).
+        assert_eq!(pool.status(already_done), None);
+    }
+
+    #[test]
+    fn coder_status_label_distinguishes_commit_failure_from_no_changes() {
+        // Regression: both used to collapse into "no changes" because the
+        // caller matched only on `committed` (`.unwrap_or(false)` on a real
+        // `commit_all` error looks identical to a genuine no-op commit).
+        assert_eq!(
+            coder_status_label(false, &VerifyStatus::Failed("commit failed: boom".into())),
+            "commit failed — not integrated"
+        );
+        assert_eq!(
+            coder_status_label(false, &VerifyStatus::NoChanges),
+            "no changes"
+        );
+        assert_eq!(
+            coder_status_label(true, &VerifyStatus::Failed("check.sh: exit 1".into())),
+            "verify failed"
+        );
+        assert_eq!(
+            coder_status_label(true, &VerifyStatus::Skipped),
+            "changes committed (unverified)"
+        );
+        assert_eq!(
+            coder_status_label(true, &VerifyStatus::Unverifiable),
+            "unverifiable — not integrated"
+        );
+    }
 
     #[test]
     fn fanout_policy_follows_config() {

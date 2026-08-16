@@ -33,6 +33,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
 unicode-width = "0.2"
+log = "0.4"
 uuid = { version = "1", features = ["v4"] }
 # Direct idle-time poll (same crate rmcp-sensors' idle tool uses) driving the
 # brain panel's rotation speed. Optional (behind `desktop`) — Linux needs X11
