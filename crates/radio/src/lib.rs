@@ -344,7 +344,12 @@ mod tests {
     async fn noop_radio_never_emits() {
         let mut radio = Radio::noop();
         radio.send(Command::Next);
-        let timeout = tokio::time::timeout(Duration::from_millis(50), radio.next_event()).await;
+        // Fully qualified, not `use`d: the `Duration` import above is
+        // `#[cfg(feature = "audio")]`-gated, but this test isn't, so
+        // `cargo test -p entheai-radio --no-default-features` needs this to
+        // resolve on its own.
+        let timeout =
+            tokio::time::timeout(std::time::Duration::from_millis(50), radio.next_event()).await;
         assert!(timeout.is_err(), "noop radio must never emit an event");
     }
 }

@@ -18,7 +18,16 @@ use crate::{Availability, SandboxError, SandboxSpec};
 
 pub fn availability() -> Availability {
     // Landlock present iff the kernel accepts a ruleset for ABI v1.
-    match Ruleset::default().handle_access(AccessFs::from_all(ABI::V1)) {
+    // `HardRequirement`, not the default `BestEffort`: `BestEffort`'s
+    // `handle_access` never returns a compatibility error, even on a kernel
+    // with no Landlock support at all — it just silently enforces nothing
+    // later — so this used to report `Available` unconditionally and the
+    // operator only found out at first task time (`confine`'s own
+    // `NotEnforced` check).
+    match Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
+        .handle_access(AccessFs::from_all(ABI::V1))
+    {
         Ok(_) => Availability::Available,
         Err(e) => Availability::Unavailable(format!("landlock: {e}")),
     }

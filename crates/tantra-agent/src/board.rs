@@ -104,6 +104,22 @@ pub fn require_token() -> anyhow::Result<Collaborator> {
     })
 }
 
+/// Extract the `rel="next"` URL from a GitHub `Link` response header
+/// (`<url1>; rel="prev", <url2>; rel="next", ...`), or `None` on the last
+/// page / when the header is absent.
+fn next_link(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    let raw = headers.get(reqwest::header::LINK)?.to_str().ok()?;
+    raw.split(',').find_map(|part| {
+        let part = part.trim();
+        if !part.ends_with("rel=\"next\"") {
+            return None;
+        }
+        let start = part.find('<')?;
+        let end = part.find('>')?;
+        (start < end).then(|| part[start + 1..end].to_string())
+    })
+}
+
 /// Build an absolute GitHub API URL for a repo-relative path
 /// (e.g. `/issues`, `/issues/3/comments`).
 pub fn api_url(path: &str) -> String {
@@ -229,10 +245,11 @@ impl Board {
     }
 
     /// List all open issues on the board (cards + todo/daily scratch issues).
+    /// Paginated — past 100 open issues, a single page used to miss the
+    /// `todo:`/`daily:` scratch issue and silently drop cards.
     pub async fn list_issues(&self) -> anyhow::Result<Vec<GhIssue>> {
         let url = format!("{}?state=open&per_page=100", issues_url());
-        let resp = self.ensure_ok(self.get(&url).await?).await?;
-        resp.json().await.context("parsing issue list")
+        self.get_all_pages(&url).await
     }
 
     /// Create an issue: a card when `labels` is non-empty, or a label-less
@@ -279,12 +296,31 @@ impl Board {
         resp.json().await.context("parsing created comment")
     }
 
-    /// All comments on an issue, newest last.
+    /// All comments on an issue, newest last. Paginated — with no `per_page`
+    /// GitHub's default of 30 applied, so `todo list` silently showed only
+    /// the first 30 (the doc claim was "all comments").
     pub async fn list_comments(&self, number: u64) -> anyhow::Result<Vec<GhComment>> {
-        let resp = self
-            .ensure_ok(self.get(&comments_url(number)).await?)
-            .await?;
-        resp.json().await.context("parsing comments")
+        let url = format!("{}?per_page=100", comments_url(number));
+        self.get_all_pages(&url).await
+    }
+
+    /// Follow GitHub's `Link: <url>; rel="next"` pagination header across
+    /// pages, collecting and concatenating each page's JSON array. Every
+    /// caller passes a `per_page=100`-qualified first-page URL; this handles
+    /// whatever's past that first page.
+    async fn get_all_pages<T: serde::de::DeserializeOwned>(
+        &self,
+        first_url: &str,
+    ) -> anyhow::Result<Vec<T>> {
+        let mut items = Vec::new();
+        let mut next_url = Some(first_url.to_string());
+        while let Some(url) = next_url {
+            let resp = self.ensure_ok(self.get(&url).await?).await?;
+            next_url = next_link(resp.headers());
+            let page: Vec<T> = resp.json().await.context("parsing paginated page")?;
+            items.extend(page);
+        }
+        Ok(items)
     }
 
     // --- internal HTTP helpers -------------------------------------------------
@@ -381,6 +417,36 @@ mod tests {
             comments_url(3),
             "https://api.github.com/repos/peterlodri-sec/mlxquantlovefrom.com/issues/3/comments"
         );
+    }
+
+    fn header_map(link: &str) -> reqwest::header::HeaderMap {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(reqwest::header::LINK, link.parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn next_link_extracts_the_next_url_from_a_multi_rel_header() {
+        let h = header_map(
+            r#"<https://api.github.com/repos/x/y/issues?page=1>; rel="prev", <https://api.github.com/repos/x/y/issues?page=3>; rel="next", <https://api.github.com/repos/x/y/issues?page=5>; rel="last""#,
+        );
+        assert_eq!(
+            next_link(&h).as_deref(),
+            Some("https://api.github.com/repos/x/y/issues?page=3")
+        );
+    }
+
+    #[test]
+    fn next_link_is_none_on_the_last_page() {
+        let h = header_map(
+            r#"<https://api.github.com/repos/x/y/issues?page=1>; rel="prev", <https://api.github.com/repos/x/y/issues?page=2>; rel="first""#,
+        );
+        assert!(next_link(&h).is_none());
+    }
+
+    #[test]
+    fn next_link_is_none_when_the_header_is_absent() {
+        assert!(next_link(&reqwest::header::HeaderMap::new()).is_none());
     }
 
     #[test]

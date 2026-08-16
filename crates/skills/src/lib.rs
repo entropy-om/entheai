@@ -21,12 +21,19 @@ pub struct Skill {
 /// Frontmatter is minimal `key: value` lines (strip surrounding quotes); the body
 /// is everything after the closing `---` (or the whole text if no frontmatter).
 pub fn parse_skill_md(text: &str, fallback_name: &str) -> (String, String, String) {
-    if let Some(rest) = text.strip_prefix("---\n") {
-        // Find the closing fence: a line that is exactly "---".
+    // A leading BOM or a CRLF-opened fence used to make this see no
+    // frontmatter at all (the skill fell back to the dir name + empty
+    // description) — strip/accept both.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let rest = text
+        .strip_prefix("---\r\n")
+        .or_else(|| text.strip_prefix("---\n"));
+    if let Some(rest) = rest {
+        // Find the closing fence: a line that is exactly "---" (CRLF-tolerant).
         let mut end_idx = None;
         let mut search_from = 0usize;
         for line in rest.split('\n') {
-            if line == "---" {
+            if line.trim_end_matches('\r') == "---" {
                 end_idx = Some(search_from);
                 break;
             }
@@ -37,15 +44,43 @@ pub fn parse_skill_md(text: &str, fallback_name: &str) -> (String, String, Strin
             let frontmatter = &rest[..idx];
             // Body starts right after the closing "---" line.
             let after_fence = &rest[idx + "---".len()..];
+            let after_fence = after_fence.strip_prefix('\r').unwrap_or(after_fence);
             let body = after_fence.strip_prefix('\n').unwrap_or(after_fence);
 
             let mut name = fallback_name.to_string();
             let mut description = String::new();
-            for line in frontmatter.lines() {
+            // `.lines()` is CRLF-tolerant (strips a trailing `\r`), unlike the
+            // raw `split('\n')` above used only for fence-offset bookkeeping.
+            let lines: Vec<&str> = frontmatter.lines().collect();
+            let mut i = 0;
+            while i < lines.len() {
+                let line = lines[i];
                 if let Some(v) = line.strip_prefix("name:") {
                     name = strip_quotes(v.trim());
+                    i += 1;
                 } else if let Some(v) = line.strip_prefix("description:") {
-                    description = strip_quotes(v.trim());
+                    let v = v.trim();
+                    // YAML block scalars (`>` folded, `|` literal, `-` chomp
+                    // variants): the value is on the following indented
+                    // lines, not after the colon — used to leave `description`
+                    // as the literal ">"/"|" and drop the real text.
+                    if matches!(v, ">" | ">-" | "|" | "|-") {
+                        let fold = v.starts_with('>');
+                        i += 1;
+                        let mut parts = Vec::new();
+                        while i < lines.len()
+                            && (lines[i].starts_with(' ') || lines[i].starts_with('\t'))
+                        {
+                            parts.push(lines[i].trim());
+                            i += 1;
+                        }
+                        description = parts.join(if fold { " " } else { "\n" });
+                    } else {
+                        description = strip_quotes(v);
+                        i += 1;
+                    }
+                } else {
+                    i += 1;
                 }
             }
 
@@ -224,6 +259,33 @@ mod tests {
         assert_eq!(name, "quoted-name");
         assert_eq!(description, "single quoted");
         assert_eq!(body, "Body text\n");
+    }
+
+    #[test]
+    fn parse_skill_md_with_crlf_and_bom() {
+        let text =
+            "\u{feff}---\r\nname: crlf-skill\r\ndescription: works on crlf\r\n---\r\nBody\r\n";
+        let (name, description, body) = parse_skill_md(text, "fallback");
+        assert_eq!(name, "crlf-skill");
+        assert_eq!(description, "works on crlf");
+        assert_eq!(body, "Body\r\n");
+    }
+
+    #[test]
+    fn parse_skill_md_with_folded_block_scalar_description() {
+        let text =
+            "---\nname: my-skill\ndescription: >\n  does a thing\n  across two lines\n---\nBody\n";
+        let (name, description, body) = parse_skill_md(text, "fallback");
+        assert_eq!(name, "my-skill");
+        assert_eq!(description, "does a thing across two lines");
+        assert_eq!(body, "Body\n");
+    }
+
+    #[test]
+    fn parse_skill_md_with_literal_block_scalar_description() {
+        let text = "---\nname: my-skill\ndescription: |-\n  line one\n  line two\n---\nBody\n";
+        let (_, description, _) = parse_skill_md(text, "fallback");
+        assert_eq!(description, "line one\nline two");
     }
 
     #[test]

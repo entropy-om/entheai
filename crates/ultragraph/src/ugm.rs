@@ -102,7 +102,18 @@ impl UgmFile {
             ));
         }
 
-        let _flags = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
+        let flags = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
+        if flags & 1 != 0 {
+            // Bit0 ("packed weights") is a real spec bit with no reader
+            // support here (`unpack_ternary` exists but is never called) —
+            // a packed file was silently parsed as raw i8 weights, giving
+            // wrong values (or a spurious EOF once the shorter packed data
+            // ran out). Refuse it outright rather than misinterpret it.
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "packed weights (flags bit0) are not supported by this reader",
+            ));
+        }
         let n_trees = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
         let n_ultra_edges = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
         let trees_offset = u32::from_le_bytes(bytes[16..20].try_into().unwrap()) as usize;
@@ -110,7 +121,13 @@ impl UgmFile {
         let weights_offset = u32::from_le_bytes(bytes[24..28].try_into().unwrap()) as usize;
         let _weights_size = u32::from_le_bytes(bytes[28..32].try_into().unwrap()) as usize;
 
-        // Parse tree table
+        // Parse tree table. Each tree entry is at least 16 bytes on disk
+        // (kind, act, in_dim, out_dim, name_len — the name/scale tail is
+        // validated per-entry below), so a file-supplied `n_trees` can never
+        // legitimately exceed `bytes.len() / 16` — cap the allocation
+        // request instead of trusting a corrupt/hostile count and aborting
+        // on a multi-GB allocation failure.
+        let n_trees = n_trees.min(bytes.len() / 16 + 1);
         let mut cursor = trees_offset;
         let mut trees = Vec::with_capacity(n_trees);
         for _ in 0..n_trees {
@@ -154,7 +171,8 @@ impl UgmFile {
             });
         }
 
-        // Parse ultra-edge table
+        // Parse ultra-edge table. 9 bytes/entry — same reasoning as n_trees.
+        let n_ultra_edges = n_ultra_edges.min(bytes.len() / 9 + 1);
         cursor = ue_offset;
         let mut ultra_edges = Vec::with_capacity(n_ultra_edges);
         for _ in 0..n_ultra_edges {
@@ -175,15 +193,74 @@ impl UgmFile {
             });
         }
 
+        // Validate cross-references before `run()` ever sees this graph:
+        // `run()`/`_forward_tree` panic!() on exactly these three
+        // conditions (a dangling `src_idx`/`dst_idx` makes the topological
+        // loop in `run()` never resolve that tree, misdiagnosed as "cycle
+        // detected"; a non-`KIND_DENSE` tree has no forward implementation;
+        // a dim mismatch across an edge indexes a row out of bounds) — a
+        // malformed-but-structurally-parseable `.ugm` file used to be
+        // accepted here and only panic later, at query time, inside
+        // `NativeMesh::score`.
+        for ue in &ultra_edges {
+            let (src_i, dst_i) = (ue.src_idx as usize, ue.dst_idx as usize);
+            if src_i >= trees.len() || dst_i >= trees.len() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "ultra-edge references out-of-range tree index \
+                         (src={src_i}, dst={dst_i}, n_trees={})",
+                        trees.len()
+                    ),
+                ));
+            }
+            let (src, dst) = (&trees[src_i], &trees[dst_i]);
+            let expected = if ue.kind == UE_RESIDUAL {
+                dst.out_dim
+            } else {
+                dst.in_dim
+            };
+            if src.out_dim != expected {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "ultra-edge dim mismatch: tree {src_i} out_dim={} feeds tree \
+                         {dst_i}, which expects {expected}",
+                        src.out_dim
+                    ),
+                ));
+            }
+        }
+        if let Some(bad) = trees.iter().find(|t| t.kind != KIND_DENSE) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "tree kind={} ({:?}) has no forward implementation — only \
+                     KIND_DENSE is supported",
+                    bad.kind, bad.name
+                ),
+            ));
+        }
+
         // Parse weight data per dense tree
         cursor = weights_offset;
         for tree in &mut trees {
             if tree.kind == KIND_DENSE {
                 let in_dim = tree.in_dim as usize;
                 let out_dim = tree.out_dim as usize;
-                let wq_len = out_dim * in_dim;
-                let bias_len = out_dim * 4;
-                if cursor + wq_len + bias_len > bytes.len() {
+                let overflow_err = || {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "tree dims overflow while computing weight data size",
+                    )
+                };
+                let wq_len = out_dim.checked_mul(in_dim).ok_or_else(overflow_err)?;
+                let bias_len = out_dim.checked_mul(4).ok_or_else(overflow_err)?;
+                let end = cursor
+                    .checked_add(wq_len)
+                    .and_then(|c| c.checked_add(bias_len))
+                    .ok_or_else(overflow_err)?;
+                if end > bytes.len() {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         "unexpected EOF reading weight data",
@@ -400,5 +477,160 @@ mod tests {
         assert_eq!(ugm.sink_idx(), 1);
         let out = ugm.run(&[vec![1.0, 2.0]]);
         assert_eq!(out, vec![vec![2.0, 4.0]]);
+    }
+
+    /// Hand-encode a minimal `.ugm` v1 byte buffer for `from_bytes` tests —
+    /// `trees` is `(kind, act, in_dim, out_dim, name, w_scale)`, `edges` is
+    /// `(src_idx, dst_idx, kind)`, `weights` is `(wq, bias)` per `KIND_DENSE`
+    /// tree, in tree order.
+    fn build_ugm_bytes(
+        flags: u16,
+        n_trees_override: Option<u32>,
+        trees: &[(u8, u8, u32, u32, &str, f32)],
+        edges: &[(u32, u32, u8)],
+        weights: &[(Vec<i8>, Vec<f32>)],
+    ) -> Vec<u8> {
+        let mut trees_buf = Vec::new();
+        for (kind, act, in_dim, out_dim, name, w_scale) in trees {
+            trees_buf.push(*kind);
+            trees_buf.push(*act);
+            trees_buf.extend_from_slice(&in_dim.to_le_bytes());
+            trees_buf.extend_from_slice(&out_dim.to_le_bytes());
+            trees_buf.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            trees_buf.extend_from_slice(name.as_bytes());
+            trees_buf.extend_from_slice(&w_scale.to_le_bytes());
+        }
+        let mut ue_buf = Vec::new();
+        for (src, dst, kind) in edges {
+            ue_buf.extend_from_slice(&src.to_le_bytes());
+            ue_buf.extend_from_slice(&dst.to_le_bytes());
+            ue_buf.push(*kind);
+        }
+        let mut w_buf = Vec::new();
+        for (wq, bias) in weights {
+            for &b in wq {
+                w_buf.push(b as u8);
+            }
+            for &f in bias {
+                w_buf.extend_from_slice(&f.to_le_bytes());
+            }
+        }
+
+        let trees_offset = 32u32;
+        let ue_offset = trees_offset + trees_buf.len() as u32;
+        let weights_offset = ue_offset + ue_buf.len() as u32;
+        let weights_size = w_buf.len() as u32;
+
+        let mut out = Vec::new();
+        out.extend_from_slice(&MAGIC);
+        out.extend_from_slice(&VERSION.to_le_bytes());
+        out.extend_from_slice(&flags.to_le_bytes());
+        out.extend_from_slice(&n_trees_override.unwrap_or(trees.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(edges.len() as u32).to_le_bytes());
+        out.extend_from_slice(&trees_offset.to_le_bytes());
+        out.extend_from_slice(&ue_offset.to_le_bytes());
+        out.extend_from_slice(&weights_offset.to_le_bytes());
+        out.extend_from_slice(&weights_size.to_le_bytes());
+        out.extend_from_slice(&trees_buf);
+        out.extend_from_slice(&ue_buf);
+        out.extend_from_slice(&w_buf);
+        out
+    }
+
+    fn one_dense_tree() -> Vec<(u8, u8, u32, u32, &'static str, f32)> {
+        vec![(KIND_DENSE, ACT_IDENTITY, 2, 2, "t0", 1.0)]
+    }
+
+    #[test]
+    fn from_bytes_rejects_packed_weights_flag_instead_of_misreading_it() {
+        let bytes = build_ugm_bytes(
+            1, // bit0 set: packed weights
+            None,
+            &one_dense_tree(),
+            &[],
+            &[(vec![1, 0, 0, 1], vec![0.0, 0.0])],
+        );
+        let err = UgmFile::from_bytes(&bytes).unwrap_err();
+        assert!(err.to_string().contains("packed"));
+    }
+
+    #[test]
+    fn from_bytes_rejects_a_dangling_ultra_edge_index() {
+        let bytes = build_ugm_bytes(
+            0,
+            None,
+            &one_dense_tree(),
+            &[(0, 5, UE_PLAIN)], // dst=5 doesn't exist (only tree 0)
+            &[(vec![1, 0, 0, 1], vec![0.0, 0.0])],
+        );
+        let err = UgmFile::from_bytes(&bytes).unwrap_err();
+        assert!(
+            err.to_string().contains("out-of-range"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn from_bytes_rejects_a_dim_mismatched_ultra_edge() {
+        let trees = vec![
+            (KIND_DENSE, ACT_IDENTITY, 2, 2, "t0", 1.0), // out_dim=2
+            (KIND_DENSE, ACT_IDENTITY, 3, 2, "t1", 1.0), // in_dim=3 — mismatch
+        ];
+        let bytes = build_ugm_bytes(
+            0,
+            None,
+            &trees,
+            &[(0, 1, UE_PLAIN)],
+            &[
+                (vec![1, 0, 0, 1], vec![0.0, 0.0]),
+                (vec![1, 0, 0, 1, 0, 0], vec![0.0, 0.0]),
+            ],
+        );
+        let err = UgmFile::from_bytes(&bytes).unwrap_err();
+        assert!(
+            err.to_string().contains("dim mismatch"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn from_bytes_rejects_a_kind_sparse_tree() {
+        let trees = vec![(KIND_SPARSE, ACT_IDENTITY, 2, 2, "t0", 1.0)];
+        let bytes = build_ugm_bytes(0, None, &trees, &[], &[]);
+        let err = UgmFile::from_bytes(&bytes).unwrap_err();
+        assert!(
+            err.to_string().contains("KIND_DENSE"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn from_bytes_caps_a_hostile_tree_count_instead_of_aborting() {
+        // The header claims u32::MAX trees; the actual file has none. Must
+        // fail cleanly and promptly (EOF), not attempt to
+        // `Vec::with_capacity(u32::MAX)`.
+        let bytes = build_ugm_bytes(0, Some(u32::MAX), &[], &[], &[]);
+        let err = UgmFile::from_bytes(&bytes).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn from_bytes_accepts_a_well_formed_file_end_to_end() {
+        let trees = vec![
+            (KIND_DENSE, ACT_IDENTITY, 2, 2, "t0", 1.0),
+            (KIND_DENSE, ACT_IDENTITY, 2, 2, "t1", 1.0),
+        ];
+        let bytes = build_ugm_bytes(
+            0,
+            None,
+            &trees,
+            &[(0, 1, UE_PLAIN), (0, 1, UE_RESIDUAL)],
+            &[
+                (vec![1, 0, 0, 1], vec![0.0, 0.0]),
+                (vec![1, 0, 0, 1], vec![0.0, 0.0]),
+            ],
+        );
+        let ugm = UgmFile::from_bytes(&bytes).unwrap();
+        assert_eq!(ugm.run(&[vec![1.0, 2.0]]), vec![vec![2.0, 4.0]]);
     }
 }

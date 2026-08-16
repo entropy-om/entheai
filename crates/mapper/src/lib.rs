@@ -37,7 +37,9 @@ impl Mapper {
         // (deterministic) order rather than completion order.
         let handles: Vec<_> = resolved
             .into_iter()
-            .map(|path| tokio::spawn(async move { files::read_and_chunk(&path).await }))
+            .map(|path| {
+                tokio::spawn(async move { files::read_and_chunk(&path, MAX_FILE_CHUNKS).await })
+            })
             .collect();
 
         let mut file_chunks = Vec::new();

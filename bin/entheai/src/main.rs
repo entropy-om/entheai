@@ -263,7 +263,7 @@ async fn main() -> anyhow::Result<()> {
         std::path::Path::new(&std::env::var("HOME").unwrap_or_default()),
     );
 
-    let companion = setup_companion(&cfg, &root, cli.no_companion)?;
+    let companion = setup_companion(&cfg, &root, cli.no_companion).await?;
     if let Some(ref c) = companion {
         let _ = c.state_tx.send(StateChange::working());
     }
@@ -1080,7 +1080,7 @@ async fn build_tools(
 /// forward `StateChange` events to it over a background task, and launch the
 /// companion child process. Returns a handle that kills the child + removes the
 /// socket on drop. `None` when the companion is disabled.
-fn setup_companion(
+async fn setup_companion(
     cfg: &Config,
     root: &Path,
     no_companion: bool,
@@ -1092,7 +1092,16 @@ fn setup_companion(
     let session_id = uuid::Uuid::new_v4().to_string();
     let socket_path = std::env::temp_dir().join(format!("entheai-{session_id}.sock"));
     let _ = std::fs::remove_file(&socket_path);
-    let listener = UnixListener::bind(&socket_path)?;
+    // The companion is optional UX, not core functionality — a bind failure
+    // (permissions, or `sun_path` over the ~104-byte limit under a long
+    // $TMPDIR) must degrade to "no companion", not abort the whole run.
+    let listener = match UnixListener::bind(&socket_path) {
+        Ok(l) => l,
+        Err(e) => {
+            log::warn!("companion socket bind failed: {e}; running without companion");
+            return Ok(None);
+        }
+    };
     let (state_tx, mut state_rx) = tokio::sync::mpsc::unbounded_channel::<StateChange>();
 
     // Accept the companion connection and stream newline-delimited events to it.
@@ -1113,7 +1122,7 @@ fn setup_companion(
         "--session-id".to_string(),
         session_id,
         "--host".to_string(),
-        hostname(),
+        hostname().await,
         "--port".to_string(),
         cfg.companion.port.to_string(),
         "--cwd".to_string(),
@@ -1128,7 +1137,19 @@ fn setup_companion(
     }
 
     let (bin, _) = find_companion_binary();
-    let child = std::process::Command::new(&bin).args(&args).spawn().ok();
+    let child = match std::process::Command::new(&bin).args(&args).spawn() {
+        Ok(c) => Some(c),
+        Err(e) => {
+            // A missing/failing companion binary must not go unnoticed: the
+            // accept task above blocks on `listener.accept()` forever with
+            // no companion to connect, and every `StateChange` sent for the
+            // rest of the session would otherwise pile up in `state_tx`'s
+            // unbounded channel with nothing ever draining it.
+            log::warn!("companion: cannot start {bin}: {e}");
+            let _ = std::fs::remove_file(&socket_path);
+            return Ok(None);
+        }
+    };
 
     Ok(Some(CompanionHandle {
         child,
@@ -1138,11 +1159,18 @@ fn setup_companion(
 }
 
 /// Resolve a hostname for the companion QR: Tailscale MagicDNS if available,
-/// else the local hostname.
-fn hostname() -> String {
-    if let Ok(out) = std::process::Command::new("tailscale")
-        .args(["status", "--json"])
-        .output()
+/// else the local hostname. Each probe is deadline-bound — a hung tailscaled
+/// must not stall entheai startup.
+async fn hostname() -> String {
+    const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+    if let Ok(Ok(out)) = tokio::time::timeout(
+        PROBE_TIMEOUT,
+        tokio::process::Command::new("tailscale")
+            .args(["status", "--json"])
+            .output(),
+    )
+    .await
     {
         if out.status.success() {
             if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
@@ -1152,12 +1180,16 @@ fn hostname() -> String {
             }
         }
     }
-    std::process::Command::new("hostname")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| format!("{}.local", s.trim()))
-        .unwrap_or_else(|| "localhost".to_string())
+    tokio::time::timeout(
+        PROBE_TIMEOUT,
+        tokio::process::Command::new("hostname").output(),
+    )
+    .await
+    .ok()
+    .and_then(|r| r.ok())
+    .and_then(|o| String::from_utf8(o.stdout).ok())
+    .map(|s| format!("{}.local", s.trim()))
+    .unwrap_or_else(|| "localhost".to_string())
 }
 
 /// Locate the `entheai-companion` binary next to the current executable, else
