@@ -335,6 +335,20 @@ fn backend_label(b: &OracleBackend) -> String {
     }
 }
 
+/// Render `(branch, diff)` pairs for the adjudicator prompt, each diff capped
+/// so a handful of large coders can't blow the prompt budget. `"(none)"` when
+/// empty (no coder committed anything for this phase).
+fn format_diffs_for_prompt(diffs: &[(String, String)]) -> String {
+    if diffs.is_empty() {
+        return "(none)".to_string();
+    }
+    diffs
+        .iter()
+        .map(|(branch, diff)| format!("--- {branch} ---\n{}", crate::cap_str(diff, 4000)))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 impl FusionOracle {
     /// Step 3.1: the verdict comes from the Native adjudicator model — a real
     /// model call via `entheai_router::build_agent` (the same path the
@@ -345,8 +359,12 @@ impl FusionOracle {
         let system = "You are the Oracle of a coding fan-out. You adjudicate one phase. \
             Reply with ONLY a JSON object: {\"verdict\":\"approve\"|\"rework\"|\"reject\",\
             \"reason\":\"...\",\"confidence\":0.0}";
+        // Actual diff BODIES, not just a count — a "block" gate adjudicating
+        // on `diffs.len()` alone was rejecting/approving coders on nothing but
+        // the task string, regardless of what they actually changed.
+        let diffs_body = format_diffs_for_prompt(&context.diffs);
         let user = format!(
-            "Phase: {phase:?}\nTask: {}\nMapped files: {}\nDiffs: {}",
+            "Phase: {phase:?}\nTask: {}\nMapped files: {}\nDiffs ({} branch(es)):\n{diffs_body}",
             context.task,
             context.mapped_files.len(),
             context.diffs.len(),
@@ -503,6 +521,37 @@ pub fn sphere_attestations() -> Vec<Attestation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_diffs_for_prompt_includes_bodies_not_just_a_count() {
+        // Regression: the adjudicator prompt used to send `diffs.len()` only —
+        // a gate=block verdict could reject/approve a coder on nothing but the
+        // task string, ungrounded in what it actually changed.
+        assert_eq!(format_diffs_for_prompt(&[]), "(none)");
+        let diffs = vec![
+            (
+                "entheai/sess/coder-0".to_string(),
+                "+added a line".to_string(),
+            ),
+            (
+                "entheai/sess/coder-1".to_string(),
+                "-removed a line".to_string(),
+            ),
+        ];
+        let out = format_diffs_for_prompt(&diffs);
+        assert!(out.contains("entheai/sess/coder-0"));
+        assert!(out.contains("+added a line"));
+        assert!(out.contains("entheai/sess/coder-1"));
+        assert!(out.contains("-removed a line"));
+    }
+
+    #[test]
+    fn format_diffs_for_prompt_caps_each_diff_independently() {
+        let huge = "x".repeat(10_000);
+        let diffs = vec![("b".to_string(), huge)];
+        let out = format_diffs_for_prompt(&diffs);
+        assert!(out.len() < 10_000, "diff body must be capped");
+    }
 
     fn test_config() -> Config {
         Config::from_toml_str(

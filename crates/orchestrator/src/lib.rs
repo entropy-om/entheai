@@ -1230,7 +1230,16 @@ pub async fn run_fanout_detailed(
         // the benign "coder made no edits" case via `.unwrap_or(false)`.
         let commit_result = worktree::commit_all(
             &run.path,
-            &format!("entheai fan-out [{}]: {}", run.role, run.task),
+            // `run.task` can be `mapped.render()` — the WHOLE resolved prompt incl.
+            // `@{file}` contents — when the model returned no coder and
+            // `ensure_coder` filled in a lone one; an uncapped commit message
+            // then risks E2BIG on `git commit -m`, which (before this cap) would
+            // fail the commit for a reason unrelated to the coder's actual diff.
+            &format!(
+                "entheai fan-out [{}]: {}",
+                run.role,
+                cap_str(&run.task, 2000)
+            ),
         )
         .await;
         let (committed, verify) = match commit_result {
@@ -1303,10 +1312,20 @@ pub async fn run_fanout_detailed(
         // (kept alive for recovery, like a conflict).
         let mut oracle_rejected = false;
         if let Some(o) = &oracle {
+            // The coder's actual diff, not its self-reported prose (`run.output`)
+            // — an adjudicator judging on the latter (or, before this fix, on
+            // nothing but `diffs.len()` — see oracle.rs native_adjudicate) could
+            // reject/approve a coder on a verdict grounded in nothing it changed.
+            // Empty when nothing was committed (matches `branch_diff`'s own
+            // "identical to base" contract) — never an error, so this always
+            // has *some* diffs entry.
+            let diff = worktree::branch_diff(root, &base, &run.branch)
+                .await
+                .unwrap_or_default();
             let ctx = OracleContext {
                 task: run.task.clone(),
                 mapped_files: Vec::new(),
-                diffs: vec![(run.branch.clone(), run.output.clone())],
+                diffs: vec![(run.branch.clone(), diff)],
                 // The eBPF sphere's kernel truth, if the sidecar is running
                 // (coders=fleet). Empty on the local path → diff-fallback.
                 attestations: oracle::sphere_attestations(),
