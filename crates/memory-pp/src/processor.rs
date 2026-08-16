@@ -158,9 +158,18 @@ impl PromptProcessor {
             return Ok(None);
         }
         // Stage 3 — deterministic compression. Error/empty brief → fallback (an
-        // empty brief must never be injected as "success").
+        // empty brief must never be injected as "success"). The brief becomes
+        // the injected system message with no cap of its own: `findings` can
+        // be up to `mesh_top_k * max_ingest_bytes` (megabytes with defaults),
+        // and both the stub and pure-Rust marqant backends are effectively
+        // unbounded passthroughs — the top-K retrieval path this exists
+        // alongside caps at `max_context_chars`; PP had no equivalent. Cap
+        // here, mirroring `activate_frozen`'s own cap via the same
+        // `max_ingest_bytes` budget.
         match self.marqant.compress(&findings, self.deadline).await {
-            Ok(brief) if !brief.trim().is_empty() => Ok(Some(brief)),
+            Ok(brief) if !brief.trim().is_empty() => {
+                Ok(Some(cap_bytes(&brief, self.max_ingest_bytes).to_string()))
+            }
             Ok(_) => Ok(None),
             Err(e) => {
                 warn!("pp marqant error → falling back to top-K: {e}");
