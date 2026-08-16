@@ -162,13 +162,25 @@ pub fn by_name(name: &str) -> &'static Palette {
         .unwrap_or(&ENTHEIA)
 }
 
+/// Built-in names, then `custom_names` filtered to drop any that already
+/// name a builtin. A custom theme is allowed to override a builtin by
+/// reusing its name (the intended use — `by_name` checks CUSTOM first), so
+/// it must not also appear a SECOND time in the cycle list: a duplicate
+/// broke the cycle's modular arithmetic (`position()` finds the FIRST
+/// occurrence, so stepping past the duplicate landed back on an earlier
+/// index instead of the true next name — e.g. a custom "ember" made the
+/// cycle skip "entheia" entirely).
+fn cycle_names<'a>(custom_names: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
+    let mut names: Vec<&str> = ALL.iter().map(|p| p.name).collect();
+    names.extend(custom_names.filter(|n| !ALL.iter().any(|b| b.name == *n)));
+    names
+}
+
 /// The theme after `name` in cycle order (wraps; unknown starts the cycle).
 pub fn next_after(name: &str) -> &'static Palette {
     let name = name.trim();
     let custom = CUSTOM.lock().unwrap_or_else(|e| e.into_inner());
-    // Build combined name list: built-in names first, then custom.
-    let mut names: Vec<&str> = ALL.iter().map(|p| p.name).collect();
-    names.extend(custom.iter().map(|p| p.name));
+    let names = cycle_names(custom.iter().map(|p| p.name));
     let idx = names.iter().position(|n| *n == name);
     let next_name = match idx {
         Some(i) => names[(i + 1) % names.len()],
@@ -183,7 +195,14 @@ pub fn next_after(name: &str) -> &'static Palette {
 
 /// Parse `[viz.palette.<name>]` sections from raw TOML and register as runtime
 /// custom themes. Call once at startup before any palette lookup.
-pub fn register_from_toml(raw: &str) {
+///
+/// Returns the count registered on success (`Ok(0)` when there's no
+/// `[viz.palette]` table at all — the common, silent case), or the parse
+/// error on an actual TOML type error (e.g. `core = "#ff0000"` instead of an
+/// RGB array, a 4-element array, or a channel value > 255) — previously
+/// discarded with no diagnostic at all, silently leaving `/theme` unable to
+/// find the theme the operator thought they'd configured.
+pub fn register_from_toml(raw: &str) -> Result<usize, toml::de::Error> {
     #[derive(serde::Deserialize, Default)]
     struct Raw {
         core: Option<[u8; 3]>,
@@ -209,11 +228,9 @@ pub fn register_from_toml(raw: &str) {
     struct Viz {
         palette: Option<std::collections::BTreeMap<String, Raw>>,
     }
-    let Ok(cfg) = toml::from_str::<Cfg>(raw) else {
-        return;
-    };
+    let cfg: Cfg = toml::from_str(raw)?;
     let Some(palettes) = cfg.viz.and_then(|v| v.palette) else {
-        return;
+        return Ok(0);
     };
     let mut loaded = Vec::new();
     for (name, rp) in palettes {
@@ -243,9 +260,11 @@ pub fn register_from_toml(raw: &str) {
         }));
         loaded.push(p);
     }
+    let count = loaded.len();
     if let Ok(mut g) = CUSTOM.lock() {
         *g = loaded;
     }
+    Ok(count)
 }
 
 /// Linear blend a→b by `t` in [0, 1] — faculty rest→active, frozen dim→lit.
@@ -259,6 +278,25 @@ pub fn lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
 mod tests {
     use super::*;
 
+    #[test]
+    fn register_from_toml_returns_ok_zero_when_no_palette_table() {
+        assert_eq!(register_from_toml(""), Ok(0));
+        assert_eq!(register_from_toml("default_model = \"x\"\n"), Ok(0));
+    }
+
+    #[test]
+    fn register_from_toml_surfaces_a_type_error_instead_of_discarding_it() {
+        // Regression: `let Ok(cfg) = toml::from_str(raw) else { return }`
+        // discarded ANY type error (a hex-string core, a 4-element array, a
+        // channel > 255) with no diagnostic at all — the operator had no way
+        // to learn /theme would never find the theme they configured.
+        let bad = "[viz.palette.broken]\ncore = \"#ff0000\"\n"; // must be [u8;3], not a string
+        assert!(
+            register_from_toml(bad).is_err(),
+            "a TOML type error must be reported, not silently swallowed"
+        );
+    }
+
     fn luma(c: Rgb) -> u32 {
         c.0 as u32 + c.1 as u32 + c.2 as u32
     }
@@ -270,6 +308,34 @@ mod tests {
         }
         assert_eq!(by_name("no-such-theme").name, "entheia");
         assert_eq!(by_name("  ember  ").name, "ember", "whitespace tolerated");
+    }
+
+    #[test]
+    fn cycle_names_dedups_a_custom_override_of_a_builtin() {
+        // Regression: a custom theme reusing a builtin's name (the intended
+        // override use) used to appear TWICE in the cycle list, breaking the
+        // modular-arithmetic step: from "void" the cycle went to the
+        // duplicate "ember" (a later index), then position() found the
+        // FIRST "ember" and stepped to "verdant" — "entheia" was never
+        // reached again. A brand-new custom name must still be appended.
+        let names = cycle_names(["ember", "aurora"].into_iter());
+        assert_eq!(
+            names,
+            vec!["entheia", "ember", "verdant", "void", "aurora"],
+            "the duplicate \"ember\" must be dropped; the new \"aurora\" kept"
+        );
+        // The full cycle must revisit every name exactly once before wrapping.
+        let start = names.iter().position(|n| *n == "entheia").unwrap();
+        for step in 0..names.len() {
+            let cur = names[(start + step) % names.len()];
+            let next = names[(start + step + 1) % names.len()];
+            let cur_idx = names.iter().position(|n| *n == cur).unwrap();
+            assert_eq!(
+                names[(cur_idx + 1) % names.len()],
+                next,
+                "stepping from {cur:?} must reach {next:?}, not loop back early"
+            );
+        }
     }
 
     #[test]

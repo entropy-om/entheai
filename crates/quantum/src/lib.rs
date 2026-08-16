@@ -37,9 +37,17 @@ impl Complex {
     }
 }
 
+/// Register size cap: 2^24 amplitudes (~256 MiB) keeps `zeros` from
+/// overflowing the `1 << n` shift or exhausting memory on bad input.
+const MAX_QUBITS: usize = 24;
+
 impl Qubits {
     /// `|0...0⟩` over `n` qubits.
     pub fn zeros(n: usize) -> Self {
+        assert!(
+            n <= MAX_QUBITS,
+            "qubit count {n} exceeds MAX_QUBITS ({MAX_QUBITS})"
+        );
         let mut amps = vec![Complex::new(0.0, 0.0); 1 << n];
         amps[0] = Complex::new(1.0, 0.0);
         Self { amps, n }
@@ -50,6 +58,11 @@ impl Qubits {
     }
 
     fn apply_single(&mut self, q: usize, m: &[[Complex; 2]; 2]) {
+        assert!(
+            q < self.n,
+            "qubit index {q} out of range for {}-qubit register",
+            self.n
+        );
         let n = self.n;
         for base in 0..(1 << n) {
             if (base >> q) & 1 == 0 {
@@ -63,6 +76,20 @@ impl Qubits {
     }
 
     fn apply_controlled(&mut self, ctrl: usize, tgt: usize, m: &[[Complex; 2]; 2]) {
+        assert!(
+            ctrl < self.n,
+            "control qubit {ctrl} out of range for {}-qubit register",
+            self.n
+        );
+        assert!(
+            tgt < self.n,
+            "target qubit {tgt} out of range for {}-qubit register",
+            self.n
+        );
+        assert!(
+            ctrl != tgt,
+            "control and target qubit must differ (both {ctrl})"
+        );
         let n = self.n;
         for base in 0..(1 << n) {
             let c = (base >> ctrl) & 1;
@@ -205,5 +232,25 @@ mod tests {
         let m0 = q.measure(0, 42);
         let m1 = q.measure(1, 42);
         assert_eq!(m0, m1, "bell pair: measurement outcomes must match");
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds MAX_QUBITS")]
+    fn zeros_rejects_a_register_too_large_to_allocate() {
+        Qubits::zeros(63);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn h_rejects_a_qubit_index_outside_the_register() {
+        let mut q = Qubits::zeros(2);
+        q.h(2);
+    }
+
+    #[test]
+    #[should_panic(expected = "must differ")]
+    fn cnot_rejects_identical_control_and_target() {
+        let mut q = Qubits::zeros(2);
+        q.cnot(0, 0);
     }
 }

@@ -510,9 +510,14 @@ pub async fn run(
         tokio::sync::mpsc::UnboundedReceiver<entheai_memory_pp::BrainJudgeEvent>,
     )>,
 ) -> anyhow::Result<()> {
-    // Register custom [viz.palette.*] themes from the local config file.
+    // Register custom [viz.palette.*] themes from the local config file. A
+    // TOML type error (e.g. `core = "#ff0000"` instead of an RGB array) used
+    // to be discarded silently — the operator got no diagnostic and /theme
+    // just never found the theme they thought they'd configured.
     if let Ok(raw) = std::fs::read_to_string("entheai.toml") {
-        let _ = entheai_viz::palette::register_from_toml(&raw);
+        if let Err(e) = entheai_viz::palette::register_from_toml(&raw) {
+            log::warn!("entheai.toml: [viz.palette] not loaded: {e}");
+        }
     }
     let mut terminal = init_terminal()?;
     let guard = TerminalGuard;
