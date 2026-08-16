@@ -87,6 +87,33 @@ async fn git_ok(dir: &Path, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+/// Reconcile the worktree back to the `execute` contract: UNCOMMITTED changes
+/// only. If the coder committed (HEAD moved off `base_sha`), soft-reset so its
+/// edits land back in the working tree; then treat a still-clean tree (no
+/// working-tree change at all) as a no-op. Split out from `execute` so this
+/// git-state logic is unit-testable without a real `agy`/`copilot` binary.
+async fn reconcile_working_tree(
+    worktree_path: &Path,
+    base_sha: &str,
+    log: String,
+) -> Option<String> {
+    if let Some(head) = git_stdout(worktree_path, &["rev-parse", "HEAD"]).await {
+        if head != base_sha {
+            let _ = git_ok(worktree_path, &["reset", "--soft", base_sha]).await;
+            let _ = git_ok(worktree_path, &["reset"]).await; // unstage → uniform working tree
+        }
+    }
+    // No working-tree change → treat as a no-op (local fallback).
+    let dirty = git_stdout(worktree_path, &["status", "--porcelain"])
+        .await
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    if !dirty {
+        return None;
+    }
+    Some(log)
+}
+
 #[async_trait::async_trait]
 impl crate::CoderExecutor for CopilotExecutor {
     async fn workers_available(&self) -> bool {
@@ -154,30 +181,14 @@ impl crate::CoderExecutor for CopilotExecutor {
             return None;
         }
         let log = String::from_utf8_lossy(&out.stdout).to_string();
-
-        // The contract wants UNCOMMITTED changes. If copilot committed (HEAD moved
-        // off the base), soft-reset so its edits return to the working tree.
-        if let Some(head) = git_stdout(worktree_path, &["rev-parse", "HEAD"]).await {
-            if head != base_sha {
-                let _ = git_ok(worktree_path, &["reset", "--soft", base_sha]).await;
-                let _ = git_ok(worktree_path, &["reset"]).await; // unstage → uniform working tree
-            }
-        }
-        // No working-tree change → treat as a no-op (local fallback).
-        let dirty = git_stdout(worktree_path, &["status", "--porcelain"])
-            .await
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
-        if !dirty {
-            return None;
-        }
-        Some(log)
+        reconcile_working_tree(worktree_path, base_sha, log).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn coder_prompt_carries_layer_role_task_and_guardrails() {
@@ -195,5 +206,89 @@ mod tests {
             (1..=5).contains(&MAX_DEPTH),
             "recursion cap must be bounded + small"
         );
+    }
+
+    async fn git(dir: &Path, args: &[&str]) {
+        assert!(git_ok(dir, args).await, "git {args:?} failed in test setup");
+    }
+
+    /// `git init -b main`, a committer identity, one commit — returns the
+    /// `TempDir` (keep alive) and that commit's full sha (base_sha).
+    async fn init_repo() -> (TempDir, String) {
+        let dir = TempDir::new().expect("create tempdir");
+        let path = dir.path();
+        git(path, &["init", "-b", "main"]).await;
+        git(path, &["config", "user.email", "test@example.com"]).await;
+        git(path, &["config", "user.name", "Test User"]).await;
+        tokio::fs::write(path.join("base.txt"), "base\n")
+            .await
+            .expect("write base.txt");
+        git(path, &["add", "-A"]).await;
+        git(path, &["commit", "-m", "init"]).await;
+        let sha = git_stdout(path, &["rev-parse", "HEAD"])
+            .await
+            .expect("rev-parse HEAD");
+        (dir, sha)
+    }
+
+    #[tokio::test]
+    async fn reconcile_returns_none_when_the_coder_made_no_changes() {
+        let (repo, base_sha) = init_repo().await;
+        let result = reconcile_working_tree(repo.path(), &base_sha, "log".to_string()).await;
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn reconcile_keeps_uncommitted_edits_when_head_is_unchanged() {
+        let (repo, base_sha) = init_repo().await;
+        tokio::fs::write(repo.path().join("base.txt"), "edited\n")
+            .await
+            .expect("edit base.txt");
+        let result = reconcile_working_tree(repo.path(), &base_sha, "log".to_string()).await;
+        assert_eq!(result, Some("log".to_string()));
+        // HEAD must still be the base commit — nothing was committed or reset.
+        let head = git_stdout(repo.path(), &["rev-parse", "HEAD"]).await;
+        assert_eq!(head, Some(base_sha));
+    }
+
+    #[tokio::test]
+    async fn reconcile_soft_resets_a_commit_the_coder_made_back_into_the_working_tree() {
+        let (repo, base_sha) = init_repo().await;
+        tokio::fs::write(repo.path().join("base.txt"), "coder committed this\n")
+            .await
+            .expect("edit base.txt");
+        git(repo.path(), &["add", "-A"]).await;
+        git(repo.path(), &["commit", "-m", "coder commit"]).await;
+        let committed_sha = git_stdout(repo.path(), &["rev-parse", "HEAD"])
+            .await
+            .expect("rev-parse HEAD");
+        assert_ne!(
+            committed_sha, base_sha,
+            "test setup: coder must have committed"
+        );
+
+        let result = reconcile_working_tree(repo.path(), &base_sha, "log".to_string()).await;
+
+        assert_eq!(
+            result,
+            Some("log".to_string()),
+            "the coder's edit must survive as a working-tree change"
+        );
+        let head = git_stdout(repo.path(), &["rev-parse", "HEAD"]).await;
+        assert_eq!(
+            head,
+            Some(base_sha),
+            "HEAD must be soft-reset back to base_sha"
+        );
+        let staged = git_stdout(repo.path(), &["diff", "--cached", "--name-only"]).await;
+        assert_eq!(
+            staged,
+            Some(String::new()),
+            "the second `git reset` must unstage — nothing left in the index"
+        );
+        let contents = tokio::fs::read_to_string(repo.path().join("base.txt"))
+            .await
+            .expect("read base.txt");
+        assert_eq!(contents, "coder committed this\n");
     }
 }

@@ -218,6 +218,22 @@ mod tests {
     // Tests
     // ------------------------------------------------------------------
 
+    #[test]
+    fn function_object_extracts_the_wrapped_function_and_rejects_non_object() {
+        let wrapped = json!({"type":"function","function":{"name":"x","description":"d"}});
+        assert_eq!(
+            function_object(&wrapped),
+            Some(&json!({"name":"x","description":"d"}))
+        );
+
+        let flat = json!({"name": "x", "description": "d"});
+        assert_eq!(function_object(&flat), None);
+
+        // `function` present but not an object (malformed schema) — still None.
+        let malformed = json!({"function": "not an object"});
+        assert_eq!(function_object(&malformed), None);
+    }
+
     #[tokio::test]
     async fn declaration_is_flat_name_description_parameters() {
         // adk-model reads `description` / `parameters` at the TOP level of the

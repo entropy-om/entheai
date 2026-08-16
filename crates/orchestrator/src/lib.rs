@@ -1762,6 +1762,20 @@ mod tests {
     }
 
     #[test]
+    fn verify_command_describe_shows_the_literal_shell_command_or_the_pinned_marker() {
+        assert_eq!(
+            VerifyCommand::Shell("./scripts/check.sh --fast".to_string()).describe(),
+            "./scripts/check.sh --fast"
+        );
+        // The auto-detected/pinned path never leaks the pinned byte content —
+        // it always reports the fixed marker, regardless of what was pinned.
+        assert_eq!(
+            VerifyCommand::PinnedScript(b"#!/bin/sh\nexit 0\n".to_vec()).describe(),
+            "./scripts/check.sh (pinned to base)"
+        );
+    }
+
+    #[test]
     fn fanout_policy_follows_config() {
         let default_cfg = Config::from_toml_str("").unwrap();
         let p = fanout_policy(&default_cfg);
