@@ -101,6 +101,13 @@ type Backend = CrosstermBackend<Stdout>;
 enum Role {
     User,
     Assistant,
+    /// A slash-command echo (`/theme ember`, `/help`, ...): styled exactly
+    /// like `User` so it reads the same in the transcript, but excluded from
+    /// `build_prior_turns` — command noise with no matching assistant reply
+    /// (its feedback is a `Tool` line, already excluded) has no business
+    /// being replayed to the model as a prior user turn on every later run.
+    /// `/thaw`'s deliberate context injection stays `Role::User` on purpose.
+    Command,
     /// Inline tool-call/result lines pushed as `ToolStarted`/`ToolFinished`
     /// events arrive; display-only (never fed back into `build_history`).
     Tool,
@@ -112,7 +119,7 @@ impl Role {
     /// full width (so the role reads as a distinct block).
     fn style(self) -> (&'static str, Style, bool) {
         match self {
-            Role::User => (
+            Role::User | Role::Command => (
                 "you> ",
                 Style::default()
                     .fg(Color::Cyan)
@@ -652,7 +659,12 @@ async fn event_loop(
         };
 
     let (perm_tx, mut perm_rx) = mpsc::channel::<PermissionRequest>(8);
-    let (result_tx, mut result_rx) = mpsc::channel::<Result<String, String>>(8);
+    // `Option`, recreated fresh per run (like `events_rx` below) rather than a
+    // single long-lived sender template: a persistent un-dropped `result_tx`
+    // meant `result_rx.recv()` could never return `None` even when a spawned
+    // task panicked before sending, so the "task panicked" recovery arm was
+    // dead code and a panicking run left the UI stuck in `Working` forever.
+    let mut result_rx: Option<mpsc::Receiver<Result<String, String>>> = None;
     // Receiver for the currently running task's progress events, if any. Set on
     // submit, torn down when the run's sender is dropped (channel closes) or the
     // result arrives.
@@ -759,8 +771,25 @@ async fn event_loop(
     let tick_ms = config.viz.tick_ms.max(16);
     let mut ticker = tokio::time::interval(Duration::from_millis(tick_ms));
     // Throttled poll for local Osaurus endpoint (~5s).
-    let mut osaurus_poll = tokio::time::interval(Duration::from_secs(5));
-    osaurus_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Poll the local Osaurus endpoint on its own task, same reasoning as the
+    // fleet poll above: spawning a probe and immediately `.await`ing its
+    // JoinHandle inline in a select! arm blocks that arm (and so the whole
+    // loop) for the probe's full timeout regardless of the spawn — it bought
+    // panic isolation, not concurrency. Drained non-blocking in the tick arm.
+    let (osaurus_tx, mut osaurus_rx) = mpsc::unbounded_channel::<(bool, Vec<String>)>();
+    {
+        let url = app.osaurus_base_url.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(5));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                if osaurus_tx.send(probe_osaurus(&url).await).is_err() {
+                    break; // UI gone — stop polling
+                }
+            }
+        });
+    }
     // Throttled poll for user idle time (~5s) — drives the brain panel's
     // rotation speed (see `BrainState::set_idle_seconds`).
     let mut idle_poll = tokio::time::interval(Duration::from_secs(5));
@@ -1056,7 +1085,7 @@ async fn event_loop(
                         // loop, which is acceptable for a manual command.
                         Action::Submit(text) if is_fleet_command(&text) => {
                             app.push_msg(Msg {
-                                role: Role::User,
+                                role: Role::Command,
                                 text: text.clone(),
                             });
                             match &fleet_fed {
@@ -1102,7 +1131,8 @@ async fn event_loop(
                                 let config = Arc::clone(&config);
                                 let root = root.clone();
                                 let fed_exec = fed_exec.clone();
-                                let result_tx = result_tx.clone();
+                                let (result_tx, rtx_rx) = mpsc::channel::<Result<String, String>>(1);
+                                result_rx = Some(rtx_rx);
                                 let (ftx, frx) =
                                     mpsc::unbounded_channel::<entheai_orchestrator::FanoutEvent>();
                                 fanout_rx = Some(frx);
@@ -1151,7 +1181,8 @@ async fn event_loop(
                                 let policy = Arc::clone(&policy);
                                 let config = Arc::clone(&config);
                                 let perm_tx = perm_tx.clone();
-                                let result_tx = result_tx.clone();
+                                let (result_tx, rtx_rx) = mpsc::channel::<Result<String, String>>(1);
+                                result_rx = Some(rtx_rx);
                                 let (event_tx, event_rx) = mpsc::unbounded_channel::<AgentEvent>();
                                 events_rx = Some(event_rx);
                                 let mem = memory.clone();
@@ -1217,9 +1248,14 @@ async fn event_loop(
                 }
                 app.status = Status::AwaitingPermission { tool: req.tool, args: req.args };
             }
-            result = result_rx.recv() => {
+            maybe_result = async {
+                match result_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
                 dirty = true;
-                match result {
+                match maybe_result {
                     Some(Ok(answer)) => {
                         // A fan-out report carries `seal <12-hex>` lines — keep
                         // the last one for the dashboard board.
@@ -1246,7 +1282,10 @@ async fn event_loop(
                     }
                     Some(Err(err)) => app.push_msg(Msg { role: Role::Error, text: err }),
                     None => {
-                        // The spawned task panicked (sender dropped without sending).
+                        // The one-shot channel closed with no value sent — the
+                        // spawned task panicked. Now genuinely reachable: each
+                        // run gets its own fresh `result_tx`/`result_rx` pair
+                        // (no persistent un-dropped sender masking the close).
                         // Recover the UI from the stuck Working state.
                         app.push_msg(Msg {
                             role: Role::Error,
@@ -1262,6 +1301,7 @@ async fn event_loop(
                 app.run_started = None;
                 events_rx = None;
                 fanout_rx = None;
+                result_rx = None;
                 run_handle = None;
                 app.worker_pool = None;
                 app.streaming_idx = None;
@@ -1489,6 +1529,14 @@ async fn event_loop(
                         dirty = true;
                     }
                 }
+                // Drain Osaurus connectivity polls (spawned above).
+                while let Ok((up, models)) = osaurus_rx.try_recv() {
+                    if app.osaurus_up != up || app.osaurus_models != models {
+                        app.osaurus_up = up;
+                        app.osaurus_models = models;
+                        dirty = true;
+                    }
+                }
                 // Drain fleet liveness polls (spawned above; federation off ->
                 // never sends -> the ring stays empty, matching the old default).
                 while let Ok(tuples) = fleet_rx.try_recv() {
@@ -1604,23 +1652,6 @@ async fn event_loop(
                 {
                     app.notice = None;
                     dirty = true;
-                }
-            }
-            _ = osaurus_poll.tick() => {
-                // Spawn the probe on a separate task so the 600ms HTTP timeout
-                // never blocks the event loop (the loop stays responsive to
-                // keyboard input and progress events even if the endpoint is
-                // slow or unreachable). The result is joined immediately via
-                // tokio::spawn + abort on drop — safe because the select!
-                // branch scope owns the JoinHandle.
-                let url = app.osaurus_base_url.clone();
-                let handle = tokio::spawn(async move { probe_osaurus(&url).await });
-                if let Ok((up, models)) = handle.await {
-                    if app.osaurus_up != up || app.osaurus_models != models {
-                        app.osaurus_up = up;
-                        app.osaurus_models = models;
-                        dirty = true;
-                    }
                 }
             }
             _ = idle_poll.tick() => {
@@ -1960,7 +1991,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             }
             let trimmed = app.input.trim();
             // Commands safe to run mid-flight (read-only or run-management). The
-            // state-mutating ones (/clear, /fanout, /quit) stay idle-only.
+            // state-mutating ones (/clear, /fanout, /quit) stay idle-only — as do
+            // /config and /setup: both unconditionally overwrite `app.status` with
+            // ConfigMenu/SetupMenu (and their Esc/Exit handlers unconditionally
+            // reset it to Idle), which clobbered an in-flight run's Working status
+            // and spinner; opening the menu while idle is the only case that's safe.
             let is_local_command = is_radio_command(trimmed)
                 || is_speak_command(trimmed)
                 || is_checkpoint_command(trimmed)
@@ -1973,8 +2008,6 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 || is_brain_command(trimmed)
                 || is_help_command(trimmed)
                 || is_fleet_command(trimmed)
-                || is_config_command(trimmed)
-                || is_setup_command(trimmed)
                 || is_model_command(trimmed);
             if !trimmed.is_empty() && (idle || is_local_command) {
                 return Action::Submit(std::mem::take(&mut app.input));
@@ -2035,7 +2068,7 @@ fn is_radio_command(text: &str) -> bool {
 /// · `/radio` (usage). There is exactly one track — see `entheai_radio`.
 fn handle_radio_command(app: &mut App, radio: &Radio, text: &str) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     let mut parts = text.split_whitespace().skip(1); // skip "/radio"
@@ -2074,7 +2107,7 @@ fn is_speak_command(text: &str) -> bool {
 /// utterance) · `/speak` (toggle).
 fn handle_speak_command(app: &mut App, voice: &mut Voice, text: &str) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     let mut parts = text.split_whitespace().skip(1); // skip "/speak"
@@ -2133,7 +2166,7 @@ async fn handle_checkpoint_command(
     text: &str,
 ) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     let dir = entheai_memory_pp::default_checkpoint_dir(root);
@@ -2242,7 +2275,7 @@ fn is_current_command(text: &str) -> bool {
 /// the pulse channel like an automatic one).
 fn handle_current_command(app: &mut App, current: &Option<CurrentRuntime>, text: &str) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     let feedback = match current {
@@ -2309,7 +2342,7 @@ fn format_status(status: &entheai_orchestrator::WorkerStatus) -> String {
 /// Forms: `/workers` / `/workers list` · `/workers stop <id>` · `/workers debug <id>`.
 fn handle_workers_command(app: &mut App, text: &str) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     let mut parts = text.split_whitespace().skip(1); // skip "/workers"
@@ -2386,7 +2419,7 @@ fn is_viz_command(text: &str) -> bool {
 /// echoing the switch into history (mirrors the other local commands).
 fn handle_viz_command(app: &mut App, text: &str) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     app.view = if app.view == ViewMode::Swarm {
@@ -2415,7 +2448,7 @@ fn is_zen_command(text: &str) -> bool {
 /// Toggle the full-canvas Zen field in response to `/zen` (mirror of Ctrl-G).
 fn handle_zen_command(app: &mut App, text: &str) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     app.view = if app.view == ViewMode::Zen {
@@ -2448,7 +2481,7 @@ fn is_dashboard_command(text: &str) -> bool {
 /// Ctrl-D), echoing the switch into history.
 fn handle_dashboard_command(app: &mut App, text: &str) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     app.view = if app.view == ViewMode::Dashboard {
@@ -2479,7 +2512,7 @@ fn is_theme_command(text: &str) -> bool {
 /// colours (lineage gold & co) never change with the theme — the entity rule.
 fn handle_theme_command(app: &mut App, text: &str) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     app.palette = match text.split_whitespace().nth(1) {
@@ -2529,7 +2562,7 @@ fn is_help_command(text: &str) -> bool {
 /// surface is discoverable without leaving the TUI.
 fn handle_help_command(app: &mut App) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: "/help".to_string(),
     });
     let mut body = String::from("commands");
@@ -2555,7 +2588,7 @@ fn is_config_command(text: &str) -> bool {
 /// Open the interactive configuration menu overlay.
 fn handle_config_command(app: &mut App) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: "/config".to_string(),
     });
     app.status = Status::ConfigMenu { selected_idx: 0 };
@@ -2576,7 +2609,7 @@ fn is_setup_command(text: &str) -> bool {
 /// Open the interactive setup wizard modal overlay.
 fn handle_setup_command(app: &mut App) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: "/setup".to_string(),
     });
     app.status = Status::SetupMenu { step_idx: 0 };
@@ -2620,7 +2653,7 @@ fn is_fanout_command(text: &str) -> bool {
 /// (`app.fanout`, read by the run path) instead of the single-agent loop.
 fn handle_fanout_command(app: &mut App, text: &str) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     app.fanout = match text.split_whitespace().nth(1) {
@@ -2649,7 +2682,7 @@ fn is_model_command(text: &str) -> bool {
 /// switching means relaunching with `--model "<provider>/<model>"`.
 fn handle_model_command(app: &mut App) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: "/model".to_string(),
     });
     app.push_msg(Msg {
@@ -2736,7 +2769,7 @@ fn build_prior_turns(messages: &[Msg]) -> Vec<(Arc<str>, Arc<str>)> {
         .filter_map(|m| match m.role {
             Role::User => Some(("user".into(), Arc::from(m.text.as_str()))),
             Role::Assistant => Some(("assistant".into(), Arc::from(m.text.as_str()))),
-            Role::Tool | Role::Error => None,
+            Role::Command | Role::Tool | Role::Error => None,
         })
         .collect()
 }
@@ -4459,6 +4492,14 @@ mod tests {
             Msg {
                 role: Role::Error,
                 text: "boom".into(),
+            },
+            // A slash-command echo (`/theme ember`, `/help`, ...) has no
+            // matching assistant reply — its feedback is a `Tool` line,
+            // already excluded — so it must not be replayed as a prior user
+            // turn on every later run.
+            Msg {
+                role: Role::Command,
+                text: "/theme ember".into(),
             },
         ];
         let hist = build_prior_turns(&messages);
