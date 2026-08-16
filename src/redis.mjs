@@ -24,7 +24,7 @@ export function encodeCommand(...parts) {
   let out = `*${parts.length}\r\n`;
   for (const p of parts) {
     const s = String(p);
-    out += `$${s.length}\r\n${s}\r\n`;
+    out += `$${enc.encode(s).length}\r\n${s}\r\n`;
   }
   return enc.encode(out);
 }

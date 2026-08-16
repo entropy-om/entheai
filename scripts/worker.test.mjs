@@ -746,14 +746,14 @@ test("sovereign: checkout POSTs a hosted session to Stripe with catalog prices, 
   assert.equal(form.get("line_items[0][price_data][currency]"), "eur");
   assert.equal(form.get("line_items[0][price_data][product_data][name]"), "hoodie");
   assert.equal(form.get("line_items[0][price_data][unit_amount]"), String(STORE_CATALOG.hoodie));
-  assert.equal(form.get("line_items[1][price_data][unit_amount]"), "4444", "override wins over catalog");
+  assert.equal(form.get("line_items[1][price_data][unit_amount]"), String(STORE_CATALOG.vinyl), "catalog price wins; client override ignored");
   assert.equal(
     form.get("line_items[2][price_data][unit_amount]"),
     String(STORE_CATALOG["vakedide-supporter"])
   );
 });
 
-test("sovereign: checkout defaults to backer, honors explicit tiers, and defaults quantities", async () => {
+test("sovereign: checkout defaults to backer, ignores client tier, and defaults quantities", async () => {
   const seen = [];
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
@@ -784,13 +784,13 @@ test("sovereign: checkout defaults to backer, honors explicit tiers, and default
   assert.equal(seen[0].get("metadata[tier]"), "backer", "default tier is backer");
   assert.equal(seen[0].get("line_items[0][price_data][unit_amount]"), "3500");
   assert.equal(seen[0].get("line_items[0][quantity]"), "1", "quantity defaults to 1");
-  assert.equal(seen[1].get("metadata[tier]"), "presence", "explicit tier is honored");
-  assert.equal(seen[2].get("metadata[tier]"), "member", "explicit tier is honored");
+  assert.equal(seen[1].get("metadata[tier]"), "backer", "client tier ignored; scarf maps to backer");
+  assert.equal(seen[2].get("metadata[tier]"), "backer", "client tier ignored; tshirt maps to backer");
   assert.equal(seen[2].get("line_items[0][quantity]"), "1", "invalid quantity defaults to 1");
   assert.equal(seen[3].get("metadata[tier]"), "member", "sku match is case-insensitive");
 });
 
-test("sovereign: checkout validates items, skus, and overrides locally without calling Stripe", async () => {
+test("sovereign: checkout validates items and skus locally without calling Stripe", async () => {
   let calls = 0;
   const realFetch = globalThis.fetch;
   globalThis.fetch = async () => {
@@ -803,8 +803,6 @@ test("sovereign: checkout validates items, skus, and overrides locally without c
       [JSON.stringify({}), "items required"],
       [JSON.stringify({ items: [{ qty: 1 }] }), "item sku required"],
       [JSON.stringify({ items: [{ sku: "quantum-teapot" }] }), "unknown sku: quantum-teapot"],
-      [JSON.stringify({ items: [{ sku: "tshirt", unit_amount: -5 }] }), "invalid unit_amount for tshirt"],
-      [JSON.stringify({ items: [{ sku: "tshirt", unit_amount: 1.5 }] }), "invalid unit_amount for tshirt"],
       ["not json", "body must be JSON"],
     ];
     for (const [body, message] of cases) {

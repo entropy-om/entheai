@@ -619,7 +619,7 @@ export async function handleStripeCheckout(request, env) {
   if (!Array.isArray(body.items) || body.items.length === 0) {
     return json({ error: "items required" }, 400, headers);
   }
-  let tier = typeof body.tier === "string" && body.tier ? body.tier : "backer";
+  let tier = "backer"; // derived from SKU server-side below, never client-supplied
   const form = new URLSearchParams();
   form.set("mode", "payment");
   form.set("success_url", "https://store.vaked.dev/?checkout={CHECKOUT_SESSION_ID}");
@@ -637,17 +637,10 @@ export async function handleStripeCheckout(request, env) {
     if (skuLower.includes("vakedide") || skuLower.includes("supporter")) {
       tier = "member";
     }
-    let price;
-    if (item.unit_amount !== undefined) {
-      if (!Number.isInteger(item.unit_amount) || item.unit_amount <= 0) {
-        return json({ error: `invalid unit_amount for ${sku}` }, 400, headers);
-      }
-      price = item.unit_amount;
-    } else {
-      price = STORE_CATALOG[skuLower];
-      if (typeof price !== "number") {
-        return json({ error: `unknown sku: ${sku}` }, 400, headers);
-      }
+    // Price is fixed by the server catalog — the client cannot set it.
+    const price = STORE_CATALOG[skuLower];
+    if (typeof price !== "number") {
+      return json({ error: `unknown sku: ${sku}` }, 400, headers);
     }
     const qty = Number.isInteger(item.qty) && item.qty > 0 ? item.qty : 1;
     const p = `line_items[${i}]`;
