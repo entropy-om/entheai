@@ -229,6 +229,16 @@
         </div>
       </div>
 
+      <!-- email entry (second factor) -->
+      <div id="email-wrap" hidden>
+        <div class="hint" style="margin-bottom: 14px;">
+          Enter the email you used at checkout to reclaim your key.
+        </div>
+        <input type="email" id="email-input" placeholder="you@example.com" autocomplete="email"
+               style="width: 100%; background: var(--bg-inset); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; color: var(--text); font-family: var(--mono); font-size: 14px; margin-bottom: 12px; box-sizing: border-box;">
+        <button class="copy" type="button" id="email-submit">Claim key</button>
+      </div>
+
       <!-- loading / pending / error -->
       <div id="status-wrap">
         <div class="status" id="status-line">
@@ -310,19 +320,23 @@
     cmd: document.getElementById("cmd"),
     cmdKey: document.getElementById("cmd-key"),
     copyKey: document.getElementById("copy-key"),
-    copyCmd: document.getElementById("copy-cmd")
+    copyCmd: document.getElementById("copy-cmd"),
+    emailWrap: document.getElementById("email-wrap"),
+    emailInput: document.getElementById("email-input"),
+    emailSubmit: document.getElementById("email-submit")
   };
 
   var state = {
     key: null,
     sessionId: null,
+    email: null,
     tries: 0,
     timer: null,
     done: false
   };
 
   function show(which) {
-    ["successWrap", "pendingWrap", "errorWrap", "nosessionWrap"].forEach(function (name) {
+    ["successWrap", "pendingWrap", "errorWrap", "nosessionWrap", "emailWrap"].forEach(function (name) {
       els[name].hidden = (name !== which);
     });
     els.statusWrap.hidden = (which !== null && which !== "status");
@@ -378,7 +392,7 @@
     state.tries += 1;
     setAttempt(state.tries);
 
-    fetch("/api/license/claim?session_id=" + encodeURIComponent(state.sessionId))
+    fetch("/api/license/claim?session_id=" + encodeURIComponent(state.sessionId) + "&email=" + encodeURIComponent(state.email))
       .then(function (res) {
         if (res.status === 404) {
           return Promise.reject({ code: "pending" });
@@ -450,9 +464,17 @@
     els.spinner.hidden = true;
     setStatus("No session id in URL", "pending");
   } else {
-    show("status");
-    setStatus("Contacting the license server…");
-    fetchKey();
+    show("email");
+    function beginClaim() {
+      var email = els.emailInput.value.trim();
+      if (!email) { setStatus("Enter your email to continue", "pending"); return; }
+      state.email = email;
+      show("status");
+      setStatus("Contacting the license server…");
+      fetchKey();
+    }
+    els.emailSubmit.addEventListener("click", beginClaim);
+    els.emailInput.addEventListener("keydown", function (e) { if (e.key === "Enter") beginClaim(); });
   }
 })();
 </script>
