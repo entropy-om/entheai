@@ -223,6 +223,9 @@ impl Player {
                 Ok(s) => Some(s),
                 Err(e) => {
                     self.emit(Event::Error(format!("decode embedded track: {e}")));
+                    // Report once and stop; `advance()` ticks every 200ms and
+                    // would otherwise re-emit this forever (only `Next` retries).
+                    self.enabled = false;
                     return;
                 }
             },
@@ -241,6 +244,10 @@ impl Player {
                 title: title.to_string(),
                 loop_count: self.loop_count,
             });
+        } else {
+            // No audio device (headless / SSH / CI): `sink()` already emitted the
+            // error; disable so the 200ms tick doesn't flood the TUI with it.
+            self.enabled = false;
         }
     }
 

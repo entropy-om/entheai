@@ -475,11 +475,25 @@ async fn main() -> anyhow::Result<()> {
 /// built-in fallback so crash reporting works out of the box. The returned guard
 /// flushes events on drop, so `main` must hold it.
 fn init_telemetry(config_dsn: Option<String>) -> sentry::ClientInitGuard {
-    let dsn = config_dsn
+    let raw = config_dsn
         .or_else(|| std::env::var("SENTRY_DSN").ok())
         .unwrap_or_else(|| {
             "https://ea8a1a1d46d9c33b709aae544ff24a79@o4511756214075392.ingest.de.sentry.io/4511756233474128".to_string()
         });
+    // `sentry::init` panics on a malformed DSN (`into_dsn().expect(..)`), so
+    // parse it ourselves: empty = telemetry off (the documented opt-out), an
+    // invalid value = warn + off instead of a startup crash.
+    let dsn: Option<sentry::types::Dsn> = if raw.trim().is_empty() {
+        None
+    } else {
+        match raw.parse::<sentry::types::Dsn>() {
+            Ok(d) => Some(d),
+            Err(e) => {
+                log::warn!("telemetry disabled: invalid sentry DSN ({e})");
+                None
+            }
+        }
+    };
     sentry::init((
         dsn,
         sentry::ClientOptions {
@@ -1034,6 +1048,9 @@ async fn build_tools(
                     std::time::Duration::from_secs(cfg.mcp_defaults.spawn_timeout_secs),
                 )
                 .await?;
+                client.set_call_timeout(std::time::Duration::from_secs(
+                    cfg.mcp_defaults.call_timeout_secs,
+                ));
                 let tools = entheai_mcp::load_tools(client).await?;
                 Ok::<_, entheai_mcp::McpError>((guard, tools))
             },

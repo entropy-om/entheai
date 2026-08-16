@@ -181,6 +181,18 @@ impl Federation {
         match batch.next().await {
             Some(Ok(msg)) => {
                 let item: WorkItem = serde_json::from_slice(&msg.payload)?;
+                if !types::is_valid_sha(&item.base_sha) {
+                    // Poison item: never let a non-SHA reach the cache path / git
+                    // args. Ack so it isn't redelivered forever, then skip it.
+                    log::warn!(
+                        "federation: dropping work item {}#{} with invalid base_sha {:?}",
+                        item.session,
+                        item.index,
+                        item.base_sha
+                    );
+                    let _ = msg.ack().await;
+                    return Ok(None);
+                }
                 Ok(Some(Claimed { item, msg }))
             }
             _ => Ok(None),

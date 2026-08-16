@@ -194,6 +194,11 @@ async fn run_fanout_core(req: &JobRequest) -> anyhow::Result<Value> {
 
     // Per-call overrides on a config clone (never mutates the shared config).
     let mut cfg = cfg;
+    // The documented "Orchestrator model id" arg: pin [router].orchestrator so
+    // entheai_router::orchestrator_model picks it up (was accepted, then ignored).
+    if let Some(model) = req.model.as_deref().filter(|m| !m.is_empty()) {
+        cfg.router.orchestrator = Some(model.to_string());
+    }
     if let Some(verify) = req.verify.as_deref().filter(|v| !v.is_empty()) {
         cfg.fanout.verify = Some(verify.to_string());
     }

@@ -614,16 +614,25 @@ impl Default for PermissionConfig {
 /// Cross-cutting MCP settings (siblings of the per-server `[mcp.<name>]` map).
 #[derive(Debug, Clone, Deserialize)]
 pub struct McpDefaultsConfig {
+    /// Bound on spawning + the initialize handshake + `tools/list` per server.
     #[serde(default = "default_mcp_spawn_timeout_secs")]
     pub spawn_timeout_secs: u64,
+    /// Bound on a single `tools/call` (tool calls legitimately outlive the
+    /// spawn bound: web fetch, research, build tools). Default 300.
+    #[serde(default = "default_mcp_call_timeout_secs")]
+    pub call_timeout_secs: u64,
 }
 fn default_mcp_spawn_timeout_secs() -> u64 {
     10
+}
+fn default_mcp_call_timeout_secs() -> u64 {
+    300
 }
 impl Default for McpDefaultsConfig {
     fn default() -> Self {
         Self {
             spawn_timeout_secs: default_mcp_spawn_timeout_secs(),
+            call_timeout_secs: default_mcp_call_timeout_secs(),
         }
     }
 }
@@ -1191,6 +1200,7 @@ mod tests {
         assert!(cfg.permission.allowlist.is_empty());
         assert!(cfg.permission.fanout_auto_approve);
         assert_eq!(cfg.mcp_defaults.spawn_timeout_secs, 10);
+        assert_eq!(cfg.mcp_defaults.call_timeout_secs, 300);
         assert_eq!(cfg.memory.embed_timeout_secs, 30);
         assert_eq!(cfg.viz.tick_ms, 90);
         assert_eq!(cfg.viz.plan_rows_cap, 8);

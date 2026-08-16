@@ -139,7 +139,11 @@ impl crate::CoderExecutor for CopilotExecutor {
             cmd.arg("--model").arg(&self.model);
         }
         cmd.current_dir(worktree_path)
-            .env(DEPTH_ENV, (self.depth + 1).to_string());
+            .env(DEPTH_ENV, (self.depth + 1).to_string())
+            // The pool drops this future on `coder_timeout` / `/workers stop`;
+            // without kill_on_drop the copilot child would keep editing a
+            // worktree the guard is about to force-remove.
+            .kill_on_drop(true);
 
         let out = cmd.output().await.ok()?;
         if !out.status.success() {

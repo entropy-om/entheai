@@ -140,8 +140,10 @@ fn synthesize_from_llms_txt(txt: &str, host: &str, source: &str) -> (String, Str
         }
     }
     let mut description = blockquote.or(first_para).unwrap_or_default();
-    if description.len() > 200 {
-        description.truncate(200);
+    // Truncate on a char boundary: `String::truncate` panics mid-codepoint and
+    // this text comes straight from a remote llms.txt (CJK blurbs are common).
+    if let Some((cut, _)) = description.char_indices().nth(200) {
+        description.truncate(cut);
     }
     let body = format!(
         "> Skill added from {source} (an llms.txt docs index). Full text may be at the site's /llms-full.txt.\n\n{txt}"
@@ -437,6 +439,18 @@ mod tests {
             synthesize_from_llms_txt(txt, "example.com", "https://example.com/llms.txt");
         assert_eq!(name, "example.com");
         assert_eq!(desc, "No heading here.");
+    }
+
+    #[test]
+    fn synthesize_truncates_multibyte_description_on_char_boundary() {
+        // 300 x "é" = 600 bytes; the old byte-index truncate(200) landed
+        // mid-codepoint and panicked.
+        let long = "é".repeat(300);
+        let txt = format!("# Título\n\n> {long}\n");
+        let (_name, desc, _body) =
+            synthesize_from_llms_txt(&txt, "example.com", "https://example.com/llms.txt");
+        assert_eq!(desc.chars().count(), 200);
+        assert!(desc.chars().all(|c| c == 'é'));
     }
 
     #[test]

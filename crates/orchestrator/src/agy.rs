@@ -135,7 +135,10 @@ impl crate::CoderExecutor for AgyExecutor {
                     entheai_permission::Mode::Yolo => "yolo",
                     entheai_permission::Mode::Ask => "ask",
                 },
-            );
+            )
+            // Same as copilot: the pool drops this future on timeout/stop, so
+            // the agy child must die with it, not outlive the worktree.
+            .kill_on_drop(true);
         let out = cmd.output().await.ok()?;
         if !out.status.success() {
             log::warn!(

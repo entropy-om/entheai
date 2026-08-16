@@ -385,6 +385,11 @@ fn parse_verdict(reply: &str) -> Option<(Verdict, f32)> {
     // The model may wrap the JSON in fences or prose — take the first {...}.
     let start = reply.find('{')?;
     let end = reply.rfind('}')?;
+    if end < start {
+        // "...} see {" — a stray brace pair the wrong way round; slicing would
+        // panic and this runs inline in the fan-out loop (never panic).
+        return None;
+    }
     let slice = &reply[start..=end];
     let v: serde_json::Value = serde_json::from_str(slice).ok()?;
     let confidence = v.get("confidence").and_then(|c| c.as_f64()).unwrap_or(0.0) as f32;
@@ -580,6 +585,9 @@ enabled = false
         );
         assert!(matches!(prose, Some((Verdict::Approve, c)) if (c - 0.6).abs() < 0.01));
         assert!(parse_verdict("not json at all").is_none());
+        // Braces the wrong way round must degrade to None, never panic on the
+        // slice (this runs inline in the fan-out loop).
+        assert!(parse_verdict("done } see {").is_none());
     }
 
     #[test]

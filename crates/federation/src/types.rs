@@ -1,6 +1,15 @@
 //! Wire DTOs + object-store key helpers for the F2 work-queue.
 use serde::{Deserialize, Serialize};
 
+/// Is `s` a well-formed git object id (40-hex SHA-1 or 64-hex SHA-256)?
+/// `WorkItem::base_sha` arrives off the wire and is used both as a filesystem
+/// path component on every worker (`<cache>/<base_sha>.git`, followed by
+/// `remove_dir_all`) and as a git argument (`<base_sha>..HEAD`), so anything
+/// else — `../../..`, `-`-prefixed option injection — must be rejected before use.
+pub fn is_valid_sha(s: &str) -> bool {
+    matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// A unit of coder work enqueued on `entheai.work.coder`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkItem {
@@ -50,6 +59,18 @@ pub fn result_key(session: &str, index: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_valid_sha_accepts_object_ids_only() {
+        assert!(is_valid_sha(&"a".repeat(40)));
+        assert!(is_valid_sha(&"0123456789abcdef".repeat(4)));
+        assert!(!is_valid_sha(""));
+        assert!(!is_valid_sha("HEAD"));
+        assert!(!is_valid_sha("../../../home/u/proj"));
+        assert!(!is_valid_sha(&format!("-{}", "a".repeat(39))));
+        assert!(!is_valid_sha(&"g".repeat(40)));
+        assert!(!is_valid_sha(&"a".repeat(41)));
+    }
 
     #[test]
     fn subject_and_keys_are_stable() {
