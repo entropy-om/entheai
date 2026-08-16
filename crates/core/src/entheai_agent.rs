@@ -357,18 +357,24 @@ impl EntheaiAgent {
         // turn boundary so it only holds the LAST turn's stream.
         let mut streamed = String::new();
         let mut stream_err: Option<anyhow::Error> = None;
-        // Per-event-gap idle timeout: 2× the configured value (a tool call
-        // emits nothing for up to run_shell's 120s cap, so the bare value is
-        // too tight). Any event resets the timer.
+        // Per-event-gap idle timeout on the provider: 2× the configured
+        // value. Suspended while a tool call is in flight (FunctionCall seen,
+        // FunctionResponse not yet) — that window is tool/permission time, not
+        // provider idleness; mirrors `event_bridge::run_with_events`.
         let idle = self.request_timeout.saturating_mul(2);
+        let mut awaiting_tool = false;
         loop {
-            let next = match tokio::time::timeout(idle, stream.next()).await {
-                Ok(next) => next,
-                Err(_) => {
-                    stream_err = Some(anyhow::anyhow!(
-                        "provider stream idle timeout after {idle:?}"
-                    ));
-                    break;
+            let next = if awaiting_tool {
+                stream.next().await
+            } else {
+                match tokio::time::timeout(idle, stream.next()).await {
+                    Ok(next) => next,
+                    Err(_) => {
+                        stream_err = Some(anyhow::anyhow!(
+                            "provider stream idle timeout after {idle:?}"
+                        ));
+                        break;
+                    }
                 }
             };
             let Some(ev) = next else { break };
@@ -398,6 +404,12 @@ impl EntheaiAgent {
                     .parts
                     .iter()
                     .any(|p| matches!(p, Part::FunctionResponse { .. }));
+                if has_calls {
+                    awaiting_tool = true;
+                }
+                if has_results {
+                    awaiting_tool = false;
+                }
                 let joined: String = content.parts.iter().filter_map(|p| p.text()).collect();
                 if !joined.is_empty() && !has_calls && !has_results {
                     text = joined;
