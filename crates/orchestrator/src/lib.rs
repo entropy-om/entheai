@@ -1432,11 +1432,15 @@ pub async fn run_fanout_detailed(
         Some(integration)
     };
 
-    // 6. Worktree/branch cleanup is owned by `guard`: it runs when the guard
-    // drops at the end of this function (and on any early-return/panic above),
-    // removing every worktree DIRECTORY but deleting only merged branches (Bug 1),
-    // and dropping the pool temp dir (Bug 5). The integration branch lives in the
-    // root repo, not a worktree, so it is untouched and kept for review.
+    // 6. Worktree/branch cleanup is owned by `guard`. On this normal-completion
+    // path, `finish()` does it via async git calls, removing every worktree
+    // DIRECTORY but deleting only merged branches (Bug 1) and dropping the pool
+    // temp dir (Bug 5) — without blocking a tokio worker thread on N sequential
+    // synchronous subprocess spawns the way `Drop::drop` would (that stays the
+    // fallback for any early-return/panic above, where async cleanup isn't
+    // available). The integration branch lives in the root repo, not a
+    // worktree, so it is untouched and kept for review.
+    guard.finish().await;
 
     if let Some(tx) = &events {
         let _ = tx.send(FanoutEvent::Done {
