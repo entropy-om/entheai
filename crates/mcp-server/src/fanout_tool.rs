@@ -78,8 +78,14 @@ pub fn job_path(id: &str) -> PathBuf {
 }
 
 fn write_job(rec: &JobRecord) -> anyhow::Result<()> {
-    std::fs::create_dir_all(jobs_dir())?;
-    std::fs::write(job_path(&rec.id), serde_json::to_string_pretty(rec)?)?;
+    let dir = jobs_dir();
+    std::fs::create_dir_all(&dir)?;
+    // Atomic: a plain truncate-then-write could be observed mid-write by a
+    // concurrent `entheai_job_status` poll (empty/partial JSON, parse error).
+    let json = serde_json::to_string_pretty(rec)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
+    std::io::Write::write_all(&mut tmp, json.as_bytes())?;
+    tmp.persist(job_path(&rec.id))?;
     Ok(())
 }
 
@@ -252,7 +258,7 @@ async fn run_fanout_core(req: &JobRequest) -> anyhow::Result<Value> {
 
     let run = match req.deadline_minutes {
         Some(min) if min > 0 => tokio::time::timeout(
-            Duration::from_secs(min * 60),
+            Duration::from_secs(min.saturating_mul(60)),
             entheai_orchestrator::run_fanout_detailed(
                 &cfg,
                 &root,

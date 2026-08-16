@@ -11,7 +11,7 @@
 //! history (that lives on `InvocationContext`, one level up, never handed to
 //! callbacks — confirmed against the vendored adk-core 1.0.0 source, no
 //! downcast escape hatch exists either). That gap is closed instead in
-//! `crate::event_bridge`, which drives `EntheaiAgent::run`'s `EventStream`
+//! `crate::event_bridge`, which drives `EntheaiAgent::run_with_history`'s `EventStream`
 //! directly and so has natural, per-run local state to accumulate into
 //! (Task 6).
 
@@ -80,9 +80,13 @@ pub fn before_model_retrieval_callback(
                         };
                         match retrieved {
                             Ok(Some(ctx_text)) => {
+                                // "system"-role content is silently dropped by adk-rust's
+                                // native Gemini client (only user/model/function are
+                                // forwarded) — inject as "user", matching how adk-agent
+                                // itself delivers `instruction` (llm_agent.rs).
                                 request
                                     .contents
-                                    .insert(user_idx, Content::new("system").with_text(ctx_text));
+                                    .insert(user_idx, Content::new("user").with_text(ctx_text));
                             }
                             Ok(None) => {}
                             Err(e) => {
@@ -111,7 +115,7 @@ pub fn before_model_retrieval_callback(
                             }
                             request
                                 .contents
-                                .insert(user_idx, Content::new("system").with_text(brief));
+                                .insert(user_idx, Content::new("user").with_text(brief));
                         }
                     }
                 }
@@ -346,13 +350,23 @@ mod tests {
         let BeforeModelResult::Continue(new_request) = result else {
             panic!("expected Continue, callback did not short-circuit");
         };
-        assert!(
-            new_request.contents.iter().any(|c| c
-                .parts
+        let injected = new_request.contents.iter().find(|c| {
+            c.parts
                 .iter()
-                .any(|p| p.text().is_some_and(|t| t.contains("frozen:nixos")))),
+                .any(|p| p.text().is_some_and(|t| t.contains("frozen:nixos")))
+        });
+        assert!(
+            injected.is_some(),
             "expected the frozen brief injected into the request, got {:?}",
             new_request.contents
+        );
+        // Must be "user"-role: adk-rust's native Gemini client only forwards
+        // user/model/function content and silently drops "system" entries,
+        // which used to make this injection a no-op on Gemini.
+        assert_eq!(
+            injected.unwrap().role,
+            "user",
+            "frozen brief must be injected as user-role content, not system"
         );
 
         let ev = event_rx.try_recv().expect("expected a FrozenWoke event");

@@ -108,6 +108,10 @@ pub enum LoadError {
         manifest: String,
         actual: String,
     },
+    DimOverflow {
+        dim: usize,
+        in_features: usize,
+    },
 }
 
 impl fmt::Display for LoadError {
@@ -150,6 +154,9 @@ impl fmt::Display for LoadError {
                     f,
                     "manifest {what} mismatch for {file}: manifest {manifest} != actual {actual}"
                 )
+            }
+            Self::DimOverflow { dim, in_features } => {
+                write!(f, "dim {dim} × in_features {in_features} overflows usize")
             }
         }
     }
@@ -210,14 +217,17 @@ fn validate(raw: RawMatrix, path: &Path) -> Result<AyeosMatrix, LoadError> {
             group_size,
         });
     }
-    let expected_codes = dim * in_features / codes::CODES_PER_WORD;
+    let dim_x_in = dim
+        .checked_mul(in_features)
+        .ok_or(LoadError::DimOverflow { dim, in_features })?;
+    let expected_codes = dim_x_in / codes::CODES_PER_WORD;
     if codes.len() != expected_codes {
         return Err(LoadError::CodeCountMismatch {
             actual: codes.len(),
             expected: expected_codes,
         });
     }
-    let expected_scales = dim * in_features / group_size;
+    let expected_scales = dim_x_in / group_size;
     if scales.len() != expected_scales {
         return Err(LoadError::ScaleCountMismatch {
             actual: scales.len(),
@@ -396,6 +406,23 @@ mod tests {
         }
         table
     };
+
+    #[test]
+    fn validate_rejects_dim_times_in_features_overflow_instead_of_wrapping() {
+        let raw = RawMatrix {
+            name: "bogus".to_string(),
+            dim: usize::MAX,
+            in_features: 64,
+            group_size: 64,
+            codes: Vec::new(),
+            scales: Vec::new(),
+        };
+        let err = validate(raw, Path::new("bogus.json")).unwrap_err();
+        assert!(
+            matches!(err, LoadError::DimOverflow { dim, in_features } if dim == usize::MAX && in_features == 64),
+            "unexpected error: {err}"
+        );
+    }
 
     #[test]
     fn global_invariants_over_all_168_matrices() {

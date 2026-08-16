@@ -107,6 +107,9 @@ impl entheai_orchestrator::CoderExecutor for FederationExecutor {
         )
         .await
         .ok()?;
+        // Single-use: reclaim it from the object store now instead of
+        // waiting on `max_age` — best-effort, a failed delete is harmless.
+        let _ = self.fed.delete_bundle(&result.result_bundle_key).await;
         // Squash-apply the delta as UNCOMMITTED changes. On ANY failure, restore
         // the worktree to a clean base — otherwise a half-applied/conflicted merge
         // would be left for the local fallback (or `commit_all`) to snapshot and

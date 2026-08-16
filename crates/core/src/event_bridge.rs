@@ -1,4 +1,4 @@
-//! Drives `EntheaiAgent::run`'s `adk_rust::EventStream` and translates it into
+//! Drives `EntheaiAgent::run_with_history`'s `adk_rust::EventStream` and translates it into
 //! the TUI/CLI-facing `AgentEvent` vocabulary, closing the post-task memory
 //! gap `crate::memory_callbacks` left open (see its module doc).
 //!

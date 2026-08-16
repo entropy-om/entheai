@@ -66,7 +66,13 @@ pub struct Claimed {
 
 impl Claimed {
     pub async fn ack(&self) {
-        let _ = self.msg.ack().await;
+        if let Err(e) = self.msg.ack().await {
+            log::warn!(
+                "federation: ack {}::{} failed ({e}) — item may be redelivered",
+                self.item.session,
+                self.item.index
+            );
+        }
     }
 }
 
@@ -115,10 +121,14 @@ impl Federation {
             })
             .await?;
         // Idempotent-ish: ignore an already-exists error on the bucket.
+        // `max_age` bounds the hub's disk: nothing else ever deletes a base
+        // bundle (one per distinct base sha, up to `BUNDLE_CAP` each) or a
+        // result bundle, so without this the store grows without limit.
         let _ = self
             .js
             .create_object_store(async_nats::jetstream::object_store::Config {
                 bucket: BUNDLES_BUCKET.into(),
+                max_age: Duration::from_secs(24 * 3600),
                 ..Default::default()
             })
             .await;
@@ -147,6 +157,16 @@ impl Federation {
         Ok(buf)
     }
 
+    /// Delete a bundle from the object store once it's no longer needed
+    /// (e.g. a result bundle right after the dispatcher has fetched and
+    /// applied it) — `max_age` on the bucket bounds everything eventually,
+    /// but a result bundle is single-use and can be reclaimed immediately.
+    pub async fn delete_bundle(&self, key: &str) -> anyhow::Result<()> {
+        let store = self.js.get_object_store(BUNDLES_BUCKET).await?;
+        store.delete(key).await?;
+        Ok(())
+    }
+
     pub async fn dispatch(&self, item: &WorkItem) -> anyhow::Result<()> {
         let payload = serde_json::to_vec(item)?;
         self.js
@@ -166,7 +186,13 @@ impl Federation {
                     durable_name: Some(DURABLE.into()),
                     filter_subject: WORK_SUBJECT.into(),
                     ack_policy: async_nats::jetstream::consumer::AckPolicy::Explicit,
-                    ack_wait: self.deadline,
+                    // `self.deadline` is also the coder's own processing
+                    // budget (`process_one`'s ack only fires after prepare
+                    // + coder run + bundle upload all finish); using it
+                    // as-is for `ack_wait` left no room for that extra
+                    // overhead, so a normal-length run got redelivered to
+                    // another worker mid-execution and ran twice.
+                    ack_wait: self.deadline.saturating_mul(2),
                     max_deliver: 3,
                     ..Default::default()
                 },
@@ -180,7 +206,20 @@ impl Federation {
             .await?;
         match batch.next().await {
             Some(Ok(msg)) => {
-                let item: WorkItem = serde_json::from_slice(&msg.payload)?;
+                let item: WorkItem = match serde_json::from_slice(&msg.payload) {
+                    Ok(item) => item,
+                    Err(e) => {
+                        // A payload that fails to parse will never parse on
+                        // redelivery either — Term it instead of letting `?`
+                        // leave it neither acked nor terminated (JetStream
+                        // then redelivers it up to `max_deliver` times, and
+                        // after that it sits in the stream forever since
+                        // WorkQueue only removes on ack).
+                        log::warn!("federation: dropping unparseable work item: {e}");
+                        let _ = msg.ack_with(async_nats::jetstream::AckKind::Term).await;
+                        return Ok(None);
+                    }
+                };
                 if !types::is_valid_sha(&item.base_sha) {
                     // Poison item: never let a non-SHA reach the cache path / git
                     // args. Ack so it isn't redelivered forever, then skip it.

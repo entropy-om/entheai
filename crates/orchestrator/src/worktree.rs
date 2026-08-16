@@ -857,7 +857,7 @@ exit 1
             root,
             &base,
             "entheai/guard-finish/integration",
-            &[wt0.branch.clone()],
+            std::slice::from_ref(&wt0.branch),
         )
         .await
         .expect("integrate");

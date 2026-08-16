@@ -519,6 +519,7 @@ impl TernaryModel {
 
     /// Full prefill: final-token logits for `tokens` (fresh cache).
     pub fn logits_last(&self, tokens: &[u32]) -> anyhow::Result<Vec<f32>> {
+        anyhow::ensure!(!tokens.is_empty(), "empty prompt");
         let mut cache = KVCache::new();
         let hidden = self.forward_hidden(&mut cache, tokens)?;
         Ok(self.lm_head(&hidden[HIDDEN * (tokens.len() - 1)..]))
@@ -622,6 +623,20 @@ mod tests {
             return PathBuf::from(dir);
         }
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../pocoo.vaked.dev/demos/quantal")
+    }
+
+    #[test]
+    fn logits_last_rejects_an_empty_prompt_instead_of_underflowing() {
+        let m = TernaryModel::load(data_dir()).unwrap();
+        let err = m.logits_last(&[]).unwrap_err();
+        assert!(err.to_string().contains("empty prompt"));
+    }
+
+    #[test]
+    fn generate_rejects_an_empty_prompt_instead_of_underflowing() {
+        let m = TernaryModel::load(data_dir()).unwrap();
+        let err = m.generate(&[], 8).unwrap_err();
+        assert!(err.to_string().contains("empty prompt"));
     }
 
     #[test]
