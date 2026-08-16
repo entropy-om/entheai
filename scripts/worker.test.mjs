@@ -287,6 +287,15 @@ test("webhook acknowledges but does not fulfill unpaid or unrelated events", asy
   }
 });
 
+test("webhook rejects oversized bodies with 413 before any fulfillment", async () => {
+  const e = licenseEnv();
+  const big = checkoutEvent().padEnd(32 * 1024 + 1, " ");
+  const res = await handleStripe(await webhook(big), e);
+  assert.equal(res.status, 413);
+  assert.deepEqual(await res.json(), { error: "body too large" });
+  assert.equal(e.__store.store.size, 0, "nothing fulfilled");
+});
+
 test("license verify returns entitlements for a real key and 401 for everything else", async () => {
   const e = licenseEnv();
   await handleStripe(await webhook(checkoutEvent()), e);
@@ -355,7 +364,7 @@ test("license verify guards its bindings and method", async () => {
   assert.equal(res.headers.get("allow"), "POST");
 });
 
-test("claim hands back the key for a fulfilled session only", async () => {
+test("claim hands back the key only when session_id AND the buyer email match", async () => {
   const e = licenseEnv();
   await handleStripe(await webhook(checkoutEvent()), e);
   const key = await e.__store.get("session:cs_test_123");
@@ -363,12 +372,19 @@ test("claim hands back the key for a fulfilled session only", async () => {
   const claim = (qs) =>
     handleClaim(new Request(`https://entheai.com/api/license/claim${qs}`), e);
 
-  const ok = await claim("?session_id=cs_test_123");
+  // The email is the second factor: without it, no key.
+  assert.equal((await claim("?session_id=cs_test_123")).status, 404);
+  const ok = await claim("?session_id=cs_test_123&email=backer@example.com");
   assert.equal(ok.status, 200);
   assert.deepEqual(await ok.json(), { key });
-  // Unknown or missing session_id must not leak a key.
-  assert.equal((await claim("?session_id=cs_nope")).status, 404);
+  // The email match is case-insensitive.
+  const mixed = await claim("?session_id=cs_test_123&email=Backer@Example.COM");
+  assert.equal(mixed.status, 200);
+  // A wrong email, unknown session, or missing params must not leak a key.
+  assert.equal((await claim("?session_id=cs_test_123&email=attacker@evil.com")).status, 404);
+  assert.equal((await claim("?session_id=cs_nope&email=backer@example.com")).status, 404);
   assert.equal((await claim("")).status, 404);
+  assert.equal((await claim("?email=backer@example.com")).status, 404);
   assert.equal((await handleClaim(new Request("https://entheai.com/api/license/claim"), {})).status, 503);
   const post = new Request("https://entheai.com/api/license/claim", { method: "POST" });
   const res = await handleClaim(post, e);
@@ -409,6 +425,10 @@ test("the monetization routes reach their handlers, not the asset pipeline", asy
     },
   };
   await e.__store.set("session:cs_route", "ENTH-ROUT-EAAA-AAAA-AAAA");
+  await e.__store.set(
+    "license:ENTH-ROUT-EAAA-AAAA-AAAA",
+    JSON.stringify({ email: "route@example.com" })
+  );
 
   // Each route answers with its handler's own signature status/body.
   const unsigned = new Request("https://entheai.com/api/stripe/webhook", {
@@ -423,7 +443,9 @@ test("the monetization routes reach their handlers, not the asset pipeline", asy
   });
   assert.equal((await worker.fetch(verify, e)).status, 401);
 
-  const claim = new Request("https://entheai.com/api/license/claim?session_id=cs_route");
+  const claim = new Request(
+    "https://entheai.com/api/license/claim?session_id=cs_route&email=route@example.com"
+  );
   assert.deepEqual(await (await worker.fetch(claim, e)).json(), {
     key: "ENTH-ROUT-EAAA-AAAA-AAAA",
   });
@@ -692,6 +714,27 @@ test("sovereign: verify guards its method and rejects malformed keys", async () 
     assert.equal(r.status, 401, `${body} must not verify`);
     assert.deepEqual(await r.json(), { ok: false });
   }
+});
+
+test("sovereign: verify rejects oversized bodies with 413 and oversized tokens with 401", async () => {
+  const e = licenseEnv({ SOVEREIGN_PUBLIC_KEY: SOVEREIGN_PUBLIC_KEY_B64URL });
+  const verify = (body) =>
+    handleSovereignVerify(
+      new Request("https://entheai.com/api/sovereign/verify", { method: "POST", body }),
+      e
+    );
+
+  // Body over MAX_BODY_BYTES → 413 before any parse.
+  const big = JSON.stringify({ key: "vkd_sk_" + "A".repeat(32 * 1024) });
+  const bigRes = await verify(big);
+  assert.equal(bigRes.status, 413);
+  assert.deepEqual(await bigRes.json(), { error: "body too large" });
+
+  // Small body, oversized token → treated as an invalid key, never decoded.
+  const long = JSON.stringify({ key: "vkd_sk_" + "A".repeat(5000) });
+  const longRes = await verify(long);
+  assert.equal(longRes.status, 401);
+  assert.deepEqual(await longRes.json(), { ok: false });
 });
 
 test("sovereign: checkout returns 503 without STRIPE_SECRET_KEY", async () => {
@@ -1029,7 +1072,16 @@ function fetchMock(routes, log = []) {
 test("licenseStore prefers the Redis gateway when both gateway vars are set", async () => {
   const calls = [];
   await withFetch(
-    fetchMock([{ test: /\/session%3Acs_gw/, body: { value: "ENTH-GATEWAY-AAAA-AAAA" } }], calls),
+    fetchMock(
+      [
+        { test: /\/session%3Acs_gw/, body: { value: "ENTH-GATEWAY-AAAA-AAAA" } },
+        {
+          test: /\/license%3AENTH-GATEWAY-AAAA-AAAA/,
+          body: { value: JSON.stringify({ email: "gw@example.com", entitlements: ["beta"] }) },
+        },
+      ],
+      calls
+    ),
     async () => {
       const e = licenseEnv({
         __store: undefined,
@@ -1037,15 +1089,19 @@ test("licenseStore prefers the Redis gateway when both gateway vars are set", as
         REDIS_GATEWAY_URL: "https://gw.up.railway.app",
         REDIS_GATEWAY_TOKEN: "gw-token",
       });
-      const req = new Request("https://entheai.com/api/license/claim?session_id=cs_gw");
+      const req = new Request(
+        "https://entheai.com/api/license/claim?session_id=cs_gw&email=gw@example.com"
+      );
       const res = await handleClaim(req, e);
       assert.equal(res.status, 200);
       assert.deepEqual(await res.json(), { key: "ENTH-GATEWAY-AAAA-AAAA" });
     }
   );
-  assert.equal(calls.length, 1, "exactly one gateway call");
+  assert.equal(calls.length, 2, "session lookup + license record check");
   assert.equal(calls[0].url, "https://gw.up.railway.app/session%3Acs_gw");
   assert.equal(calls[0].init.headers.Authorization, "Bearer gw-token");
+  assert.equal(calls[1].url, "https://gw.up.railway.app/license%3AENTH-GATEWAY-AAAA-AAAA");
+  assert.equal(calls[1].init.headers.Authorization, "Bearer gw-token");
 });
 
 test("licenseStore ignores REDIS_PUBLIC_URL once the gateway pair is set", async () => {

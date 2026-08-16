@@ -4,7 +4,9 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createHandler } from "../handler.mjs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { createHandler, createRateLimiter } from "../handler.mjs";
 import { startServer } from "../server.mjs";
 
 /** In-memory store double matching the handler's { get, set, del, ping } surface. */
@@ -215,4 +217,119 @@ test("end-to-end over node:http: auth + PUT/GET/DELETE + health", async (t) => {
   const del = await fetch(`${base}/license%3AENTH-E2E`, { method: "DELETE", headers: h });
   assert.equal(del.status, 200);
   assert.equal((await fetch(`${base}/license%3AENTH-E2E`, { headers: h })).status, 404);
+});
+
+// ---- failed-auth rate limiting + body cap + bootstrap guard ----------------
+
+test("failed-auth limiter: 5 failures allowed, the 6th is blocked, success clears", () => {
+  const rl = createRateLimiter({ windowMs: 10_000, max: 5 });
+  for (let i = 0; i < 5; i++) {
+    assert.equal(rl.isBlocked("1.2.3.4"), false, `attempt ${i + 1} not blocked`);
+    rl.recordFailure("1.2.3.4");
+  }
+  assert.equal(rl.isBlocked("1.2.3.4"), true, "6th attempt blocked");
+  // Other IPs are untouched; remainingMs reports the window.
+  assert.equal(rl.isBlocked("5.6.7.8"), false);
+  assert.ok(rl.remainingMs("1.2.3.4") > 0 && rl.remainingMs("1.2.3.4") <= 10_000);
+  // A successful auth clears the budget.
+  rl.clear("1.2.3.4");
+  assert.equal(rl.isBlocked("1.2.3.4"), false);
+});
+
+test("over-HTTP: 5 failed auths then 429 until the window rolls over", async (t) => {
+  const server = startServer({
+    store: fakeStore(),
+    token: TOKEN,
+    port: 0,
+    host: "127.0.0.1",
+    rateLimit: { windowMs: 150, max: 5 },
+  });
+  t.after(() => server.close());
+  await new Promise((r) => server.once("listening", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+
+  const statuses = [];
+  for (let i = 0; i < 6; i++) statuses.push((await fetch(`${base}/health`)).status);
+  assert.deepEqual(statuses, [401, 401, 401, 401, 401, 429]);
+
+  // The block is per-IP and enforced before auth, so even a valid token is
+  // gated while the budget is exhausted.
+  assert.equal((await fetch(`${base}/health`, { headers: auth() })).status, 429);
+  assert.equal((await fetch(`${base}/health`, { headers: auth() })).status, 429);
+
+  // Once the window rolls over the budget is fresh and authed requests work.
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal((await fetch(`${base}/health`, { headers: auth() })).status, 200);
+});
+
+test("over-HTTP: failed-auth buckets are keyed per X-Forwarded-For client", async (t) => {
+  const server = startServer({
+    store: fakeStore(),
+    token: TOKEN,
+    port: 0,
+    host: "127.0.0.1",
+    rateLimit: { windowMs: 150, max: 5 },
+  });
+  t.after(() => server.close());
+  await new Promise((r) => server.once("listening", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+
+  // Client A exhausts its own budget…
+  for (let i = 0; i < 5; i++) {
+    assert.equal(
+      (await fetch(`${base}/health`, { headers: { "x-forwarded-for": "1.2.3.4" } })).status,
+      401
+    );
+  }
+  // …while client B (same TCP peer behind the LB) is untouched.
+  assert.equal(
+    (await fetch(`${base}/health`, { headers: { "x-forwarded-for": "5.6.7.8" } })).status,
+    401
+  );
+  // And A is now blocked at the door.
+  assert.equal(
+    (await fetch(`${base}/health`, { headers: { "x-forwarded-for": "1.2.3.4" } })).status,
+    429
+  );
+});
+
+test("over-HTTP: PUT bodies over the cap are rejected with 413 and never stored", async (t) => {
+  const store = fakeStore();
+  const server = startServer({
+    store,
+    token: TOKEN,
+    port: 0,
+    host: "127.0.0.1",
+    maxBodyBytes: 64,
+  });
+  t.after(() => server.close());
+  await new Promise((r) => server.once("listening", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+
+  const big = await fetch(`${base}/license%3AENTH-BIG`, {
+    method: "PUT",
+    headers: auth(),
+    body: "x".repeat(65),
+  });
+  assert.equal(big.status, 413);
+  assert.deepEqual(await big.json(), { error: "body too large" });
+  assert.equal(store.map.has("license:ENTH-BIG"), false, "oversized body never stored");
+
+  // At the cap or under it, PUT still works.
+  const ok = await fetch(`${base}/license%3AENTH-OK`, {
+    method: "PUT",
+    headers: auth(),
+    body: "x".repeat(64),
+  });
+  assert.equal(ok.status, 200);
+});
+
+test("bootstrap exits 1 when GATEWAY_TOKEN is shorter than 32 chars", () => {
+  const serverPath = fileURLToPath(new URL("../server.mjs", import.meta.url));
+  const r = spawnSync(process.execPath, [serverPath], {
+    env: { ...process.env, GATEWAY_TOKEN: "too-short", REDISPASSWORD: "x" },
+    encoding: "utf8",
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /GATEWAY_TOKEN/);
 });

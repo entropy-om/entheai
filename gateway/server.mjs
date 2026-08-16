@@ -20,7 +20,14 @@
 import http from "node:http";
 import net from "node:net";
 import { pathToFileURL } from "node:url";
-import { createHandler } from "./handler.mjs";
+import { createHandler, createRateLimiter } from "./handler.mjs";
+
+// Request bodies are license/release JSON — a megabyte is far more than any
+// legitimate value and bounds what we buffer + store in Redis.
+const MAX_BODY_BYTES = 1024 * 1024; // 1 MB
+// GATEWAY_TOKEN guards the whole Redis store; anything weaker than 32 chars is
+// a misconfiguration we refuse to boot with.
+const MIN_TOKEN_LENGTH = 32;
 
 // ---- minimal RESP2 client over node:net (one socket per command) ----------
 
@@ -154,26 +161,77 @@ export function createRedisStore({ host, port, user, password } = {}) {
 
 // ---- node:http wiring ------------------------------------------------------
 
-function readBody(req) {
+class BodyTooLargeError extends Error {
+  constructor(limit) {
+    super(`request body exceeds ${limit} bytes`);
+    this.code = "BODY_TOO_LARGE";
+  }
+}
+
+// readBody(req, maxBytes) — drains the request, rejecting with a labeled
+// BodyTooLargeError once the cap is exceeded. Keeps draining (discarding) past
+// the cap so the 413 response is still deliverable — destroying the socket
+// would just reset the client connection with no response at all.
+function readBody(req, maxBytes) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    let tooLarge = false;
     req.on("data", (c) => {
-      chunks.push(c);
       size += c.length;
+      if (size > maxBytes) {
+        tooLarge = true;
+        return; // discard, keep draining
+      }
+      chunks.push(c);
     });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("end", () => {
+      if (tooLarge) reject(new BodyTooLargeError(maxBytes));
+      else resolve(Buffer.concat(chunks).toString("utf8"));
+    });
     req.on("error", reject);
   });
 }
 
-// startServer({ store, token, port, host }) — injectable store makes the whole
-// HTTP path testable against an in-memory double. Returns the listening server.
-export function startServer({ store, token, port = 8080, host = "0.0.0.0" } = {}) {
+// clientIp(req) — the real client IP. The gateway sits behind Railway's load
+// balancer, so the TCP peer (remoteAddress) is the LB itself and every client
+// would share one rate-limit bucket. Railway's LB sets X-Forwarded-For from the
+// actual peer for public traffic, so the first entry is the client IP; direct
+// private connections (no XFF) fall back to the socket address.
+function clientIp(req) {
+  const xff = req.headers["x-forwarded-for"];
+  if (typeof xff === "string" && xff.trim()) {
+    return xff.split(",")[0].trim();
+  }
+  return (req.socket.remoteAddress || "unknown").replace(/^::ffff:/, "");
+}
+
+// startServer({ store, token, port, host, maxBodyBytes, rateLimit }) —
+// injectable store makes the whole HTTP path testable against an in-memory
+// double. rateLimit = { windowMs, max } (defaults 10s / 5) for the failed-auth
+// limiter. Returns the listening server.
+export function startServer({
+  store,
+  token,
+  port = 8080,
+  host = "0.0.0.0",
+  maxBodyBytes = MAX_BODY_BYTES,
+  rateLimit,
+} = {}) {
   const handle = createHandler({ store, token });
+  const limiter = createRateLimiter(rateLimit ?? {});
   const server = http.createServer(async (req, res) => {
     try {
-      const rawBody = await readBody(req);
+      const ip = clientIp(req);
+      if (limiter.isBlocked(ip)) {
+        res.writeHead(429, {
+          "content-type": "application/json",
+          "retry-after": String(Math.ceil(limiter.remainingMs(ip) / 1000)),
+        });
+        res.end(JSON.stringify({ error: "too many failed attempts" }));
+        return;
+      }
+      const rawBody = await readBody(req, maxBodyBytes);
       let pathname;
       try {
         pathname = new URL(req.url ?? "/", "http://gateway.internal").pathname;
@@ -181,9 +239,16 @@ export function startServer({ store, token, port = 8080, host = "0.0.0.0" } = {}
         pathname = req.url ?? "/";
       }
       const out = await handle(req.method, pathname, req.headers, rawBody);
+      if (out.status === 401) limiter.recordFailure(ip);
+      else limiter.clear(ip);
       res.writeHead(out.status, out.headers);
       res.end(out.body);
     } catch (e) {
+      if (e && e.code === "BODY_TOO_LARGE") {
+        res.writeHead(413, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "body too large" }));
+        return;
+      }
       console.error("gateway: request failed:", e);
       res.writeHead(500, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "internal error" }));
@@ -203,6 +268,10 @@ if (isMain) {
   const password = process.env.REDISPASSWORD;
   if (!token) {
     console.error("gateway: GATEWAY_TOKEN is required");
+    process.exit(1);
+  }
+  if (token.length < 32) {
+    console.error("gateway: GATEWAY_TOKEN must be at least 32 characters");
     process.exit(1);
   }
   if (!password) {

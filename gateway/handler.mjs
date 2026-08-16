@@ -77,6 +77,43 @@ function authorized(header, token) {
   return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
+// createRateLimiter({ windowMs, max }) — a tiny in-memory failed-auth limiter,
+// keyed by client IP. `max` failed attempts per `windowMs` are allowed; the
+// next attempt is blocked (429) until the window rolls over. A successful
+// request clears the budget via clear(). Pure data structure — the HTTP layer
+// decides when to call it (see server.mjs).
+export function createRateLimiter({ windowMs = 10_000, max = 5 } = {}) {
+  const buckets = new Map(); // ip -> { count, resetAt }
+
+  return {
+    // True once the ip has exhausted its failed-auth budget in the window.
+    isBlocked(ip) {
+      const b = buckets.get(ip);
+      return !!b && Date.now() < b.resetAt && b.count >= max;
+    },
+    // Record one failed auth attempt for ip (fresh window on first failure).
+    recordFailure(ip) {
+      const now = Date.now();
+      const b = buckets.get(ip);
+      if (!b || now >= b.resetAt) {
+        buckets.set(ip, { count: 1, resetAt: now + windowMs });
+      } else {
+        b.count += 1;
+      }
+    },
+    // A successful auth clears the budget for ip.
+    clear(ip) {
+      buckets.delete(ip);
+    },
+    // Milliseconds until the current window rolls over (for Retry-After).
+    remainingMs(ip) {
+      const b = buckets.get(ip);
+      if (!b) return 0;
+      return Math.max(0, b.resetAt - Date.now());
+    },
+  };
+}
+
 function respond(status, obj, extraHeaders = {}) {
   return {
     status,

@@ -86,6 +86,9 @@ export async function parseReply(reader) {
 // new URL(env.REDIS_PUBLIC_URL); use rediss:// to enable TLS.
 export async function redis(url, ...parts) {
   if (!url) throw new Error("redis: no REDIS_PUBLIC_URL");
+  if (url.protocol === "redis:" && url.password) {
+    throw new Error("redis: refusing plaintext redis:// with a password; use rediss://");
+  }
   const { connect } = await import("cloudflare:sockets");
   const socket = connect(
     { hostname: url.hostname, port: Number(url.port) || 6379 },

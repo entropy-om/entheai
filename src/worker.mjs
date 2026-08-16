@@ -74,6 +74,9 @@ export const SCHEMA = "entheai.entropy.v1";
 export const KV_KEY = "entropy:latest";
 export const STALE_AFTER_MS = 15 * 60 * 1000;
 const MAX_BODY_BYTES = 32 * 1024;
+// Sovereign tokens are tiny (signed payload + sig); anything near this cap is
+// junk or an attack and must never reach atob/JSON.parse.
+const SOVEREIGN_TOKEN_MAX_LEN = 4096;
 const KV_TTL_SECS = 3600;
 
 // ---- Sovereign key issuance (constellation monetization, Lane 1) ----------
@@ -200,7 +203,7 @@ export async function handleEntropy(request, env, now = Date.now) {
   }
   if (request.method === "POST") {
     const auth = request.headers.get("authorization") || "";
-    if (!env.ENTROPY_TOKEN || auth !== `Bearer ${env.ENTROPY_TOKEN}`) {
+    if (!env.ENTROPY_TOKEN || !timingSafeEqual(auth, `Bearer ${env.ENTROPY_TOKEN}`)) {
       return json({ error: "unauthorized" }, 401, headers);
     }
     const body = await request.text();
@@ -228,6 +231,17 @@ export async function handleEntropy(request, env, now = Date.now) {
 
 // Constant-time compare of two lowercase hex strings (timing-safe).
 function timingSafeEqualHex(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+// Constant-time compare of two strings. Length mismatches short-circuit (the
+// length leaks either way, mirroring crypto.timingSafeEqual's contract) but
+// content comparison never exits early on a mismatched byte.
+function timingSafeEqual(a, b) {
+  if (typeof a !== "string" || typeof b !== "string") return false;
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
@@ -292,6 +306,9 @@ export async function handleStripe(request, env) {
     return json({ error: "method not allowed" }, 405, { ...headers, allow: "POST" });
   }
   const rawBody = await request.text();
+  if (rawBody.length > MAX_BODY_BYTES) {
+    return json({ error: "body too large" }, 413, headers);
+  }
   let valid = false;
   try {
     valid = await verifyStripeSignature(
@@ -451,10 +468,21 @@ export async function handleClaim(request, env) {
   if (request.method !== "GET") {
     return json({ error: "method not allowed" }, 405, { ...headers, allow: "GET" });
   }
-  const sessionId = new URL(request.url).searchParams.get("session_id");
-  if (!sessionId) return json({ error: "not found or not yet fulfilled" }, 404, headers);
+  const url = new URL(request.url);
+  const sessionId = url.searchParams.get("session_id");
+  const email = (url.searchParams.get("email") || "").trim().toLowerCase();
+  if (!sessionId || !email) return json({ error: "not found or not yet fulfilled" }, 404, headers);
   const key = await licenseStore(env).get(`session:${sessionId}`);
   if (!key) return json({ error: "not found or not yet fulfilled" }, 404, headers);
+  // Second factor: the buyer email must match the license record.
+  const raw = await licenseStore(env).get(`license:${key}`);
+  let storedEmail = "";
+  if (raw) {
+    try { storedEmail = (JSON.parse(raw).email ?? "").toString().toLowerCase(); } catch { /* malformed — reject */ }
+  }
+  if (!storedEmail || storedEmail !== email) {
+    return json({ error: "not found or not yet fulfilled" }, 404, headers);
+  }
   return json({ key }, 200, headers);
 }
 
@@ -545,6 +573,7 @@ export async function signSovereign(payload, seedB64url) {
 // decoded payload or null. Signature + exp is the source of truth — no server
 // lookup happens here.
 async function verifySovereign(token, pubKeyB64url) {
+  if (typeof token !== "string" || token.length > 4096) return null;
   const match = /^vkd_sk_([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/.exec(token);
   if (!match) return null;
   let payloadBytes;
@@ -694,12 +723,16 @@ export async function handleSovereignVerify(request, env) {
   }
   let key = "";
   try {
-    const body = JSON.parse(await request.text());
+    const text = await request.text();
+    if (text.length > MAX_BODY_BYTES) return json({ error: "body too large" }, 413, headers);
+    const body = JSON.parse(text);
     key = typeof body.key === "string" ? body.key.trim() : "";
   } catch {
     return json({ ok: false }, 401, headers);
   }
   if (!key) return json({ ok: false }, 401, headers);
+  // Cap the token before any decode: oversized tokens are junk or an attack.
+  if (key.length > SOVEREIGN_TOKEN_MAX_LEN) return json({ ok: false }, 401, headers);
   const payload = await verifySovereign(key, env.SOVEREIGN_PUBLIC_KEY || SOVEREIGN_PUBLIC_KEY_B64URL);
   if (!payload) return json({ ok: false }, 401, headers);
   const store = licenseStore(env);

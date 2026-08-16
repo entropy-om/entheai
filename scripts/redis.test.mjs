@@ -4,7 +4,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { redisHttp } from "../src/redis.mjs";
+import { redis, redisHttp } from "../src/redis.mjs";
 
 function jsonResponse(status, body) {
   return new Response(JSON.stringify(body), { status });
@@ -64,5 +64,19 @@ test("redisHttp requires both the base URL and the token", async () => {
   await assert.rejects(
     redisHttp("https://gw", "", "GET", "k"),
     /REDIS_GATEWAY_TOKEN/
+  );
+});
+
+test("redis() refuses a plaintext redis:// URL that carries a password", async () => {
+  // Throws before the cloudflare:sockets import, so this is testable in Node.
+  await assert.rejects(
+    redis(new URL("redis://default:pw@host.example:6379"), "GET", "k"),
+    /plaintext redis:\/\/ with a password/
+  );
+  // rediss:// with a password passes the guard — its failure (sockets only
+  // exist in workerd) must NOT be the plaintext refusal.
+  await assert.rejects(
+    redis(new URL("rediss://default:pw@host.example:6379"), "GET", "k"),
+    (err) => !/plaintext redis/.test(String(err && err.message))
   );
 });
