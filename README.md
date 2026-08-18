@@ -3,7 +3,7 @@
 Community call: `https://luma.com/sfkwmsjx` [sign-up](https://luma.com/sfkwmsjx)
 
 <p align="center">
-  <img src="docs/images/hero-v1-singularity.png" alt="entheai v1.0 — fluid quantum entropy morphing into a 3D singularity structure in dark void" width="100%">
+  <img src="docs/images/hero-deepsiper-enthea.jpg" alt="entheai / deepsiper-enthea — fluid quantum entropy morphing into a singularity structure in dark void" width="100%">
 </p>
 
 > A personal, macOS-native, **hybrid coding agent for the terminal** — with a brain that fans out.
