@@ -1,3 +1,9 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EQUATION OF STATE — THE SOVEREIGN CONSTELLATION
+# U_constellation = ( Union_{k=1}^{14} Node_k ) cup { <3_music, <3_math, <3_vicky } + 1_peter
+# {<3, <3, <3} + 1 · 0 + 1 · Fine touch from within · Constellation Equilibrium
+# ═══════════════════════════════════════════════════════════════════════════
+
 #!/usr/bin/env python3
 """backyard_ultra.py — ENTHEAI ASSISTANT LAYER · 6 rounds + e2e publish
 
