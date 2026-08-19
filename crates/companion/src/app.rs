@@ -103,10 +103,9 @@ pub fn run() -> anyhow::Result<()> {
     };
 
     let qr_grid = qr::generate(&payload)?;
-    let session_url = format!(
-        "http://{}.local:{}/session/{}",
-        cli.host, cli.port, payload.sid
-    );
+    // `--host` already arrives fully qualified (`<name>.local` or the Tailscale
+    // MagicDNS name) — appending `.local` again produced `x.local.local`.
+    let session_url = format!("http://{}:{}/session/{}", cli.host, cli.port, payload.sid);
 
     // Connect to the Unix socket (non-blocking) if provided.
     let socket_reader = cli.socket.and_then(|path| {

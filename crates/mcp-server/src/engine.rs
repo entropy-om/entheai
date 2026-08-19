@@ -50,13 +50,23 @@ pub fn resolve_cwd(args: &Value, server_cwd: &Path) -> anyhow::Result<PathBuf> {
 
 /// Load `cwd/.env` plus the same global env files the CLI loads at startup
 /// (`~/.config/entheai/entheai.env`, `~/.config/entheai/.env`,
-/// `~/.entheai/.env`, `~/.env`; all non-overriding — an already-set env var
-/// wins) so provider keys resolve exactly like under the CLI. With the keyed
+/// `~/.entheai/.env`, `~/.env`; non-overriding — an already-set env var wins)
+/// so provider keys resolve exactly like under the CLI. With the keyed
 /// DeepSeek defaults this matters: without it a bare MCP call would see no
 /// `DEEPSEEK_API_KEY`. Called at the start of every tool invocation; harmless
 /// when a file is missing.
+///
+/// This mutates process-wide env for the server's whole lifetime, so it is
+/// last-wins across calls with different `cwd`s, and racy against a
+/// concurrently-running call reading env (e.g. sqlite/TLS `getenv`) — a
+/// per-call env map threaded through instead of ambient process env would be
+/// the real fix but touches every provider/NATS credential call site. As a
+/// minimum mitigation, `cwd/.env` (the one value that legitimately differs
+/// per call) is loaded with `from_path_override` so THIS call's repo-local
+/// `.env` always wins over whatever an earlier call with a different `cwd`
+/// left behind, instead of silently keeping the first repo's key forever.
 pub fn load_env_for(cwd: &Path) {
-    let _ = dotenvy::from_path(cwd.join(".env"));
+    let _ = dotenvy::from_path_override(cwd.join(".env"));
     for rel in [
         ".config/entheai/entheai.env",
         ".config/entheai/.env",

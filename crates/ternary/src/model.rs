@@ -519,6 +519,7 @@ impl TernaryModel {
 
     /// Full prefill: final-token logits for `tokens` (fresh cache).
     pub fn logits_last(&self, tokens: &[u32]) -> anyhow::Result<Vec<f32>> {
+        anyhow::ensure!(!tokens.is_empty(), "empty prompt");
         let mut cache = KVCache::new();
         let hidden = self.forward_hidden(&mut cache, tokens)?;
         Ok(self.lm_head(&hidden[HIDDEN * (tokens.len() - 1)..]))
@@ -527,21 +528,26 @@ impl TernaryModel {
     /// Greedy decode `max_new` tokens after `prompt`, stopping on a stop token
     /// (`<|endoftext|>` / `<|im_end|>`). Prompt tokens are not returned.
     pub fn generate(&self, prompt: &[u32], max_new: usize) -> anyhow::Result<Vec<u32>> {
+        anyhow::ensure!(!prompt.is_empty(), "empty prompt");
         let mut cache = KVCache::new();
-        self.forward_hidden(&mut cache, prompt)?;
+        // `forward_hidden` already appends every prompt token to the cache
+        // (positions 0..prompt.len()-1); reuse its OWN last hidden row for the
+        // first sampled token instead of re-forwarding `prompt.last()` as a
+        // one-token batch — that duplicated the final prompt token at
+        // position `prompt.len()`, so the first decode step (and every step
+        // after it, shifted by one) disagreed with `logits_last`'s prefill.
+        let hidden = self.forward_hidden(&mut cache, prompt)?;
+        let mut row = hidden[HIDDEN * (prompt.len() - 1)..].to_vec();
         let mut out = Vec::new();
-        let mut last = *prompt
-            .last()
-            .ok_or_else(|| anyhow::anyhow!("empty prompt"))?;
         for _ in 0..max_new {
-            let hidden = self.forward_hidden(&mut cache, &[last])?;
-            let logits = self.lm_head(&hidden);
+            let logits = self.lm_head(&row);
             let next = argmax(&logits);
             if next == crate::tokenizer::STOP_END_OF_TEXT || next == crate::tokenizer::STOP_IM_END {
                 break;
             }
             out.push(next);
-            last = next;
+            let hidden = self.forward_hidden(&mut cache, &[next])?;
+            row = hidden;
         }
         Ok(out)
     }
@@ -617,6 +623,20 @@ mod tests {
             return PathBuf::from(dir);
         }
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../pocoo.vaked.dev/demos/quantal")
+    }
+
+    #[test]
+    fn logits_last_rejects_an_empty_prompt_instead_of_underflowing() {
+        let m = TernaryModel::load(data_dir()).unwrap();
+        let err = m.logits_last(&[]).unwrap_err();
+        assert!(err.to_string().contains("empty prompt"));
+    }
+
+    #[test]
+    fn generate_rejects_an_empty_prompt_instead_of_underflowing() {
+        let m = TernaryModel::load(data_dir()).unwrap();
+        let err = m.generate(&[], 8).unwrap_err();
+        assert!(err.to_string().contains("empty prompt"));
     }
 
     #[test]

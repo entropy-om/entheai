@@ -191,8 +191,11 @@ impl SqliteStore {
                 params![id, c2],
             )?;
             // Vec (ANN): lazily create the vec table at the first embedding's DIM,
-            // then keep it in sync. Mismatched dims are skipped (logged) so a model
-            // change can't poison the write path.
+            // then keep it in sync. A dim change (embedding model swap) rebuilds
+            // the index at the new dim instead of skipping every write forever —
+            // older entries drop out of ANN recall until they're re-embedded, but
+            // hybrid search keeps working via FTS in the meantime and new writes
+            // aren't stuck degraded permanently.
             if let Some(ref emb) = embedding {
                 let dim_ok = match meta_get_usize(&tx, "embed_dim")? {
                     None => {
@@ -202,13 +205,15 @@ impl SqliteStore {
                     Some(d) if d == emb.len() => true,
                     Some(d) => {
                         log::warn!(
-                            "memory: embedding dim {} != store dim {} — skipping vector index for {}/{}",
-                            emb.len(),
-                            d,
-                            ns2,
-                            k2
+                            "memory: embedding dim changed ({d} -> {}) for {ns2}/{k2} — \
+                             rebuilding vector index; entries embedded at dim {d} drop out \
+                             of ANN recall until re-embedded",
+                            emb.len()
                         );
-                        false
+                        tx.execute_batch("DROP TABLE IF EXISTS vec_entries;")?;
+                        tx.execute("DELETE FROM meta WHERE k = 'embed_dim'", [])?;
+                        ensure_vec_table(&tx, emb.len())?;
+                        true
                     }
                 };
                 // Always drop this id's existing/backfilled vec row first, THEN
@@ -649,6 +654,22 @@ impl Memory for SqliteStore {
 
         Ok(entries)
     }
+
+    async fn count(&self, namespace: Namespace) -> Result<usize, MemoryError> {
+        let ns = namespace.as_str().to_string();
+        let db = Arc::clone(&self.db);
+        let n: i64 = tokio::task::spawn_blocking(move || {
+            let conn = Self::lock_db(&db);
+            conn.query_row(
+                "SELECT COUNT(*) FROM entries WHERE namespace = ?1",
+                params![ns],
+                |row| row.get(0),
+            )
+        })
+        .await
+        .map_err(|e| MemoryError::Internal(format!("spawn_blocking panicked: {e}")))??;
+        Ok(n as usize)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -969,6 +990,29 @@ mod tests {
         assert_eq!(all.len(), 5);
         let page = store.list(Namespace::Learnings, 2, 2).await.unwrap();
         assert_eq!(page.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn count_matches_list_len_and_is_namespace_scoped() {
+        let store = SqliteStore::open_memory(None).unwrap();
+        for i in 0..5 {
+            store
+                .store(
+                    Namespace::Learnings,
+                    &format!("k{i}"),
+                    &format!("v{i}"),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        store
+            .store(Namespace::Tools, "other", "v", None)
+            .await
+            .unwrap();
+        assert_eq!(store.count(Namespace::Learnings).await.unwrap(), 5);
+        assert_eq!(store.count(Namespace::Tools).await.unwrap(), 1);
+        assert_eq!(store.count(Namespace::Codebase).await.unwrap(), 0);
     }
 
     #[tokio::test]
@@ -1347,6 +1391,43 @@ mod tests {
             ids.len(),
             1,
             "reopen rebuilt + backfilled vec_entries from entries.embedding"
+        );
+    }
+
+    #[tokio::test]
+    async fn store_inner_rebuilds_the_vec_index_on_a_dim_change_instead_of_degrading_forever() {
+        let store = SqliteStore::open_memory(None).unwrap();
+        store
+            .store_inner(
+                Namespace::Learnings,
+                "old",
+                "old dim entry",
+                None,
+                Some(vec![1.0, 0.0, 0.0, 0.0]),
+            )
+            .await
+            .unwrap();
+        // Simulate an embedding model swap: a later write arrives at a
+        // different dim. It used to be skipped (logged) forever; it must now
+        // rebuild the index so writes at the new dim recover ANN recall.
+        store
+            .store_inner(
+                Namespace::Learnings,
+                "new",
+                "new dim entry",
+                None,
+                Some(vec![1.0, 0.0, 0.0]),
+            )
+            .await
+            .unwrap();
+        let ids = store
+            .vec_ids(Namespace::Learnings, &[1.0, 0.0, 0.0], 5)
+            .await
+            .unwrap();
+        assert_eq!(
+            ids.len(),
+            1,
+            "the new-dim write must land in a rebuilt vec index, not be skipped"
         );
     }
 

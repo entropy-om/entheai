@@ -2581,6 +2581,7 @@ version = "42.1.12"
 dependencies = [
  "async-trait",
  "entheai-permission",
+ "libc",
  "reqwest 0.12.28",
  "serde_json",
  "tempfile",
@@ -2618,6 +2619,7 @@ dependencies = [
  "entheai-tts",
  "entheai-viz",
  "futures",
+ "log",
  "ratatui",
  "reqwest 0.12.28",
  "serde",
@@ -2675,6 +2677,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

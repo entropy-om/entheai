@@ -223,6 +223,9 @@ impl Player {
                 Ok(s) => Some(s),
                 Err(e) => {
                     self.emit(Event::Error(format!("decode embedded track: {e}")));
+                    // Report once and stop; `advance()` ticks every 200ms and
+                    // would otherwise re-emit this forever (only `Next` retries).
+                    self.enabled = false;
                     return;
                 }
             },
@@ -241,6 +244,10 @@ impl Player {
                 title: title.to_string(),
                 loop_count: self.loop_count,
             });
+        } else {
+            // No audio device (headless / SSH / CI): `sink()` already emitted the
+            // error; disable so the 200ms tick doesn't flood the TUI with it.
+            self.enabled = false;
         }
     }
 
@@ -337,7 +344,12 @@ mod tests {
     async fn noop_radio_never_emits() {
         let mut radio = Radio::noop();
         radio.send(Command::Next);
-        let timeout = tokio::time::timeout(Duration::from_millis(50), radio.next_event()).await;
+        // Fully qualified, not `use`d: the `Duration` import above is
+        // `#[cfg(feature = "audio")]`-gated, but this test isn't, so
+        // `cargo test -p entheai-radio --no-default-features` needs this to
+        // resolve on its own.
+        let timeout =
+            tokio::time::timeout(std::time::Duration::from_millis(50), radio.next_event()).await;
         assert!(timeout.is_err(), "noop radio must never emit an event");
     }
 }

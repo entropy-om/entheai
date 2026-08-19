@@ -27,12 +27,15 @@ async fn main() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
 
     let server_cwd = std::env::current_dir()?.canonicalize()?;
-    let tools = tools::all();
+    // Leaked once, for the process's lifetime: `serve` spawns each request
+    // onto its own task so a long `entheai_run`/`entheai_dispatch` can't
+    // block `ping`/`tools/list`, which needs `tools: &'static`.
+    let tools: &'static [tools::ToolDef] = Box::leak(tools::all().into_boxed_slice());
     log::info!(
         "entheai-mcp v{} serving {} tools from {:?}",
         env!("CARGO_PKG_VERSION"),
         tools.len(),
         server_cwd
     );
-    protocol::serve(&tools, server_cwd).await
+    protocol::serve(tools, server_cwd).await
 }

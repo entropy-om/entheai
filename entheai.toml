@@ -2,8 +2,7 @@
 # ENTHEAI CONFIGURATION — DEEPSEEK V4 (FLASH | PRO) ALL THE WAY DOWN
 # ==============================================================================
 # Every key in this file exists in crates/config (entheai-config). The parser
-# ignores unknown keys silently, so keep this file honest — see
-# docs/configuration.md for the full reference.
+# rejects unknown keys — see docs/configuration.md for the full reference.
 #
 # Model ids are "<provider>/<model>". Credits today: deepseek only — every
 # chain below is DeepSeek-only on purpose. gemini / openrouter are still

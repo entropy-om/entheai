@@ -268,16 +268,12 @@ impl EntheaiAgent {
             sessions,
             app_name,
             injected_sessions,
-            request_timeout: std::time::Duration::from_secs(inference.request_timeout_secs),
+            // `0` is a common "disable the timeout" config convention, but
+            // `Duration::ZERO` makes every stream idle-timeout fire
+            // immediately (see `request_timeout`'s doc comment) — clamp to a
+            // minimum of 1s instead of letting 0 mean "never wait at all".
+            request_timeout: std::time::Duration::from_secs(inference.request_timeout_secs.max(1)),
         })
-    }
-
-    /// Streaming entry point. Each call gets a fresh session with no prior
-    /// turns — for a caller that needs to carry conversation history forward
-    /// (e.g. an interactive chat), use [`Self::run_with_history`] instead.
-    pub async fn run(&self, user_message: &str) -> anyhow::Result<adk_rust::EventStream> {
-        let (_session_id, stream) = self.run_with_history(&[], user_message).await?;
-        Ok(stream)
     }
 
     /// Streaming entry point that seeds a fresh session with prior
@@ -357,18 +353,24 @@ impl EntheaiAgent {
         // turn boundary so it only holds the LAST turn's stream.
         let mut streamed = String::new();
         let mut stream_err: Option<anyhow::Error> = None;
-        // Per-event-gap idle timeout: 2× the configured value (a tool call
-        // emits nothing for up to run_shell's 120s cap, so the bare value is
-        // too tight). Any event resets the timer.
+        // Per-event-gap idle timeout on the provider: 2× the configured
+        // value. Suspended while a tool call is in flight (FunctionCall seen,
+        // FunctionResponse not yet) — that window is tool/permission time, not
+        // provider idleness; mirrors `event_bridge::run_with_events`.
         let idle = self.request_timeout.saturating_mul(2);
+        let mut awaiting_tool = false;
         loop {
-            let next = match tokio::time::timeout(idle, stream.next()).await {
-                Ok(next) => next,
-                Err(_) => {
-                    stream_err = Some(anyhow::anyhow!(
-                        "provider stream idle timeout after {idle:?}"
-                    ));
-                    break;
+            let next = if awaiting_tool {
+                stream.next().await
+            } else {
+                match tokio::time::timeout(idle, stream.next()).await {
+                    Ok(next) => next,
+                    Err(_) => {
+                        stream_err = Some(anyhow::anyhow!(
+                            "provider stream idle timeout after {idle:?}"
+                        ));
+                        break;
+                    }
                 }
             };
             let Some(ev) = next else { break };
@@ -398,6 +400,12 @@ impl EntheaiAgent {
                     .parts
                     .iter()
                     .any(|p| matches!(p, Part::FunctionResponse { .. }));
+                if has_calls {
+                    awaiting_tool = true;
+                }
+                if has_results {
+                    awaiting_tool = false;
+                }
                 let joined: String = content.parts.iter().filter_map(|p| p.text()).collect();
                 if !joined.is_empty() && !has_calls && !has_results {
                     text = joined;
@@ -484,6 +492,42 @@ mod tests {
         assert_eq!(clamp_max_tokens(i32::MAX as u32), i32::MAX);
         assert_eq!(clamp_max_tokens(i32::MAX as u32 + 1), i32::MAX);
         assert_eq!(clamp_max_tokens(u32::MAX), i32::MAX);
+    }
+
+    // Regression: `request_timeout_secs = 0` (a common "disable" convention)
+    // used to become `Duration::ZERO`, making every stream idle-timeout fire
+    // instantly instead of never/rarely.
+    #[test]
+    fn zero_request_timeout_secs_is_clamped_to_a_minimum() {
+        let inference = entheai_config::InferenceConfig {
+            request_timeout_secs: 0,
+            ..Default::default()
+        };
+        let mut providers = HashMap::new();
+        providers.insert(
+            "test".to_string(),
+            ProviderConfig {
+                base_url: "http://localhost:8000/v1".to_string(),
+                api_key_env: None,
+                ..Default::default()
+            },
+        );
+        let agent = EntheaiAgent::new_with_instruction(
+            "test/model",
+            None,
+            &inference,
+            &providers,
+            &entheai_tools::ToolRegistry::new(),
+            Arc::new(Policy::new(true, vec![])),
+            Arc::new(tokio::sync::Mutex::new(AllowAll)),
+            25,
+        )
+        .expect("agent builds");
+        assert!(
+            agent.request_timeout() >= std::time::Duration::from_secs(1),
+            "expected the zero timeout to be clamped, got {:?}",
+            agent.request_timeout()
+        );
     }
 
     #[tokio::test]

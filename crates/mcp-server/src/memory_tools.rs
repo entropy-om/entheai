@@ -66,7 +66,7 @@ pub async fn entheai_memory_stats(args: Value, server_cwd: PathBuf) -> anyhow::R
         Namespace::Tools,
         Namespace::Subagents,
     ] {
-        let n = store.list(ns, usize::MAX, 0).await?.len();
+        let n = store.count(ns).await?;
         total += n;
         out.insert(ns.as_str().to_string(), json!(n));
     }

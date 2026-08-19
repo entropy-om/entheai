@@ -101,6 +101,13 @@ type Backend = CrosstermBackend<Stdout>;
 enum Role {
     User,
     Assistant,
+    /// A slash-command echo (`/theme ember`, `/help`, ...): styled exactly
+    /// like `User` so it reads the same in the transcript, but excluded from
+    /// `build_prior_turns` — command noise with no matching assistant reply
+    /// (its feedback is a `Tool` line, already excluded) has no business
+    /// being replayed to the model as a prior user turn on every later run.
+    /// `/thaw`'s deliberate context injection stays `Role::User` on purpose.
+    Command,
     /// Inline tool-call/result lines pushed as `ToolStarted`/`ToolFinished`
     /// events arrive; display-only (never fed back into `build_history`).
     Tool,
@@ -112,7 +119,7 @@ impl Role {
     /// full width (so the role reads as a distinct block).
     fn style(self) -> (&'static str, Style, bool) {
         match self {
-            Role::User => (
+            Role::User | Role::Command => (
                 "you> ",
                 Style::default()
                     .fg(Color::Cyan)
@@ -503,9 +510,14 @@ pub async fn run(
         tokio::sync::mpsc::UnboundedReceiver<entheai_memory_pp::BrainJudgeEvent>,
     )>,
 ) -> anyhow::Result<()> {
-    // Register custom [viz.palette.*] themes from the local config file.
+    // Register custom [viz.palette.*] themes from the local config file. A
+    // TOML type error (e.g. `core = "#ff0000"` instead of an RGB array) used
+    // to be discarded silently — the operator got no diagnostic and /theme
+    // just never found the theme they thought they'd configured.
     if let Ok(raw) = std::fs::read_to_string("entheai.toml") {
-        let _ = entheai_viz::palette::register_from_toml(&raw);
+        if let Err(e) = entheai_viz::palette::register_from_toml(&raw) {
+            log::warn!("entheai.toml: [viz.palette] not loaded: {e}");
+        }
     }
     let mut terminal = init_terminal()?;
     let guard = TerminalGuard;
@@ -652,7 +664,12 @@ async fn event_loop(
         };
 
     let (perm_tx, mut perm_rx) = mpsc::channel::<PermissionRequest>(8);
-    let (result_tx, mut result_rx) = mpsc::channel::<Result<String, String>>(8);
+    // `Option`, recreated fresh per run (like `events_rx` below) rather than a
+    // single long-lived sender template: a persistent un-dropped `result_tx`
+    // meant `result_rx.recv()` could never return `None` even when a spawned
+    // task panicked before sending, so the "task panicked" recovery arm was
+    // dead code and a panicking run left the UI stuck in `Working` forever.
+    let mut result_rx: Option<mpsc::Receiver<Result<String, String>>> = None;
     // Receiver for the currently running task's progress events, if any. Set on
     // submit, torn down when the run's sender is dropped (channel closes) or the
     // result arrives.
@@ -758,14 +775,26 @@ async fn event_loop(
     // 0ms busy-loop.
     let tick_ms = config.viz.tick_ms.max(16);
     let mut ticker = tokio::time::interval(Duration::from_millis(tick_ms));
-    // Poll the remote fleet on a slow cadence (never per-frame — `list_workers`
-    // pings NATS): feeds the brain panel's `wk N` + `nats ●/○` without stalling a
-    // frame. Skip missed ticks so a slow poll can't burst-catch-up.
-    let mut fleet_poll = tokio::time::interval(Duration::from_millis(1500));
-    fleet_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Throttled poll for local Osaurus endpoint (~5s).
-    let mut osaurus_poll = tokio::time::interval(Duration::from_secs(5));
-    osaurus_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Poll the local Osaurus endpoint on its own task, same reasoning as the
+    // fleet poll above: spawning a probe and immediately `.await`ing its
+    // JoinHandle inline in a select! arm blocks that arm (and so the whole
+    // loop) for the probe's full timeout regardless of the spawn — it bought
+    // panic isolation, not concurrency. Drained non-blocking in the tick arm.
+    let (osaurus_tx, mut osaurus_rx) = mpsc::unbounded_channel::<(bool, Vec<String>)>();
+    {
+        let url = app.osaurus_base_url.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(5));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                if osaurus_tx.send(probe_osaurus(&url).await).is_err() {
+                    break; // UI gone — stop polling
+                }
+            }
+        });
+    }
     // Throttled poll for user idle time (~5s) — drives the brain panel's
     // rotation speed (see `BrainState::set_idle_seconds`).
     let mut idle_poll = tokio::time::interval(Duration::from_secs(5));
@@ -811,6 +840,36 @@ async fn event_loop(
 
     // The configured Zen theme ([viz] theme); /theme swaps it live.
     app.palette = entheai_viz::palette::by_name(&config.viz.theme);
+
+    // Poll the remote fleet on its own task (never inline in the select! loop —
+    // `list_workers` blocks up to 600ms per call, waiting out its whole window
+    // regardless of how fast NATS answers, which froze the event loop 40% of
+    // every 1.5s cycle: keys, streamed tokens and permission modals all stall
+    // during it). Results are drained non-blocking in the tick arm, same
+    // pattern as the kin poll right below.
+    let (fleet_tx, mut fleet_rx) = mpsc::unbounded_channel::<Vec<(String, bool)>>();
+    if let Some(fed) = fleet_fed.clone() {
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(1500));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                let workers = fed.list_workers(Duration::from_millis(600)).await;
+                let tuples: Vec<(String, bool)> = workers
+                    .iter()
+                    .map(|w| {
+                        (
+                            w.node_id.clone(),
+                            matches!(w.state, entheai_federation::WorkerState::Working { .. }),
+                        )
+                    })
+                    .collect();
+                if fleet_tx.send(tuples).is_err() {
+                    break; // UI gone — stop polling
+                }
+            }
+        });
+    }
 
     // Kin constellation liveness poll ([kin] nodes): one tiny GET per node per
     // interval, results drained in the tick arm. No nodes = no task, no ring.
@@ -874,7 +933,8 @@ async fn event_loop(
             let history_height = size
                 .height
                 .saturating_sub(STATUS_ROWS + PROGRESS_ROWS + INPUT_ROWS + plan_rows + swarm_rows);
-            let lines = line_cache.get_or_build(&app.messages, size.width);
+            let lines =
+                line_cache.get_or_build(&app.messages, history_pane_width(&app, size.width));
             let max_scroll = (lines.len() as u16).saturating_sub(history_height);
             if app.follow {
                 app.scroll = max_scroll;
@@ -1030,7 +1090,7 @@ async fn event_loop(
                         // loop, which is acceptable for a manual command.
                         Action::Submit(text) if is_fleet_command(&text) => {
                             app.push_msg(Msg {
-                                role: Role::User,
+                                role: Role::Command,
                                 text: text.clone(),
                             });
                             match &fleet_fed {
@@ -1076,7 +1136,8 @@ async fn event_loop(
                                 let config = Arc::clone(&config);
                                 let root = root.clone();
                                 let fed_exec = fed_exec.clone();
-                                let result_tx = result_tx.clone();
+                                let (result_tx, rtx_rx) = mpsc::channel::<Result<String, String>>(1);
+                                result_rx = Some(rtx_rx);
                                 let (ftx, frx) =
                                     mpsc::unbounded_channel::<entheai_orchestrator::FanoutEvent>();
                                 fanout_rx = Some(frx);
@@ -1125,7 +1186,8 @@ async fn event_loop(
                                 let policy = Arc::clone(&policy);
                                 let config = Arc::clone(&config);
                                 let perm_tx = perm_tx.clone();
-                                let result_tx = result_tx.clone();
+                                let (result_tx, rtx_rx) = mpsc::channel::<Result<String, String>>(1);
+                                result_rx = Some(rtx_rx);
                                 let (event_tx, event_rx) = mpsc::unbounded_channel::<AgentEvent>();
                                 events_rx = Some(event_rx);
                                 let mem = memory.clone();
@@ -1191,9 +1253,14 @@ async fn event_loop(
                 }
                 app.status = Status::AwaitingPermission { tool: req.tool, args: req.args };
             }
-            result = result_rx.recv() => {
+            maybe_result = async {
+                match result_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
                 dirty = true;
-                match result {
+                match maybe_result {
                     Some(Ok(answer)) => {
                         // A fan-out report carries `seal <12-hex>` lines — keep
                         // the last one for the dashboard board.
@@ -1220,7 +1287,10 @@ async fn event_loop(
                     }
                     Some(Err(err)) => app.push_msg(Msg { role: Role::Error, text: err }),
                     None => {
-                        // The spawned task panicked (sender dropped without sending).
+                        // The one-shot channel closed with no value sent — the
+                        // spawned task panicked. Now genuinely reachable: each
+                        // run gets its own fresh `result_tx`/`result_rx` pair
+                        // (no persistent un-dropped sender masking the close).
                         // Recover the UI from the stuck Working state.
                         app.push_msg(Msg {
                             role: Role::Error,
@@ -1236,6 +1306,7 @@ async fn event_loop(
                 app.run_started = None;
                 events_rx = None;
                 fanout_rx = None;
+                result_rx = None;
                 run_handle = None;
                 app.worker_pool = None;
                 app.streaming_idx = None;
@@ -1463,6 +1534,21 @@ async fn event_loop(
                         dirty = true;
                     }
                 }
+                // Drain Osaurus connectivity polls (spawned above).
+                while let Ok((up, models)) = osaurus_rx.try_recv() {
+                    if app.osaurus_up != up || app.osaurus_models != models {
+                        app.osaurus_up = up;
+                        app.osaurus_models = models;
+                        dirty = true;
+                    }
+                }
+                // Drain fleet liveness polls (spawned above; federation off ->
+                // never sends -> the ring stays empty, matching the old default).
+                while let Ok(tuples) = fleet_rx.try_recv() {
+                    app.brain.set_fleet(&tuples);
+                    app.brain.set_nats(true); // responded → NATS reachable
+                    dirty = true;
+                }
                 // Drain kin liveness polls — the field's outermost ring.
                 while let Ok(kin) = kin_rx.try_recv() {
                     app.brain.set_kin(&kin);
@@ -1573,49 +1659,6 @@ async fn event_loop(
                     dirty = true;
                 }
             }
-            _ = fleet_poll.tick() => {
-                match &fleet_fed {
-                    Some(fed) => {
-                        let workers = fed.list_workers(Duration::from_millis(600)).await;
-                        let tuples: Vec<(String, bool)> = workers
-                            .iter()
-                            .map(|w| {
-                                (
-                                    w.node_id.clone(),
-                                    matches!(w.state, entheai_federation::WorkerState::Working { .. }),
-                                )
-                            })
-                            .collect();
-                        app.brain.set_fleet(&tuples);
-                        app.brain.set_nats(true); // responded → NATS reachable
-                        dirty = true;
-                    }
-                    None => {
-                        // Federation off: keep the fleet ring empty.
-                        if !app.brain.fleet.is_empty() {
-                            app.brain.set_fleet(&[]);
-                            dirty = true;
-                        }
-                    }
-                }
-            }
-            _ = osaurus_poll.tick() => {
-                // Spawn the probe on a separate task so the 600ms HTTP timeout
-                // never blocks the event loop (the loop stays responsive to
-                // keyboard input and progress events even if the endpoint is
-                // slow or unreachable). The result is joined immediately via
-                // tokio::spawn + abort on drop — safe because the select!
-                // branch scope owns the JoinHandle.
-                let url = app.osaurus_base_url.clone();
-                let handle = tokio::spawn(async move { probe_osaurus(&url).await });
-                if let Ok((up, models)) = handle.await {
-                    if app.osaurus_up != up || app.osaurus_models != models {
-                        app.osaurus_up = up;
-                        app.osaurus_models = models;
-                        dirty = true;
-                    }
-                }
-            }
             _ = idle_poll.tick() => {
                 app.brain.set_idle_seconds(poll_idle_seconds());
             }
@@ -1641,6 +1684,19 @@ const MIN_WIDTH_FOR_BRAIN: u16 = 72;
 /// wide enough to spare `brain_width` columns without crowding the chat.
 fn show_brain(enabled: bool, term_width: u16) -> bool {
     enabled && term_width >= MIN_WIDTH_FOR_BRAIN
+}
+
+/// Width of the history/chat pane at `term_width`: the brain side panel
+/// (`Constraint::Length(app.brain_width)`, `render`'s horizontal split) takes
+/// its slice off the right when shown, else the pane is the full width. The
+/// wrap call below and `render`'s layout must agree on this or history rows
+/// get wrapped at one width and drawn (unwrapped, clipped) into another.
+fn history_pane_width(app: &App, term_width: u16) -> u16 {
+    if app.view != ViewMode::Zen && show_brain(app.brain_enabled, term_width) {
+        term_width.saturating_sub(app.brain_width)
+    } else {
+        term_width
+    }
 }
 const INPUT_ROWS: u16 = 3;
 /// Window within which a repeated Esc / Ctrl-C counts as a deliberate
@@ -1940,7 +1996,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             }
             let trimmed = app.input.trim();
             // Commands safe to run mid-flight (read-only or run-management). The
-            // state-mutating ones (/clear, /fanout, /quit) stay idle-only.
+            // state-mutating ones (/clear, /fanout, /quit) stay idle-only — as do
+            // /config and /setup: both unconditionally overwrite `app.status` with
+            // ConfigMenu/SetupMenu (and their Esc/Exit handlers unconditionally
+            // reset it to Idle), which clobbered an in-flight run's Working status
+            // and spinner; opening the menu while idle is the only case that's safe.
             let is_local_command = is_radio_command(trimmed)
                 || is_speak_command(trimmed)
                 || is_checkpoint_command(trimmed)
@@ -1953,8 +2013,6 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 || is_brain_command(trimmed)
                 || is_help_command(trimmed)
                 || is_fleet_command(trimmed)
-                || is_config_command(trimmed)
-                || is_setup_command(trimmed)
                 || is_model_command(trimmed);
             if !trimmed.is_empty() && (idle || is_local_command) {
                 return Action::Submit(std::mem::take(&mut app.input));
@@ -2015,7 +2073,7 @@ fn is_radio_command(text: &str) -> bool {
 /// · `/radio` (usage). There is exactly one track — see `entheai_radio`.
 fn handle_radio_command(app: &mut App, radio: &Radio, text: &str) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     let mut parts = text.split_whitespace().skip(1); // skip "/radio"
@@ -2054,7 +2112,7 @@ fn is_speak_command(text: &str) -> bool {
 /// utterance) · `/speak` (toggle).
 fn handle_speak_command(app: &mut App, voice: &mut Voice, text: &str) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     let mut parts = text.split_whitespace().skip(1); // skip "/speak"
@@ -2113,7 +2171,7 @@ async fn handle_checkpoint_command(
     text: &str,
 ) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     let dir = entheai_memory_pp::default_checkpoint_dir(root);
@@ -2222,7 +2280,7 @@ fn is_current_command(text: &str) -> bool {
 /// the pulse channel like an automatic one).
 fn handle_current_command(app: &mut App, current: &Option<CurrentRuntime>, text: &str) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     let feedback = match current {
@@ -2289,7 +2347,7 @@ fn format_status(status: &entheai_orchestrator::WorkerStatus) -> String {
 /// Forms: `/workers` / `/workers list` · `/workers stop <id>` · `/workers debug <id>`.
 fn handle_workers_command(app: &mut App, text: &str) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     let mut parts = text.split_whitespace().skip(1); // skip "/workers"
@@ -2366,7 +2424,7 @@ fn is_viz_command(text: &str) -> bool {
 /// echoing the switch into history (mirrors the other local commands).
 fn handle_viz_command(app: &mut App, text: &str) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     app.view = if app.view == ViewMode::Swarm {
@@ -2395,7 +2453,7 @@ fn is_zen_command(text: &str) -> bool {
 /// Toggle the full-canvas Zen field in response to `/zen` (mirror of Ctrl-G).
 fn handle_zen_command(app: &mut App, text: &str) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     app.view = if app.view == ViewMode::Zen {
@@ -2428,7 +2486,7 @@ fn is_dashboard_command(text: &str) -> bool {
 /// Ctrl-D), echoing the switch into history.
 fn handle_dashboard_command(app: &mut App, text: &str) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     app.view = if app.view == ViewMode::Dashboard {
@@ -2459,7 +2517,7 @@ fn is_theme_command(text: &str) -> bool {
 /// colours (lineage gold & co) never change with the theme — the entity rule.
 fn handle_theme_command(app: &mut App, text: &str) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     app.palette = match text.split_whitespace().nth(1) {
@@ -2509,7 +2567,7 @@ fn is_help_command(text: &str) -> bool {
 /// surface is discoverable without leaving the TUI.
 fn handle_help_command(app: &mut App) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: "/help".to_string(),
     });
     let mut body = String::from("commands");
@@ -2535,7 +2593,7 @@ fn is_config_command(text: &str) -> bool {
 /// Open the interactive configuration menu overlay.
 fn handle_config_command(app: &mut App) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: "/config".to_string(),
     });
     app.status = Status::ConfigMenu { selected_idx: 0 };
@@ -2556,7 +2614,7 @@ fn is_setup_command(text: &str) -> bool {
 /// Open the interactive setup wizard modal overlay.
 fn handle_setup_command(app: &mut App) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: "/setup".to_string(),
     });
     app.status = Status::SetupMenu { step_idx: 0 };
@@ -2600,7 +2658,7 @@ fn is_fanout_command(text: &str) -> bool {
 /// (`app.fanout`, read by the run path) instead of the single-agent loop.
 fn handle_fanout_command(app: &mut App, text: &str) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: text.to_string(),
     });
     app.fanout = match text.split_whitespace().nth(1) {
@@ -2629,7 +2687,7 @@ fn is_model_command(text: &str) -> bool {
 /// switching means relaunching with `--model "<provider>/<model>"`.
 fn handle_model_command(app: &mut App) {
     app.push_msg(Msg {
-        role: Role::User,
+        role: Role::Command,
         text: "/model".to_string(),
     });
     app.push_msg(Msg {
@@ -2716,7 +2774,7 @@ fn build_prior_turns(messages: &[Msg]) -> Vec<(Arc<str>, Arc<str>)> {
         .filter_map(|m| match m.role {
             Role::User => Some(("user".into(), Arc::from(m.text.as_str()))),
             Role::Assistant => Some(("assistant".into(), Arc::from(m.text.as_str()))),
-            Role::Tool | Role::Error => None,
+            Role::Command | Role::Tool | Role::Error => None,
         })
         .collect()
 }
@@ -3017,6 +3075,8 @@ fn render(
     let full = frame.area();
     // Zen takes the WHOLE screen — the field is the brain, so the side panel
     // would be redundant chrome. Every other view keeps the optional panel.
+    // Same gate as `history_pane_width`, which the caller used to wrap `lines`
+    // at this pane's width — keep them in lockstep or history rows clip.
     let show = app.view != ViewMode::Zen && show_brain(app.brain_enabled, full.width);
     let (area, brain_area) = if show {
         let [left, right] =
@@ -3026,6 +3086,7 @@ fn render(
     } else {
         (full, None)
     };
+    debug_assert_eq!(area.width, history_pane_width(app, full.width));
 
     // Draw the always-on brain side panel first so it appears in both the chat
     // and full-screen swarm views (the Swarm branch below returns early).
@@ -4437,6 +4498,14 @@ mod tests {
                 role: Role::Error,
                 text: "boom".into(),
             },
+            // A slash-command echo (`/theme ember`, `/help`, ...) has no
+            // matching assistant reply — its feedback is a `Tool` line,
+            // already excluded — so it must not be replayed as a prior user
+            // turn on every later run.
+            Msg {
+                role: Role::Command,
+                text: "/theme ember".into(),
+            },
         ];
         let hist = build_prior_turns(&messages);
         assert_eq!(hist.len(), 2);
@@ -5247,6 +5316,27 @@ mod tests {
         assert_eq!(dash_phase(&app), "integrating");
         app.swarm.done(None, 1, 0);
         assert_eq!(dash_phase(&app), "done");
+    }
+
+    #[test]
+    fn history_pane_width_matches_render_split() {
+        let mut app = test_app();
+        app.brain_enabled = true;
+        app.brain_width = 26;
+        app.view = ViewMode::Chat;
+        // Wide enough for the brain panel: pane is term_width - brain_width,
+        // not the full terminal width (the bug: history was wrapped at the
+        // full width, then drawn — unwrapped — into the narrower left pane).
+        assert_eq!(history_pane_width(&app, 100), 74);
+        // Too narrow for the panel (show_brain gates it off) -> full width.
+        assert_eq!(history_pane_width(&app, 50), 50);
+        // Zen never shows the panel regardless of width.
+        app.view = ViewMode::Zen;
+        assert_eq!(history_pane_width(&app, 100), 100);
+        // Panel disabled -> full width.
+        app.view = ViewMode::Chat;
+        app.brain_enabled = false;
+        assert_eq!(history_pane_width(&app, 100), 100);
     }
 
     #[test]

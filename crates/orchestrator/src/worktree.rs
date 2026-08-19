@@ -189,6 +189,32 @@ impl WorktreeGuard {
     pub fn mark_merged(&mut self, branches: impl IntoIterator<Item = String>) {
         self.merged.extend(branches);
     }
+
+    /// Async cleanup for the NORMAL exit path — same effect as `Drop::drop`
+    /// (remove every tracked worktree directory, `git branch -D` the ones
+    /// marked merged, drop the pool's temp dir), but via the async `run_git`
+    /// instead of `Drop`'s synchronous `run_git_blocking`. Call this once,
+    /// after `mark_merged`, right before the caller returns successfully —
+    /// `Drop` still runs afterward but does nothing (`self.worktrees` is
+    /// cleared here first), so it stays as the fallback for the panic/
+    /// cancelled-future path only, where async cleanup isn't available.
+    /// Without this, EVERY successful fan-out — not just a cancelled one —
+    /// blocked a tokio worker thread for N sequential blocking subprocess
+    /// spawns (2 per tracked worktree) during `Drop::drop`.
+    pub async fn finish(mut self) {
+        for wt in std::mem::take(&mut self.worktrees) {
+            let path_str = wt.path.to_string_lossy().into_owned();
+            let _ = run_git(
+                &self.pool.root,
+                &["worktree", "remove", "--force", path_str.as_str()],
+            )
+            .await;
+            if self.merged.contains(&wt.branch) {
+                let _ = run_git(&self.pool.root, &["branch", "-D", &wt.branch]).await;
+            }
+        }
+        let _ = tokio::fs::remove_dir_all(&self.pool.dir).await;
+    }
 }
 
 impl Drop for WorktreeGuard {
@@ -230,6 +256,11 @@ pub async fn commit_all(path: &Path, message: &str) -> anyhow::Result<bool> {
         return Ok(false);
     }
 
+    // `--no-verify` (skip hooks) + `commit.gpgsign=false`: the coder's edit is
+    // being committed on its behalf into a throwaway worktree, not on behalf of
+    // a human who set up hooks/signing for their own commits — a repo
+    // pre-commit hook rejecting the edit, or gpgsign prompting pinentry with no
+    // TTY, must not turn a real (committable) diff into a silent failure.
     let (ok, _stdout, stderr) = run_git(
         path,
         &[
@@ -237,7 +268,10 @@ pub async fn commit_all(path: &Path, message: &str) -> anyhow::Result<bool> {
             "user.email=entheai@localhost",
             "-c",
             "user.name=entheai",
+            "-c",
+            "commit.gpgsign=false",
             "commit",
+            "--no-verify",
             "-m",
             message,
         ],
@@ -293,34 +327,56 @@ pub async fn integrate(
         );
     }
 
-    let mut merged = Vec::new();
-    let mut conflicted = Vec::new();
-    for branch in branches {
-        let (ok, _stdout, _stderr) = run_git(&int_path, &["merge", "--no-edit", branch]).await?;
-        if ok {
-            merged.push(branch.clone());
-        } else {
-            // Best-effort: abort whatever merge state was left behind. If
-            // there was nothing to abort (e.g. the merge failed before
-            // touching the index), this itself fails — that's fine, ignore it.
-            let _ = run_git(&int_path, &["merge", "--abort"]).await;
-            conflicted.push(branch.clone());
+    // From here on the integration worktree exists and MUST be removed on
+    // every exit, not just success — an early `?`/`bail!` (e.g. the merge
+    // loop hitting a spawn error, or the final `git diff` failing) used to
+    // leave `integration_branch` checked out in this leftover temp dir: the
+    // user's own `git switch integration_branch` would then fail with
+    // "already checked out at ...", and the branch could never be
+    // (re-)integrated without the operator manually finding and removing it.
+    let outcome: anyhow::Result<(Vec<String>, Vec<String>, String)> = async {
+        let mut merged = Vec::new();
+        let mut conflicted = Vec::new();
+        for branch in branches {
+            let (ok, _stdout, _stderr) =
+                run_git(&int_path, &["merge", "--no-edit", branch]).await?;
+            if ok {
+                merged.push(branch.clone());
+            } else {
+                // Best-effort: abort whatever merge state was left behind. If
+                // there was nothing to abort (e.g. the merge failed before
+                // touching the index), this itself fails — that's fine, ignore it.
+                let _ = run_git(&int_path, &["merge", "--abort"]).await;
+                conflicted.push(branch.clone());
+            }
         }
-    }
 
-    let range = format!("{base}..HEAD");
-    let (diff_ok, diff_stdout, diff_stderr) = run_git(&int_path, &["diff", &range]).await?;
-    if !diff_ok {
-        anyhow::bail!(
-            "git diff {range} failed in {}: {diff_stderr}",
-            int_path.display()
-        );
+        let range = format!("{base}..HEAD");
+        let (diff_ok, diff_stdout, diff_stderr) = run_git(&int_path, &["diff", &range]).await?;
+        if !diff_ok {
+            anyhow::bail!(
+                "git diff {range} failed in {}: {diff_stderr}",
+                int_path.display()
+            );
+        }
+        Ok((merged, conflicted, diff_stdout))
     }
+    .await;
 
-    let (remove_ok, _stdout, remove_stderr) =
-        run_git(root, &["worktree", "remove", "--force", &path_str]).await?;
-    if !remove_ok {
-        anyhow::bail!("git worktree remove --force {path_str} failed: {remove_stderr}");
+    // Best-effort spawn: a spawn failure here must not mask a real error from
+    // the body above (the more actionable one), so it's folded into the
+    // combined result below rather than propagated with its own `?`.
+    let remove_result = run_git(root, &["worktree", "remove", "--force", &path_str]).await;
+
+    let (merged, conflicted, diff_stdout) = outcome?;
+    match remove_result {
+        Ok((true, ..)) => {}
+        Ok((false, _stdout, remove_stderr)) => {
+            anyhow::bail!("git worktree remove --force {path_str} failed: {remove_stderr}");
+        }
+        Err(e) => {
+            anyhow::bail!("git worktree remove --force {path_str} failed to spawn: {e}");
+        }
     }
 
     Ok(Integration {
@@ -427,6 +483,62 @@ mod tests {
 
         let committed = commit_all(&wt.path, "noop").await.expect("commit_all");
         assert!(!committed, "expected no commit when nothing changed");
+
+        pool.remove(&wt).await.expect("remove");
+    }
+
+    #[tokio::test]
+    async fn commit_all_bypasses_a_failing_pre_commit_hook() {
+        // A repo's `.git/hooks/pre-commit` runs for every worktree of that
+        // repo. A coder's edit failing it (or gpgsign prompting with no TTY)
+        // must not silently disappear — commit_all runs with `--no-verify`
+        // and `commit.gpgsign=false` precisely so a real, committable diff
+        // still lands, instead of erroring and being mistaken for "no changes"
+        // by a caller doing `.unwrap_or(false)`.
+        let repo = init_repo().await;
+        let root = repo.path();
+        let hooks_dir = root.join(".git").join("hooks");
+        tokio::fs::create_dir_all(&hooks_dir)
+            .await
+            .expect("mkdir hooks");
+        let hook_path = hooks_dir.join("pre-commit");
+        tokio::fs::write(
+            &hook_path,
+            "#!/bin/sh
+exit 1
+",
+        )
+        .await
+        .expect("write pre-commit hook");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = tokio::fs::metadata(&hook_path)
+                .await
+                .expect("stat hook")
+                .permissions();
+            perms.set_mode(0o755);
+            tokio::fs::set_permissions(&hook_path, perms)
+                .await
+                .expect("chmod hook");
+        }
+
+        let pool = WorktreePool::new(root, "hookbypass", "HEAD")
+            .await
+            .expect("pool new");
+        let wt = pool.create(0).await.expect("create");
+        tokio::fs::write(
+            wt.path.join("feature.txt"),
+            "new feature
+",
+        )
+        .await
+        .expect("write feature.txt");
+
+        let committed = commit_all(&wt.path, "add feature despite hostile hook")
+            .await
+            .expect("commit_all must succeed — the hook is bypassed, not swallowed as a failure");
+        assert!(committed);
 
         pool.remove(&wt).await.expect("remove");
     }
@@ -705,5 +817,81 @@ mod tests {
             branch_listed(&branches, &branch1),
             "unmerged branch must be kept; branches:\n{branches}"
         );
+    }
+
+    // The async normal-completion path (`finish()`) must have the exact same
+    // observable effect as the synchronous `Drop::drop` fallback: remove every
+    // worktree dir + the pool temp dir, delete only merged branches, keep the
+    // rest — and Drop running afterward (when `self` goes out of scope at the
+    // end of this test) must be a no-op, not a second removal attempt.
+    #[tokio::test]
+    async fn guard_finish_has_the_same_effect_as_drop() {
+        let repo = init_repo().await;
+        let root = repo.path();
+        let base = resolve_base(root, "HEAD").await.expect("base");
+        let session = "guard-finish";
+        let pool_dir = std::env::temp_dir().join(format!("entheai-wt-{session}"));
+
+        let pool = WorktreePool::new(root, session, "HEAD")
+            .await
+            .expect("pool new");
+        let mut guard = WorktreeGuard::new(pool);
+
+        let wt0 = guard.create(0).await.expect("create 0");
+        tokio::fs::write(wt0.path.join("base.txt"), "line one\nMERGED\nline three\n")
+            .await
+            .expect("write 0");
+        assert!(commit_all(&wt0.path, "change from 0")
+            .await
+            .expect("commit 0"));
+
+        let wt1 = guard.create(1).await.expect("create 1");
+        tokio::fs::write(wt1.path.join("unmerged.txt"), "kept\n")
+            .await
+            .expect("write 1");
+        assert!(commit_all(&wt1.path, "unmerged work")
+            .await
+            .expect("commit 1"));
+
+        let integration = integrate(
+            root,
+            &base,
+            "entheai/guard-finish/integration",
+            std::slice::from_ref(&wt0.branch),
+        )
+        .await
+        .expect("integrate");
+        assert_eq!(integration.merged, vec![wt0.branch.clone()]);
+        guard.mark_merged(integration.merged.iter().cloned());
+
+        let wt0_path = wt0.path.clone();
+        let wt1_path = wt1.path.clone();
+        let merged_branch = wt0.branch.clone();
+        let kept_branch = wt1.branch.clone();
+
+        guard.finish().await; // <-- the fix under test, not Drop
+
+        assert!(!wt0_path.exists(), "wt0 dir should be removed by finish()");
+        assert!(!wt1_path.exists(), "wt1 dir should be removed by finish()");
+        assert!(
+            !pool_dir.exists(),
+            "pool temp dir should be removed by finish()"
+        );
+
+        let branches = git_ok(root, &["branch", "--list"]).await;
+        assert!(
+            !branch_listed(&branches, &merged_branch),
+            "merged branch should be deleted by finish(); branches:\n{branches}"
+        );
+        assert!(
+            branch_listed(&branches, &kept_branch),
+            "unmerged branch must be kept by finish(); branches:\n{branches}"
+        );
+        // `guard` was consumed by `finish()`; it drops (as a no-op — its
+        // `worktrees` was cleared) at the end of this test scope. Nothing
+        // further to assert — a second removal attempt on already-gone paths
+        // would just be an ignored `let _ =` no-op either way, so the
+        // meaningful guarantee here is that `finish()` alone already produced
+        // every effect asserted above.
     }
 }

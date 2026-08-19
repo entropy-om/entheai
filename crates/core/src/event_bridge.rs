@@ -1,4 +1,4 @@
-//! Drives `EntheaiAgent::run`'s `adk_rust::EventStream` and translates it into
+//! Drives `EntheaiAgent::run_with_history`'s `adk_rust::EventStream` and translates it into
 //! the TUI/CLI-facing `AgentEvent` vocabulary, closing the post-task memory
 //! gap `crate::memory_callbacks` left open (see its module doc).
 //!
@@ -83,18 +83,27 @@ pub async fn run_with_events(
     let mut pending_calls: HashMap<String, (String, String)> = HashMap::new();
     // First mid-stream error, applied after the session is released below.
     let mut stream_err: Option<anyhow::Error> = None;
-    // Per-event-gap idle timeout (2× the configured value — a tool call emits
-    // nothing for up to run_shell's 120s cap, so the bare value is too tight).
+    // Per-event-gap idle timeout on the PROVIDER (2× the configured value).
+    // Not applied while a tool call is in flight: adk runs the tool inside the
+    // stream between the FunctionCall and FunctionResponse events, and that
+    // window holds the permission prompt (the user may sit at the y/N modal for
+    // minutes) plus the tool's own bound (`[tools].shell_timeout_secs`, the MCP
+    // call timeout) — none of which is provider idleness.
     let idle = agent.request_timeout().saturating_mul(2);
+    let mut awaiting_tool = false;
 
     loop {
-        let next = match tokio::time::timeout(idle, stream.next()).await {
-            Ok(next) => next,
-            Err(_) => {
-                stream_err = Some(anyhow::anyhow!(
-                    "provider stream idle timeout after {idle:?}"
-                ));
-                break;
+        let next = if awaiting_tool {
+            stream.next().await
+        } else {
+            match tokio::time::timeout(idle, stream.next()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    stream_err = Some(anyhow::anyhow!(
+                        "provider stream idle timeout after {idle:?}"
+                    ));
+                    break;
+                }
             }
         };
         let Some(ev) = next else { break };
@@ -128,6 +137,12 @@ pub async fn run_with_events(
             .parts
             .iter()
             .any(|p| matches!(p, Part::FunctionResponse { .. }));
+        if has_calls {
+            awaiting_tool = true;
+        }
+        if has_results {
+            awaiting_tool = false;
+        }
 
         // A non-partial, pure-text turn (no calls, no results) is a candidate
         // final answer — overwritten by any later such turn, matching

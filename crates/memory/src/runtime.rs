@@ -281,6 +281,12 @@ impl MemoryRuntime {
     }
 
     /// Deterministic extraction of durable learnings from this task.
+    ///
+    /// Only failed/denied calls are extracted — a successful call ("tool X
+    /// succeeded with args ...") isn't a durable learning worth a row, and
+    /// with every task otherwise writing one row per tool call (each
+    /// triggering its own embed HTTP call when an embedder is configured),
+    /// the Learnings namespace grew unbounded for no retrieval value.
     async fn extract_learnings(
         &self,
         scope: &MemoryScope,
@@ -288,7 +294,7 @@ impl MemoryRuntime {
     ) -> Result<(), MemoryError> {
         for (idx, ev) in evidence.iter().enumerate() {
             let outcome = if ev.allowed && !ev.result.starts_with("error:") {
-                "succeeded"
+                continue;
             } else if !ev.allowed {
                 "denied"
             } else {
@@ -498,5 +504,53 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn extract_learnings_only_records_failed_or_denied_calls() {
+        let store = SqliteStore::open_memory(None).unwrap();
+        let rt = MemoryRuntime::new(
+            Arc::new(store),
+            MemoryRuntimeConfig {
+                enabled: true,
+                ..Default::default()
+            },
+        );
+        rt.extract_learnings(
+            &test_scope(),
+            &[
+                ToolEvidence {
+                    call_id: "c1".into(),
+                    name: "read_file".into(),
+                    args: "{}".into(),
+                    result: "content".into(),
+                    allowed: true, // succeeded — must not be extracted
+                },
+                ToolEvidence {
+                    call_id: "c2".into(),
+                    name: "run_shell".into(),
+                    args: "{}".into(),
+                    result: "error: exit 1".into(),
+                    allowed: true, // failed
+                },
+                ToolEvidence {
+                    call_id: "c3".into(),
+                    name: "run_shell".into(),
+                    args: "{}".into(),
+                    result: "".into(),
+                    allowed: false, // denied
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let learnings = rt.memory.list(Namespace::Learnings, 100, 0).await.unwrap();
+        assert_eq!(
+            learnings.len(),
+            2,
+            "only the failed and denied calls should produce a learning, got {learnings:?}"
+        );
+        assert!(learnings.iter().all(|e| !e.content.contains("succeeded")));
     }
 }
