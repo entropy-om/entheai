@@ -160,7 +160,18 @@ impl BusSession {
     /// no-op; `Drop`'s `abort()` remains the cancel/panic fallback.
     pub async fn finish(mut self) {
         if let Some(task) = self.task.take() {
-            let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+            // `timeout` dropping the `JoinHandle` future on elapse does NOT
+            // abort the task (dropping a `JoinHandle` detaches it) — grab the
+            // abort handle first so a wedged/reconnecting tee is actually
+            // killed instead of leaking its `Client` clone and `downstream`
+            // sender for the rest of the process.
+            let abort = task.abort_handle();
+            if tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .is_err()
+            {
+                abort.abort();
+            }
         }
     }
 }
@@ -213,6 +224,27 @@ pub fn new_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn finish_aborts_a_wedged_tee_instead_of_leaking_it() {
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran_c = std::sync::Arc::clone(&ran);
+        let task = tokio::spawn(async move {
+            // Simulates a wedged/reconnecting hub: never resolves on its own.
+            std::future::pending::<()>().await;
+            ran_c.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let handle = task.abort_handle();
+        let session = BusSession { task: Some(task) };
+
+        session.finish().await;
+
+        // Give the abort a moment to actually land, then confirm the task is
+        // gone (not merely detached-but-still-running).
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(handle.is_finished(), "the wedged tee task must be aborted");
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+    }
 
     #[tokio::test]
     async fn connect_returns_none_when_disabled() {

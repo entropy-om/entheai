@@ -8,6 +8,17 @@
 //! report) — a context is one folder, however many times it froze.
 
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
+
+/// Bound on any single git subprocess `publish` runs. `publish` is awaited
+/// inline from the TUI event loop (the `/freeze` handler), so an unbounded
+/// `git pull`/`push` — a slow remote, or git prompting on /dev/tty for
+/// credentials while the TUI holds raw mode — would otherwise hang the whole
+/// UI indefinitely. `GIT_TERMINAL_PROMPT=0` + a null stdin make that prompt
+/// fail fast instead of blocking; this timeout is the backstop for anything
+/// that still hangs (a genuinely slow network, `pull --rebase` conflicts, ...).
+const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Where one publish landed: folder name and (when derivable) the browsable URL.
 pub struct Published {
@@ -87,12 +98,21 @@ pub fn browse_url(remote: &str, branch: &str, folder: &str) -> Option<String> {
 }
 
 async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = tokio::process::Command::new("git")
-        .arg("-C")
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.arg("-C")
         .arg(dir)
         .args(args)
-        .output()
+        .stdin(Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .kill_on_drop(true);
+    let out = tokio::time::timeout(GIT_TIMEOUT, cmd.output())
         .await
+        .map_err(|_| {
+            format!(
+                "git {} timed out after {GIT_TIMEOUT:?}",
+                args.first().unwrap_or(&"?")
+            )
+        })?
         .map_err(|e| format!("git spawn failed: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if out.status.success() {
@@ -142,7 +162,9 @@ pub async fn publish(
     // Pull first so parallel sessions never wedge the clone on a stale head;
     // then add → commit → push. An empty diff (re-freeze of identical state)
     // is reported as already-published, not an error.
-    let _ = git(repo_dir, &["pull", "--rebase", "--quiet"]).await;
+    if let Err(e) = git(repo_dir, &["pull", "--rebase", "--quiet"]).await {
+        log::warn!("chenno: pull --rebase failed (continuing with local state): {e}");
+    }
     git(repo_dir, &["add", &folder]).await?;
     let staged = git(repo_dir, &["diff", "--cached", "--name-only"]).await?;
     if staged.trim().is_empty() {

@@ -253,7 +253,18 @@ async fn run_serve(
             if inflight_c.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
                 presence_c.set(entheai_federation::WorkerState::Idle);
             }
-            fed_c.publish_result(&result).await.ok();
+            if let Err(e) = fed_c.publish_result(&result).await {
+                // The coder's committed delta must not vanish silently: skip
+                // the ack so JetStream redelivers the item instead of the
+                // dispatcher waiting out the full deadline for an answer
+                // that was actually produced but never sent.
+                log::warn!(
+                    "worker {}::{}: publish_result failed: {e}",
+                    claimed.item.session,
+                    claimed.item.index
+                );
+                return;
+            }
             claimed.ack().await;
         });
     }
@@ -405,6 +416,11 @@ async fn fallback_full_clone(
 ) -> anyhow::Result<()> {
     let base_bundle = tmp.join("base.bundle");
     tokio::fs::write(&base_bundle, fed.get_bundle(&item.base_bundle_key).await?).await?;
+    // `work` may already hold a partial `git worktree add` from a
+    // `prepare_worktree` call that this function is the fallback for — `git
+    // clone` refuses to clone into a non-empty destination. Best-effort:
+    // clear it first (nothing here has been reported to the caller yet).
+    let _ = tokio::fs::remove_dir_all(work).await;
     entheai_federation::repo::materialize_from_bundle(&base_bundle, work).await?;
     Ok(())
 }
@@ -535,10 +551,12 @@ async fn run_dispatch(config: &Config, role: &str, task: &str) -> anyhow::Result
     Ok(())
 }
 
-/// A per-run identifier for the result subject. Avoids a `uuid` dep — the pid is
-/// enough to keep concurrent dispatches on distinct subjects; stays `[a-z0-9]`.
+/// A per-run identifier for the result subject. The pid alone collides across
+/// hosts sharing one NATS hub (two dispatchers with the same pid overwrite
+/// each other's `base_key`/`result_subject`), so this is fleet-wide unique
+/// instead; stays `[a-z0-9]`.
 fn uuid_like() -> String {
-    format!("d{}", std::process::id())
+    format!("d{}", uuid::Uuid::new_v4().simple())
 }
 
 /// Load and parse the entheai TOML config from `path`.
@@ -711,6 +729,21 @@ fn run_sandboxed_coder_blocking(cli: Cli) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uuid_like_is_subject_safe_and_fleet_wide_unique() {
+        let a = uuid_like();
+        let b = uuid_like();
+        assert_ne!(a, b, "two calls must not collide (pid alone would)");
+        for id in [&a, &b] {
+            assert!(id.starts_with('d'));
+            assert!(
+                id.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+                "must stay [a-z0-9] for the NATS subject: {id}"
+            );
+        }
+    }
 
     #[test]
     fn is_error_output_detects_the_capture_convention() {

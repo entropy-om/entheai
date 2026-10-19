@@ -49,8 +49,13 @@ pub fn extract_at_refs(text: &str) -> (String, Vec<String>) {
 pub fn scan_bare_paths(text: &str) -> Vec<String> {
     text.split_whitespace()
         .filter_map(|tok| {
-            let trimmed =
-                tok.trim_matches(|c: char| matches!(c, ',' | '.' | ':' | ';' | ')' | '('));
+            // Trailing punctuation is safe to strip on either end, but a
+            // leading '.' must survive — `./crates/foo/bar.rs` /
+            // `../x/y.rs` otherwise get flattened into a bogus absolute
+            // path (`/crates/foo/bar.rs`) that then fails to resolve.
+            let trimmed = tok
+                .trim_end_matches([',', '.', ':', ';', ')', '('])
+                .trim_start_matches([',', ':', ';', ')', '(']);
             if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
                 return None;
             }
@@ -123,10 +128,14 @@ pub async fn resolve_and_dedupe(root: &std::path::Path, candidates: &[PathBuf]) 
     out
 }
 
-/// Read `path` and split into `CHUNK_LINES`-line chunks. Returns `None` for
+/// Read `path` and split into `CHUNK_LINES`-line chunks, materializing at
+/// most `max_chunks` of them (`total_chunks` on each still reflects the
+/// file's true chunk count) — a bare-path mention of a large log/data file
+/// used to `.join()` every chunk's content into an owned `String` before the
+/// caller's global truncation ever discarded the excess. Returns `None` for
 /// unreadable or non-UTF8 (binary) files -- a bad reference never aborts the
 /// map. Returns `Some(vec![])` for a readable-but-empty file.
-pub async fn read_and_chunk(path: &std::path::Path) -> Option<Vec<FileChunk>> {
+pub async fn read_and_chunk(path: &std::path::Path, max_chunks: usize) -> Option<Vec<FileChunk>> {
     let bytes = tokio::fs::read(path).await.ok()?;
     let content = String::from_utf8(bytes).ok()?;
     let lines: Vec<&str> = content.lines().collect();
@@ -138,6 +147,7 @@ pub async fn read_and_chunk(path: &std::path::Path) -> Option<Vec<FileChunk>> {
     Some(
         chunks
             .into_iter()
+            .take(max_chunks)
             .enumerate()
             .map(|(i, lines)| FileChunk {
                 path: path.to_path_buf(),
@@ -201,6 +211,22 @@ mod tests {
         assert_eq!(
             scan_bare_paths("look at crates/foo/bar.rs."),
             vec!["crates/foo/bar.rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn scan_bare_paths_keeps_a_leading_relative_dot() {
+        assert_eq!(
+            scan_bare_paths("edit ./crates/foo/bar.rs now"),
+            vec!["./crates/foo/bar.rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn scan_bare_paths_keeps_a_leading_parent_dir_dots() {
+        assert_eq!(
+            scan_bare_paths("edit ../x/y.rs now"),
+            vec!["../x/y.rs".to_string()]
         );
     }
 
@@ -286,7 +312,7 @@ mod tests {
         let lines: Vec<String> = (0..400).map(|i| format!("line{i}")).collect();
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
 
-        let chunks = read_and_chunk(&path).await.unwrap();
+        let chunks = read_and_chunk(&path, usize::MAX).await.unwrap();
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].chunk_index, 0);
         assert_eq!(chunks[0].total_chunks, 2);
@@ -303,7 +329,7 @@ mod tests {
         let lines: Vec<String> = (0..250).map(|i| format!("line{i}")).collect();
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
 
-        let chunks = read_and_chunk(&path).await.unwrap();
+        let chunks = read_and_chunk(&path, usize::MAX).await.unwrap();
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].content.lines().count(), 200);
         assert_eq!(chunks[1].content.lines().count(), 50);
@@ -316,7 +342,7 @@ mod tests {
         let path = dir.path().join("empty.txt");
         std::fs::write(&path, "").unwrap();
 
-        let chunks = read_and_chunk(&path).await.unwrap();
+        let chunks = read_and_chunk(&path, usize::MAX).await.unwrap();
         assert!(chunks.is_empty());
     }
 
@@ -325,7 +351,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("does-not-exist.txt");
 
-        assert!(read_and_chunk(&path).await.is_none());
+        assert!(read_and_chunk(&path, usize::MAX).await.is_none());
     }
 
     #[tokio::test]
@@ -335,6 +361,21 @@ mod tests {
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(&[0xFF, 0xFE, 0x00, 0xFF]).unwrap();
 
-        assert!(read_and_chunk(&path).await.is_none());
+        assert!(read_and_chunk(&path, usize::MAX).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_and_chunk_never_materializes_more_than_max_chunks() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("huge.log");
+        // 10 chunks' worth of lines, but only 2 may be materialized.
+        let lines: Vec<String> = (0..2_000).map(|i| format!("line{i}")).collect();
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        let chunks = read_and_chunk(&path, 2).await.unwrap();
+        assert_eq!(chunks.len(), 2, "only max_chunks may be materialized");
+        // total_chunks still reflects the file's real size, not the cap.
+        assert_eq!(chunks[0].total_chunks, 10);
+        assert_eq!(chunks[1].total_chunks, 10);
     }
 }

@@ -9,6 +9,26 @@ use crate::{Tool, ToolError};
 /// Size of each individual read() call against the child's stdout/stderr pipes.
 const READ_CHUNK: usize = 8192;
 
+/// SIGKILL the whole process group `pid` (its own, via `.process_group(0)`
+/// at spawn — negative pid targets the group, not just `pid` itself) so a
+/// backgrounded grandchild (`cmd &`, a pipeline, an exec'd server) dies with
+/// `/bin/sh`, instead of surviving as an orphan holding the closed-parent
+/// stdout/stderr pipe's write end open. `None`/kill failure is not fatal —
+/// `child.start_kill()` right after this still reaps `/bin/sh` itself.
+fn kill_process_group(pid: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(pid) = pid {
+        // SAFETY: `kill` with a negative pid signals the process group;
+        // no memory/pointers involved, an ESRCH (already-dead group) is
+        // harmless and intentionally ignored.
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+}
+
 pub struct RunShell {
     cwd: PathBuf,
     timeout_secs: u64,
@@ -61,15 +81,23 @@ impl Tool for RunShell {
         // `output_cap`, so a runaway command (`yes`, `cat /dev/zero`, ...) can OOM
         // the agent well before the timeout fires. Reading through a bounded loop
         // below keeps memory use capped to `output_cap` for the life of the call.
-        let mut child = tokio::process::Command::new("/bin/sh")
-            .arg("-c")
+        let mut cmd = tokio::process::Command::new("/bin/sh");
+        cmd.arg("-c")
             .arg(command)
             .current_dir(&self.cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true) // backstop: reap the child if we return early without an explicit kill
-            .spawn()?;
+            .kill_on_drop(true); // backstop: reap the child if we return early without an explicit kill
+                                 // Its own process group: `start_kill()` SIGKILLs only `/bin/sh`
+                                 // itself, so a backgrounded grandchild (`cmd &`, a pipeline, an
+                                 // exec'd server) survived on timeout/cap, kept the stdout/stderr
+                                 // pipes' write end open, and leaked as an orphaned process. Killing
+                                 // the whole group below (`kill_process_group`) reaches it too.
+        #[cfg(unix)]
+        cmd.process_group(0);
+        let mut child = cmd.spawn()?;
+        let pid = child.id();
 
         let mut stdout = child.stdout.take().expect("stdout piped");
         let mut stderr = child.stderr.take().expect("stderr piped");
@@ -111,6 +139,7 @@ impl Tool for RunShell {
         }
 
         if timed_out {
+            kill_process_group(pid);
             let _ = child.start_kill();
             let _ = child.wait().await; // reap — never leave a zombie
             return Err(ToolError::Timeout {
@@ -121,7 +150,9 @@ impl Tool for RunShell {
 
         let capped = stdout_buf.len() + stderr_buf.len() >= cap;
         if capped {
-            // Runaway output: stop the child now instead of waiting it out.
+            // Runaway output: stop the child (and its group) now instead of
+            // waiting it out.
+            kill_process_group(pid);
             let _ = child.start_kill();
         }
         let status = child.wait().await?; // reap — never leave a zombie
@@ -191,6 +222,34 @@ mod tests {
         assert!(
             out.contains(&format!("truncated at {cap} bytes")),
             "expected truncation marker in output: {out:?}"
+        );
+    }
+
+    /// `start_kill()` alone only SIGKILLs `/bin/sh`; a backgrounded
+    /// grandchild survives, keeps running, and leaks. Killing the whole
+    /// process group must reach it too.
+    #[tokio::test]
+    async fn timeout_kills_a_backgrounded_grandchild_not_just_the_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let heartbeat = dir.path().join("heartbeat");
+        std::fs::write(&heartbeat, "").unwrap();
+        let sh = RunShell::new(dir.path()).with_limits(1, 100_000); // 1s timeout
+        let cmd = format!(
+            "(while true; do echo x >> '{}'; sleep 0.05; done) & sleep 5",
+            heartbeat.display()
+        );
+        let err = sh
+            .call(serde_json::json!({"command": cmd}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::Timeout { .. }));
+
+        let size_at_timeout = std::fs::metadata(&heartbeat).map(|m| m.len()).unwrap_or(0);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let size_after_wait = std::fs::metadata(&heartbeat).map(|m| m.len()).unwrap_or(0);
+        assert_eq!(
+            size_at_timeout, size_after_wait,
+            "the backgrounded grandchild kept writing after timeout — it was not killed"
         );
     }
 }

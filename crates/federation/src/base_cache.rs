@@ -149,6 +149,12 @@ impl BaseCache {
         base_sha: &str,
         base_bundle_key: &str,
     ) -> anyhow::Result<PathBuf> {
+        // Defense in depth (claim() already filters): the sha becomes a path
+        // component below and is `remove_dir_all`ed on a broken hit.
+        anyhow::ensure!(
+            crate::types::is_valid_sha(base_sha),
+            "refusing base_sha {base_sha:?}: not a git object id"
+        );
         let dir = cache_dir();
         tokio::fs::create_dir_all(&dir).await?;
         let bare = bare_path(&dir, base_sha);

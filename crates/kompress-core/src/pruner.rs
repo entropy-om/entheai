@@ -1,4 +1,4 @@
-use crate::loss::{asymmetric_loss, effective_score, is_must_keep, DEFAULT_THRESHOLD, LAMBDA};
+use crate::loss::{effective_score, is_must_keep, DEFAULT_THRESHOLD, LAMBDA};
 use crate::types::ContextUnit;
 use anyhow::Result;
 
@@ -27,9 +27,15 @@ impl Pruner {
                 if is_must_keep(&u.content) {
                     return true;
                 }
+                // Mechanism A (soft threshold): keep iff the effective score clears
+                // the bar. The prior form (`score > threshold || loss < lambda *
+                // threshold`) was algebraically degenerate — for score < threshold,
+                // asymmetric_loss = lambda*(threshold-score), so the second clause
+                // reduces to `score > 0` and the threshold/lambda config never
+                // pruned anything above zero. `asymmetric_loss` stays available for
+                // callers that want the graded penalty rather than a hard keep/drop.
                 let score = effective_score(u.score, &u.content);
-                let loss = asymmetric_loss(score, self.threshold, self.lambda);
-                score > self.threshold || loss < self.lambda * self.threshold
+                score > self.threshold
             })
             .collect())
     }
@@ -74,5 +80,24 @@ mod tests {
         let units = vec![unit("this is basically just filler prose", 0.0)];
         let pruned = pruner.prune(units).unwrap();
         assert!(pruned.is_empty());
+    }
+
+    #[test]
+    fn mid_range_score_below_threshold_is_pruned() {
+        // Regression: the old predicate (`score > threshold || loss < lambda *
+        // threshold`) reduced to `score > 0` for any score < threshold, so a
+        // unit at e.g. 0.1 (below DEFAULT_THRESHOLD = 0.35) survived. It must not.
+        let pruner = Pruner::new();
+        let units = vec![unit("some middling filler content here", 0.1)];
+        let pruned = pruner.prune(units).unwrap();
+        assert!(pruned.is_empty(), "score below threshold must be pruned");
+    }
+
+    #[test]
+    fn score_above_threshold_survives() {
+        let pruner = Pruner::new();
+        let units = vec![unit("a genuinely relevant finding", 0.9)];
+        let pruned = pruner.prune(units).unwrap();
+        assert_eq!(pruned.len(), 1);
     }
 }

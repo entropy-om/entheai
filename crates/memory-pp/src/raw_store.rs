@@ -158,8 +158,15 @@ impl RawStore {
         let created_at = now_ms();
 
         tokio::task::spawn_blocking(move || -> Result<(), PpError> {
-            let conn = db.lock().map_err(|_| PpError::Lock)?;
-            let changed = conn.execute(
+            let mut conn = db.lock().map_err(|_| PpError::Lock)?;
+            // Both inserts in one transaction (same pattern `prune` already
+            // uses): as two separate autocommit statements, a failure between
+            // them (disk full, I/O error, process death) left the `raw` row
+            // committed with no `raw_fts` mirror — permanently unsearchable,
+            // since a later re-ingest of the same content is `INSERT OR
+            // IGNORE`d (changed == 0) and never retries the FTS mirror.
+            let tx = conn.transaction()?;
+            let changed = tx.execute(
                 "INSERT OR IGNORE INTO raw (id, kind, bytes, meta, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 rusqlite::params![id, kind.as_str(), bytes, meta_txt, created_at],
@@ -167,11 +174,12 @@ impl RawStore {
             // Only mirror into FTS when the row was actually inserted, so the
             // standalone FTS table can't accumulate duplicates on re-ingest.
             if changed > 0 {
-                conn.execute(
+                tx.execute(
                     "INSERT INTO raw_fts (id, bytes) VALUES (?1, ?2)",
                     rusqlite::params![id, bytes],
                 )?;
             }
+            tx.commit()?;
             Ok(())
         })
         .await
@@ -210,7 +218,15 @@ impl RawStore {
 
     /// Delete rows older than `retention_days`; returns the count removed.
     pub async fn prune(&self, retention_days: u64) -> Result<usize, PpError> {
-        let cutoff = now_ms() - (retention_days as i64) * 86_400_000;
+        // Config-supplied, unvalidated. Plain `(retention_days as i64) *
+        // 86_400_000` overflows the multiply for retention_days >=
+        // ~106.75 billion (debug panic / release wrap), and u64::MAX casts to
+        // -1, which put the cutoff a day in the FUTURE — deleting every row in
+        // the never-rewritten raw store on the very next prune. Saturate both
+        // the cast and the multiply/sub so a pathological config value just
+        // clamps to "prune nothing" instead.
+        let days = i64::try_from(retention_days).unwrap_or(i64::MAX);
+        let cutoff = now_ms().saturating_sub(days.saturating_mul(86_400_000));
         let db = self.db.clone();
         tokio::task::spawn_blocking(move || -> Result<usize, PpError> {
             let mut conn = db.lock().map_err(|_| PpError::Lock)?;
@@ -393,6 +409,32 @@ mod tests {
             "cutoff=now drops older-than-now"
         );
         assert_eq!(s.count().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn prune_with_pathological_retention_days_never_deletes_everything() {
+        // Regression: `(retention_days as i64) * 86_400_000` overflowed the
+        // multiply for huge values, and u64::MAX cast to i64 was -1 — putting
+        // the cutoff a day in the FUTURE and deleting every row on the very
+        // next prune. A saturating u64::MAX retention must mean "keep
+        // everything", not "delete everything".
+        let s = RawStore::open_memory().unwrap();
+        s.ingest(RawKind::Transcript, "must survive", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            s.prune(u64::MAX).await.unwrap(),
+            0,
+            "u64::MAX retention must keep every row, not delete them"
+        );
+        assert_eq!(s.count().await.unwrap(), 1);
+
+        assert_eq!(
+            s.prune(106_751_991_167 + 1).await.unwrap(),
+            0,
+            "a retention value past the old overflow threshold must not panic or delete"
+        );
+        assert_eq!(s.count().await.unwrap(), 1);
     }
 
     #[tokio::test]

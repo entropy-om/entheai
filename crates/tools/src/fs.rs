@@ -32,16 +32,47 @@ fn resolve_in_root(root: &Path, rel: &str) -> Result<PathBuf, ToolError> {
     // parent (worst case, `root` itself). `root` must already be canonicalized — the tool
     // constructors do that once (e.g. macOS temp dirs live under `/var`, itself a symlink
     // to `/private/var`), so no per-call canonicalization is needed here.
+    //
+    // `symlink_metadata` (not `exists`, which follows links) so a DANGLING symlink still
+    // counts as the deepest existing component: `Path::exists` is false for it, and the
+    // old walk then canonicalized its (in-root) parent and let `write_file` create the
+    // link's out-of-root target through it.
     let mut ancestor: &Path = normalized.as_path();
-    while !ancestor.exists() {
+    while std::fs::symlink_metadata(ancestor).is_err() {
         match ancestor.parent() {
             Some(p) => ancestor = p,
             None => break,
         }
     }
-    if let Ok(canonical) = ancestor.canonicalize() {
-        if !canonical.starts_with(root) {
-            return Err(ToolError::PathEscape(rel.to_string()));
+    match ancestor.canonicalize() {
+        Ok(canonical) => {
+            if !canonical.starts_with(root) {
+                return Err(ToolError::PathEscape(rel.to_string()));
+            }
+        }
+        // Exists but won't canonicalize: a dangling symlink. Resolve its target by
+        // hand (relative to the link's own directory) and hold it to the same rule.
+        Err(_) => {
+            if let Ok(target) = std::fs::read_link(ancestor) {
+                let base = ancestor
+                    .parent()
+                    .and_then(|p| p.canonicalize().ok())
+                    .unwrap_or_else(|| root.to_path_buf());
+                let mut resolved = PathBuf::new();
+                for comp in base.join(target).components() {
+                    use std::path::Component::*;
+                    match comp {
+                        ParentDir => {
+                            resolved.pop();
+                        }
+                        CurDir => {}
+                        other => resolved.push(other.as_os_str()),
+                    }
+                }
+                if !resolved.starts_with(root) {
+                    return Err(ToolError::PathEscape(rel.to_string()));
+                }
+            }
         }
     }
     Ok(normalized)
@@ -292,5 +323,24 @@ mod tests {
             resolve_in_root(&root, "link.txt").is_err(),
             "an escaping symlink must be rejected"
         );
+    }
+
+    #[test]
+    fn resolve_in_root_rejects_dangling_symlink_escape() {
+        // A repo can ship `link.txt -> /outside/not-yet-there`; `write_file`
+        // through it would create the file outside the workspace.
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let missing = outside.path().join("not-yet-there.txt");
+        std::os::unix::fs::symlink(&missing, dir.path().join("dangling.txt")).unwrap();
+        // Relative dangling link escaping via `..` as well.
+        std::os::unix::fs::symlink("../../etc/hosts-nope", dir.path().join("rel.txt")).unwrap();
+        // And a dangling link that stays inside the root is fine.
+        std::os::unix::fs::symlink("inside-not-yet.txt", dir.path().join("ok.txt")).unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        assert!(resolve_in_root(&root, "dangling.txt").is_err());
+        assert!(resolve_in_root(&root, "rel.txt").is_err());
+        assert!(resolve_in_root(&root, "ok.txt").is_ok());
+        assert!(!missing.exists());
     }
 }

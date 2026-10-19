@@ -56,12 +56,20 @@ pub struct McpClient {
     next_id: AtomicU64,
     /// The server's name (from config), used to namespace tool names.
     server_name: String,
-    /// Applied to the `initialize` handshake and every subsequent request
-    /// (`tools/list`, `tools/call`, ...); bounds how long a hung or
-    /// unresponsive server can block the caller. Sourced from
-    /// `mcp_defaults.spawn_timeout_secs`.
+    /// Applied to the `initialize` handshake and the control requests
+    /// (`tools/list`, ...); bounds how long a hung or unresponsive server can
+    /// block startup. Sourced from `mcp_defaults.spawn_timeout_secs`.
     timeout: Duration,
+    /// Applied to `tools/call` only, in milliseconds (atomic so it can be set
+    /// on the shared `Arc<McpClient>` after connect). Tool calls legitimately
+    /// run far longer than a handshake (web fetch, research, build tools), so
+    /// they must not share the 10s spawn bound. Sourced from
+    /// `mcp_defaults.call_timeout_secs`; see [`DEFAULT_CALL_TIMEOUT`].
+    call_timeout_ms: AtomicU64,
 }
+
+/// Default bound for a single `tools/call` when none is configured.
+pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Outcome of reading one newline-delimited chunk with `read_capped_line`.
 enum ReadLineOutcome {
@@ -205,6 +213,29 @@ impl McpClient {
     /// `McpError::Timeout` instead of hanging forever; the pending entry is
     /// removed on timeout so it can't linger or be resolved later.
     async fn request(&self, method: &str, params: Value) -> Result<Value, McpError> {
+        self.request_within(method, params, self.timeout).await
+    }
+
+    /// The bound applied to `tools/call` requests.
+    pub fn call_timeout(&self) -> Duration {
+        Duration::from_millis(self.call_timeout_ms.load(Ordering::Relaxed))
+    }
+
+    /// Set the `tools/call` bound (typically `mcp_defaults.call_timeout_secs`).
+    pub fn set_call_timeout(&self, timeout: Duration) {
+        self.call_timeout_ms.store(
+            timeout.as_millis().min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
+    }
+
+    /// [`request`] with an explicit bound.
+    async fn request_within(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, McpError> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         {
@@ -221,7 +252,7 @@ impl McpClient {
             self.pending.lock().await.remove(&id);
             return Err(err);
         }
-        match tokio::time::timeout(self.timeout, rx).await {
+        match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(Ok(value))) => Ok(value),
             Ok(Ok(Err(msg))) => Err(McpError::Rpc(msg)),
             Ok(Err(_)) => Err(McpError::Closed),
@@ -270,6 +301,7 @@ impl McpClient {
             next_id: AtomicU64::new(1),
             server_name: server_name.into(),
             timeout,
+            call_timeout_ms: AtomicU64::new(DEFAULT_CALL_TIMEOUT.as_millis() as u64),
         });
 
         tokio::spawn(Self::reader_loop(reader, pending, MAX_LINE_BYTES));
@@ -374,7 +406,11 @@ impl McpClient {
 
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<String, McpError> {
         let result = self
-            .request("tools/call", json!({"name": name, "arguments": arguments}))
+            .request_within(
+                "tools/call",
+                json!({"name": name, "arguments": arguments}),
+                self.call_timeout(),
+            )
             .await?;
 
         let text = result
@@ -809,5 +845,113 @@ mod tests {
             .expect("call timed out")
             .expect("call failed");
         assert_eq!(out, "echoed: yo");
+    }
+
+    /// Wires a mock server whose `tools/call` reply is delayed by `delay`
+    /// (everything else responds immediately, like `spawn_mock_server`).
+    fn spawn_delayed_call_mock_server(
+        server_read: DuplexStream,
+        server_write: DuplexStream,
+        delay: Duration,
+    ) {
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(server_read).lines();
+            let mut writer = server_write;
+            while let Ok(Some(line)) = lines.next_line().await {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let msg: Value = match serde_json::from_str(trimmed) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+                let id = msg.get("id").cloned();
+                match method {
+                    "initialize" => {
+                        let resp = json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {
+                                "protocolVersion": "2024-11-05",
+                                "serverInfo": {"name": "mock", "version": "0"},
+                                "capabilities": {},
+                            }
+                        });
+                        write_resp(&mut writer, &resp).await;
+                    }
+                    "notifications/initialized" => {}
+                    "tools/call" => {
+                        tokio::time::sleep(delay).await;
+                        let resp = json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {
+                                "content": [{"type": "text", "text": "slow reply"}],
+                                "isError": false,
+                            }
+                        });
+                        write_resp(&mut writer, &resp).await;
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+
+    async fn connect_to_delayed_mock(
+        client_timeout: Duration,
+        call_delay: Duration,
+    ) -> Arc<McpClient> {
+        let (client_read, server_write) = tokio::io::duplex(8192);
+        let (server_read, client_write) = tokio::io::duplex(8192);
+        spawn_delayed_call_mock_server(server_read, server_write, call_delay);
+
+        timeout(
+            Duration::from_secs(2),
+            McpClient::connect(client_read, client_write, "mock-slow", client_timeout),
+        )
+        .await
+        .expect("connect timed out")
+        .expect("connect failed")
+    }
+
+    /// The bug this PR fixed: `tools/call` used to share the short
+    /// spawn/handshake timeout, so any tool legitimately running longer than
+    /// it always failed. `call_tool` must bound itself by `call_timeout()`,
+    /// not `self.timeout` — a reply slower than `self.timeout` but faster
+    /// than `call_timeout` must still succeed.
+    #[tokio::test]
+    async fn call_tool_uses_the_call_timeout_not_the_shorter_handshake_timeout() {
+        let client =
+            connect_to_delayed_mock(Duration::from_millis(100), Duration::from_millis(400)).await;
+        client.set_call_timeout(Duration::from_secs(2));
+
+        let out = timeout(Duration::from_secs(3), client.call_tool("anything", json!({})))
+            .await
+            .expect("call_tool hung past the outer test timeout")
+            .expect("call_tool must succeed: the 400ms reply is within call_timeout even though it exceeds the 100ms handshake timeout");
+        assert_eq!(out, "slow reply");
+    }
+
+    /// The other half of the same contract: `call_timeout` must actually be
+    /// enforced, not just wider than the handshake timeout by coincidence.
+    #[tokio::test]
+    async fn call_tool_still_times_out_once_the_call_timeout_itself_elapses() {
+        let client =
+            connect_to_delayed_mock(Duration::from_secs(2), Duration::from_millis(400)).await;
+        client.set_call_timeout(Duration::from_millis(100));
+
+        let result = timeout(
+            Duration::from_secs(2),
+            client.call_tool("anything", json!({})),
+        )
+        .await
+        .expect("call_tool hung instead of honoring call_timeout");
+        match result {
+            Err(McpError::Timeout(_)) => {}
+            other => panic!("expected McpError::Timeout, got {other:?}"),
+        }
     }
 }

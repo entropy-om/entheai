@@ -53,7 +53,15 @@ impl VaultWriter {
         for note in &out.notes {
             let key = rel_key(&note.rel_path);
             let hash = fnv1a(note.markdown.as_bytes());
-            if self.manifest.get(&key) == Some(&hash) {
+            // Hash-skip must also confirm the file still exists on disk — the
+            // manifest alone doesn't notice a note deleted out-of-band (user,
+            // Obsidian, iCloud eviction), which used to leave it missing until
+            // its source content next changed.
+            let still_on_disk = self
+                .safe_target(&note.rel_path)
+                .map(|p| p.is_file())
+                .unwrap_or(false);
+            if still_on_disk && self.manifest.get(&key) == Some(&hash) {
                 desired.insert(key, hash);
                 continue;
             }
@@ -81,7 +89,11 @@ impl VaultWriter {
                 Err(_) => continue, // missing source asset: skip, not fatal
             };
             let hash = fnv1a(&bytes);
-            if self.manifest.get(&key) == Some(&hash) {
+            let still_on_disk = self
+                .safe_target(&asset.vault_rel)
+                .map(|p| p.is_file())
+                .unwrap_or(false);
+            if still_on_disk && self.manifest.get(&key) == Some(&hash) {
                 desired.insert(key, hash);
                 continue;
             }
@@ -170,15 +182,31 @@ impl VaultWriter {
     fn persist_manifest(&self) -> io::Result<()> {
         std::fs::create_dir_all(&self.subtree)?;
         let json = serde_json::to_string_pretty(&self.manifest).map_err(io::Error::other)?;
-        std::fs::write(self.subtree.join(MANIFEST), json)
+        // Same temp+rename path as `write_confined` — a plain truncate-then-write
+        // left a truncated/partial manifest on a crash or iCloud interruption
+        // mid-write, which `load_manifest` then silently read as "no manifest",
+        // orphaning every previously generated note.
+        let mut tmp = tempfile::NamedTempFile::new_in(&self.subtree)?;
+        io::Write::write_all(&mut tmp, json.as_bytes())?;
+        tmp.persist(self.subtree.join(MANIFEST))
+            .map_err(|e| e.error)?;
+        Ok(())
     }
 }
 
 fn load_manifest(subtree: &Path) -> BTreeMap<String, u64> {
-    std::fs::read_to_string(subtree.join(MANIFEST))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    let path = subtree.join(MANIFEST);
+    match std::fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+            log::warn!(
+                "obsidian: manifest at {} failed to parse ({e}) — treating as empty; \
+                 previously generated notes may be orphaned until their source changes",
+                path.display()
+            );
+            BTreeMap::new()
+        }),
+        Err(_) => BTreeMap::new(), // no manifest yet: first run, not an error
+    }
 }
 
 fn rel_key(p: &Path) -> String {
@@ -255,6 +283,33 @@ mod tests {
     }
 
     #[test]
+    fn a_manually_deleted_note_is_regenerated_even_with_an_unchanged_hash() {
+        let vault = tempfile::tempdir().unwrap();
+        let subtree = vault.path().join("entheai-sync");
+        let mut w = VaultWriter::new(subtree.clone());
+        let out = RenderOutput {
+            notes: vec![note("Home.md", "hi {UPDATED}")],
+            assets: vec![],
+        };
+        w.apply(&out, vault.path()).unwrap();
+        assert!(subtree.join("Home.md").is_file());
+
+        // Simulate the user (or iCloud eviction) deleting the generated file
+        // out-of-band, without touching the manifest.
+        std::fs::remove_file(subtree.join("Home.md")).unwrap();
+        assert!(!subtree.join("Home.md").exists());
+
+        // Re-open + re-apply IDENTICAL content: the manifest hash still
+        // matches, but the file is gone, so it must be regenerated.
+        let mut w2 = VaultWriter::new(subtree.clone());
+        w2.apply(&out, vault.path()).unwrap();
+        assert!(
+            subtree.join("Home.md").is_file(),
+            "deleted note must be regenerated, not left missing forever"
+        );
+    }
+
+    #[test]
     fn orphan_note_is_deleted_when_source_vanishes() {
         let vault = tempfile::tempdir().unwrap();
         let subtree = vault.path().join("entheai-sync");
@@ -279,6 +334,30 @@ mod tests {
         .unwrap();
         assert!(!subtree.join("A.md").exists(), "orphan removed");
         assert!(subtree.join("B.md").is_file());
+    }
+
+    #[test]
+    fn a_corrupt_manifest_is_treated_as_empty_instead_of_panicking() {
+        let vault = tempfile::tempdir().unwrap();
+        let subtree = vault.path().join("entheai-sync");
+        std::fs::create_dir_all(&subtree).unwrap();
+        // Simulate a crash/interruption mid-write: truncated, invalid JSON.
+        std::fs::write(subtree.join(".entheai-sync-manifest.json"), "{\"a.md\": 1").unwrap();
+
+        let mut w = VaultWriter::new(subtree.clone());
+        // Must not panic; degrades to an empty manifest (everything re-writes).
+        w.apply(
+            &RenderOutput {
+                notes: vec![note("a.md", "content")],
+                assets: vec![],
+            },
+            vault.path(),
+        )
+        .unwrap();
+        assert!(subtree.join("a.md").is_file());
+        // The manifest itself must now be valid JSON again.
+        let raw = std::fs::read_to_string(subtree.join(".entheai-sync-manifest.json")).unwrap();
+        assert!(serde_json::from_str::<BTreeMap<String, u64>>(&raw).is_ok());
     }
 
     #[test]

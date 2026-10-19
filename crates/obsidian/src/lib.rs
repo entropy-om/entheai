@@ -70,10 +70,20 @@ pub fn start(opts: &ObsidianOptions, repo_root: &Path, home: &Path) -> ObsidianS
 
 async fn run(opts: ObsidianOptions, root: PathBuf, home: PathBuf) -> anyhow::Result<()> {
     let Some(vault) = resolve::resolve_vault(&root, &opts.vault_path, &home) else {
-        log::debug!(
-            "obsidian: no vault resolves for {} — sync off",
-            root.display()
-        );
+        if opts.vault_path.is_empty() {
+            log::debug!(
+                "obsidian: no vault resolves for {} — sync off",
+                root.display()
+            );
+        } else {
+            // The operator explicitly set vault_path — a silent debug! here
+            // reads as "it's working" when it's actually a typo or a missing
+            // .obsidian/ dir; the operator needs to see this.
+            log::warn!(
+                "obsidian: vault_path {:?} is not a vault (no .obsidian/) — sync off",
+                opts.vault_path
+            );
+        }
         return Ok(());
     };
     let subtree = vault.join(&opts.subtree);

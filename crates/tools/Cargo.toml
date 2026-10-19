@@ -12,6 +12,7 @@ async-trait.workspace = true
 walkdir.workspace = true
 tokio = { workspace = true, features = ["fs", "process", "rt", "time"] }
 reqwest = { workspace = true }
+libc = "0.2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

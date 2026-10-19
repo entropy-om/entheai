@@ -75,18 +75,18 @@ pub async fn entheai_dispatch(args: Value, server_cwd: PathBuf) -> anyhow::Resul
         .map_err(|_| {
             anyhow::anyhow!("no worker result within {deadline_secs}s — fell through (run locally)")
         })?;
-    let r: Option<entheai_federation::WorkResult> = match awaited {
-        Some(msg) => serde_json::from_slice(&msg.payload).ok(),
-        _ => None,
-    };
-
-    let Some(r) = r else {
+    // Distinguish "no worker answered" (fell through, not an error) from
+    // "a worker answered with a payload we can't parse" (a real bug worth
+    // surfacing, not silently misreported as "no worker result").
+    let Some(msg) = awaited else {
         return Ok(json!({
             "status": "fell_through_local",
             "executed_on": "local",
             "message": format!("no worker result for session {session} within {deadline_secs}s"),
         }));
     };
+    let r: entheai_federation::WorkResult = serde_json::from_slice(&msg.payload)
+        .map_err(|e| anyhow::anyhow!("unparseable WorkResult from worker: {e}"))?;
 
     if r.committed {
         let rb = tmp.path().join("result.bundle");

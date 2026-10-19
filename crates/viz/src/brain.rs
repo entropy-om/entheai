@@ -409,10 +409,16 @@ pub fn render(state: &BrainState, area: Rect, buf: &mut Buffer, marker: Marker) 
             // proportionally to `awake`, with a subtle breath pulsing on top.
             // A freshly-woken node (awake > 0.85) briefly flashes brighter.
             let n_frozen = state.frozen.len().max(1);
+            // Radius <= 1.0: the Canvas' x_bounds is [-1.0, 1.0] and ratatui
+            // 0.29 DROPS a label outright once its x falls outside the bounds
+            // (it doesn't clamp to the edge) — at r = 1.05 every frozen node
+            // vanished whenever |cos(theta)| > 1/1.05, ~20% of each rotation
+            // at both horizontal extremes, instead of sliding to the rim.
+            const FROZEN_RING_RADIUS: f64 = 0.98;
             for (i, node) in state.frozen.iter().enumerate() {
                 let a = i as f64 / n_frozen as f64 * std::f64::consts::TAU;
-                let (x, y, wz) = project(a, 1.05, 0.05, state.frame);
-                let db = depth_brightness(wz, 1.05);
+                let (x, y, wz) = project(a, FROZEN_RING_RADIUS, 0.05, state.frame);
+                let db = depth_brightness(wz, FROZEN_RING_RADIUS);
                 let p = pulse(state.frame, 0.15);
                 // Combine: depth brightness * (awake level + breath) * wake-flash boost.
                 let raw_v = (0.20 + 0.80 * node.awake) * p as f32;

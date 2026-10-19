@@ -305,8 +305,15 @@ pub fn wezterm_config_path() -> PathBuf {
 /// user's own config and any of their shaders are preserved.
 fn merge_shader_block(existing: &str, shader_path: &str) -> (String, ConfigAction) {
     let block = format!("{BLOCK_BEGIN}\ncustom-shader = {shader_path}\n{BLOCK_END}");
-    if let (Some(b), Some(e_start)) = (existing.find(BLOCK_BEGIN), existing.find(BLOCK_END)) {
-        let end = e_start + BLOCK_END.len();
+    // Search for the end marker AFTER the begin marker, not independently —
+    // a stray/hand-moved end marker preceding the begin marker used to make
+    // `end < b` and panic on `existing[b..end]`.
+    let found = existing.find(BLOCK_BEGIN).and_then(|b| {
+        existing[b..]
+            .find(BLOCK_END)
+            .map(|rel| (b, b + rel + BLOCK_END.len()))
+    });
+    if let Some((b, end)) = found {
         if existing[b..end] == block {
             return (existing.to_string(), ConfigAction::AlreadyCurrent);
         }
@@ -361,9 +368,15 @@ fn wez_block(var: &str, shader_path: &str) -> String {
 /// patched safely and get an advisory comment instead
 /// ([`ConfigAction::NeedsManual`]).
 fn merge_wezterm_shader_block(existing: &str, shader_path: &str) -> (String, ConfigAction) {
-    if let (Some(b), Some(e_start)) = (existing.find(WEZ_BLOCK_BEGIN), existing.find(WEZ_BLOCK_END))
-    {
-        let end = e_start + WEZ_BLOCK_END.len();
+    // Search for the end marker AFTER the begin marker, not independently —
+    // a stray/hand-moved end marker preceding the begin marker used to make
+    // `end < b` and panic on `existing[b..end]`.
+    let found = existing.find(WEZ_BLOCK_BEGIN).and_then(|b| {
+        existing[b..]
+            .find(WEZ_BLOCK_END)
+            .map(|rel| (b, b + rel + WEZ_BLOCK_END.len()))
+    });
+    if let Some((b, end)) = found {
         // A managed block already exists — keep the current `return <ident>`
         // var so a user rename heals the block, else the block's own var.
         let var = trailing_return_var(existing).or_else(|| {
@@ -481,7 +494,10 @@ pub fn run_doctor_for(
                 std::fs::write(cfg, wezterm_created_config(&shader_path))?;
                 (shader_path, cfg.to_path_buf(), ConfigAction::Created)
             } else {
-                let existing = std::fs::read_to_string(cfg).unwrap_or_default();
+                // The file is known to exist here — a read failure (non-UTF8,
+                // EIO) must surface, not silently degrade to "" and merge
+                // against an empty config.
+                let existing = std::fs::read_to_string(cfg)?;
                 let (new_text, action) =
                     merge_wezterm_shader_block(&existing, &shader_path.display().to_string());
                 if action != ConfigAction::AlreadyCurrent && action != ConfigAction::NeedsManual {
@@ -494,7 +510,15 @@ pub fn run_doctor_for(
             let shader_path = materialize_shader(entheai_home)?;
             let cfg = ghostty_cfg;
             let existed = cfg.exists();
-            let existing = std::fs::read_to_string(cfg).unwrap_or_default();
+            // A read failure on an EXISTING config (non-UTF8, EIO) must not
+            // turn into empty text: `merge_shader_block("", ..)` then reports
+            // `Added`, and the write below replaces the user's whole config
+            // with just the managed block (silent data loss).
+            let existing = if existed {
+                std::fs::read_to_string(cfg)?
+            } else {
+                String::new()
+            };
             let (new_text, mut action) =
                 merge_shader_block(&existing, &shader_path.display().to_string());
             if !existed && action != ConfigAction::AlreadyCurrent {
@@ -635,6 +659,41 @@ mod tests {
         let (t, a) = merge_shader_block("", "/s/rain.glsl");
         assert_eq!(a, ConfigAction::Added);
         assert!(t.starts_with(BLOCK_BEGIN) && t.contains("custom-shader = /s/rain.glsl"));
+    }
+
+    #[test]
+    fn doctor_merge_does_not_panic_on_a_stray_end_marker_before_begin() {
+        // A hand-moved/duplicated end marker preceding the begin marker used
+        // to make `end < b` and panic on `existing[b..end]`.
+        let cfg = format!("{BLOCK_END}\nfont-family = Berkeley Mono\n{BLOCK_BEGIN}\n...\n");
+        let (t, a) = merge_shader_block(&cfg, "/s/rain.glsl");
+        // No valid (begin, matching end-after-begin) pair found -> falls
+        // through to appending a fresh block, never a panic.
+        assert_eq!(a, ConfigAction::Added);
+        assert!(t.contains("custom-shader = /s/rain.glsl"));
+    }
+
+    #[test]
+    fn wezterm_merge_does_not_panic_on_a_stray_end_marker_before_begin() {
+        let cfg = format!(
+            "{WEZ_BLOCK_END}\nlocal config = {{}}\n{WEZ_BLOCK_BEGIN}\n...\nreturn config\n"
+        );
+        let (t, a) = merge_wezterm_shader_block(&cfg, "/s/rain.glsl");
+        assert_ne!(a, ConfigAction::AlreadyCurrent);
+        assert!(t.contains("shaders = { frag = '/s/rain.glsl' }"));
+    }
+
+    #[test]
+    fn doctor_run_surfaces_a_read_error_on_an_existing_unreadable_ghostty_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("entheai");
+        let wez = dir.path().join("wezterm/wezterm.lua");
+        // A directory at the config path: `exists()` is true, but
+        // `read_to_string` fails — must propagate as an error, not silently
+        // degrade to "" and overwrite whatever's really there.
+        let cfg = dir.path().join("ghostty-config-dir");
+        std::fs::create_dir_all(&cfg).unwrap();
+        assert!(run_doctor_for(TerminalKind::Ghostty, &home, &cfg, &wez).is_err());
     }
 
     #[test]

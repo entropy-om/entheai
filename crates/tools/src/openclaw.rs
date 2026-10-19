@@ -40,7 +40,12 @@ impl Tool for OpenClawProbe {
     }
 
     async fn call(&self, _args: serde_json::Value) -> Result<String, ToolError> {
-        let client = reqwest::Client::new();
+        // No timeout previously: a stalled tailnet host hung the agent turn
+        // indefinitely (this tool is Tier::Read so it may auto-run unattended).
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .unwrap_or_default();
         match client.get(&self.endpoint).send().await {
             Ok(resp) => {
                 let status = resp.status();

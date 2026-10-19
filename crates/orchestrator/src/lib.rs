@@ -702,6 +702,25 @@ pub enum VerifyStatus {
     Failed(String),
 }
 
+/// Human status line for one coder's `FanoutEvent::CoderFinished`. Matches on
+/// `verify` FIRST: a commit failure sets `committed = false` with
+/// `VerifyStatus::Failed(..)` (see the commit_result match above) and must
+/// report as that, not fall into a generic "no changes" just because
+/// `committed` happens to be false too — that conflation is exactly what
+/// silently hid a real commit failure behind the benign "coder made no edits"
+/// case.
+fn coder_status_label(committed: bool, verify: &VerifyStatus) -> &'static str {
+    match verify {
+        VerifyStatus::Failed(_) if !committed => "commit failed — not integrated",
+        VerifyStatus::Failed(_) => "verify failed",
+        _ if !committed => "no changes",
+        VerifyStatus::Passed(_) => "verified + sealed",
+        VerifyStatus::Skipped => "changes committed (unverified)",
+        VerifyStatus::Unverifiable => "unverifiable — not integrated",
+        VerifyStatus::NoChanges => "no changes",
+    }
+}
+
 /// Last `n` chars of `s` (char-boundary safe — a byte-index slice could split a
 /// multi-byte UTF-8 char, e.g. mid-emoji in a test's output).
 fn tail_chars(s: &str, n: usize) -> String {
@@ -721,27 +740,116 @@ fn tail_chars(s: &str, n: usize) -> String {
 /// (mandatory gate — not integrated) and [`VerifyStatus::Skipped`] (legacy lax mode).
 /// On success the committed diff against `base` and the raw verify log are
 /// hashed into a deterministic [`MergeSeal`].
+/// What `verify_worktree` runs: either a literal shell command — the
+/// operator's own `[fanout].verify`, trusted as configured — or the pinned
+/// content of the auto-detected `./scripts/check.sh` AS IT EXISTED AT `base`.
+/// The auto-detect path is a coder-writable file inside the very worktree
+/// being judged: without pinning, a coder could "pass" its own gate by
+/// editing `scripts/check.sh` to `exit 0`, silently defeating the
+/// "sub-agents cannot self-report success" guarantee `verify_required`
+/// exists for. See [`resolve_verify_command`].
+#[derive(Clone)]
+enum VerifyCommand {
+    Shell(String),
+    PinnedScript(Vec<u8>),
+}
+
+impl VerifyCommand {
+    fn describe(&self) -> String {
+        match self {
+            VerifyCommand::Shell(cmd) => cmd.clone(),
+            VerifyCommand::PinnedScript(_) => "./scripts/check.sh (pinned to base)".to_string(),
+        }
+    }
+}
+
+/// Resolve what to run for `verify_worktree`, pinning the auto-detected
+/// script against tampering (see [`VerifyCommand`]). An explicit
+/// `[fanout].verify` is always trusted as the operator configured it — only
+/// the parameterless auto-detect path is pinned. Falls back to trusting the
+/// worktree's own copy when the script didn't exist at `base` (the coder's
+/// task legitimately added it) or `git show` itself fails for any reason —
+/// never harder-fails verification over this.
+async fn resolve_verify_command(
+    config: &entheai_config::Config,
+    root: &Path,
+    base: &str,
+) -> Option<VerifyCommand> {
+    let cmd = config.fanout.resolve_verify(root)?;
+    if config.fanout.verify.is_some() {
+        return Some(VerifyCommand::Shell(cmd));
+    }
+    // Auto-detected: `cmd` is exactly "./scripts/check.sh" per
+    // `FanoutConfig::resolve_verify`. Pin it to the base commit's content.
+    let pinned = tokio::process::Command::new("git")
+        .args(["show", &format!("{base}:scripts/check.sh")])
+        .current_dir(root)
+        .kill_on_drop(true)
+        .output()
+        .await;
+    match pinned {
+        Ok(out) if out.status.success() && !out.stdout.is_empty() => {
+            Some(VerifyCommand::PinnedScript(out.stdout))
+        }
+        _ => Some(VerifyCommand::Shell(cmd)),
+    }
+}
+
 async fn verify_worktree(
     path: &Path,
     base: &str,
-    cmd: Option<&str>,
+    verify: Option<VerifyCommand>,
     required: bool,
+    timeout: Duration,
 ) -> VerifyStatus {
-    let Some(cmd) = cmd else {
+    let Some(verify) = verify else {
         return if required {
             VerifyStatus::Unverifiable
         } else {
             VerifyStatus::Skipped
         };
     };
-    match tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
-        .current_dir(path)
-        .output()
-        .await
-    {
-        Ok(output) if output.status.success() => {
+    let cmd = verify.describe();
+    // Runs sequentially, one worktree at a time, OUTSIDE the pool's own
+    // per-coder timeout tracking (that only bounds the coder's LLM run,
+    // which already joined by the time this fires) — with no bound of its
+    // own a hung `./scripts/check.sh`/`cargo test` blocked the whole fan-out
+    // indefinitely, and `kill_on_drop` ensures a cancelled run doesn't orphan
+    // the verify subprocess (and whatever it spawns).
+    let spawn = async move {
+        match verify {
+            VerifyCommand::Shell(cmd) => {
+                tokio::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&cmd)
+                    .current_dir(path)
+                    .kill_on_drop(true)
+                    .output()
+                    .await
+            }
+            VerifyCommand::PinnedScript(script) => {
+                use tokio::io::AsyncWriteExt;
+                let mut child = tokio::process::Command::new("sh")
+                    .arg("-s")
+                    .current_dir(path)
+                    .kill_on_drop(true)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()?;
+                if let Some(mut stdin) = child.stdin.take() {
+                    stdin.write_all(&script).await?;
+                    // Drop before `wait_with_output` so `sh -s` sees EOF and exits.
+                }
+                child.wait_with_output().await
+            }
+        }
+    };
+    match tokio::time::timeout(timeout, spawn).await {
+        Err(_) => VerifyStatus::Failed(format!(
+            "verify command `{cmd}` timed out after {timeout:?}"
+        )),
+        Ok(Ok(output)) if output.status.success() => {
             let mut log = output.stderr;
             log.extend_from_slice(&output.stdout);
             let diff = tokio::process::Command::new("git")
@@ -751,16 +859,16 @@ async fn verify_worktree(
                 .await
                 .map(|o| o.stdout)
                 .unwrap_or_default();
-            VerifyStatus::Passed(MergeSeal::compute(&diff, &log, cmd))
+            VerifyStatus::Passed(MergeSeal::compute(&diff, &log, &cmd))
         }
-        Ok(output) => {
+        Ok(Ok(output)) => {
             // Carry the FULL combined log: the trajectory sink (roadmap 3.1)
             // wants the raw traceback; display sites tail it themselves.
             let mut combined = String::from_utf8_lossy(&output.stderr).into_owned();
             combined.push_str(&String::from_utf8_lossy(&output.stdout));
             VerifyStatus::Failed(combined)
         }
-        Err(e) => VerifyStatus::Failed(format!("failed to spawn verify command `{cmd}`: {e}")),
+        Ok(Err(e)) => VerifyStatus::Failed(format!("failed to spawn verify command `{cmd}`: {e}")),
     }
 }
 
@@ -849,6 +957,49 @@ pub async fn run_fanout(
     )
     .await?
     .report)
+}
+
+/// RAII tracking for spawned-but-not-yet-joined [`WorkerId`]s. `run_fanout_detailed`
+/// is itself an aborted future when the caller cancels a run (TUI `Action::CancelRun`
+/// aborts the task running it; the MCP fanout tool wraps it in a `tokio::time::timeout`),
+/// but the coders it spawned via `pool.spawn` are detached `tokio::spawn` tasks owned
+/// by the long-lived `WorkerPool` — dropping this future does NOT stop them. Without
+/// this guard a cancelled run left every still-running coder issuing LLM calls and
+/// writing into worktrees for up to `coder_timeout_secs`, while its own worktree
+/// directories were being force-removed out from under it by `WorktreeGuard`'s drop.
+///
+/// `track` on spawn, `joined` right after a normal `pool.join` + `pool.reap`; whatever
+/// remains in `ids` when this drops (including via an unwound/aborted future) gets
+/// `pool.stop` + `pool.reap`.
+struct PendingWorkers<'a> {
+    pool: &'a WorkerPool,
+    ids: Vec<WorkerId>,
+}
+
+impl<'a> PendingWorkers<'a> {
+    fn new(pool: &'a WorkerPool) -> Self {
+        Self {
+            pool,
+            ids: Vec::new(),
+        }
+    }
+
+    fn track(&mut self, id: WorkerId) {
+        self.ids.push(id);
+    }
+
+    fn joined(&mut self, id: WorkerId) {
+        self.ids.retain(|&i| i != id);
+    }
+}
+
+impl Drop for PendingWorkers<'_> {
+    fn drop(&mut self) {
+        for &id in &self.ids {
+            self.pool.stop(id);
+            self.pool.reap(id);
+        }
+    }
 }
 
 /// The structured fan-out entrypoint: identical execution to [`run_fanout`],
@@ -952,6 +1103,17 @@ pub async fn run_fanout_detailed(
     // timed-out / no-change) are kept alive for recovery.
     let mut guard = worktree::WorktreeGuard::new(wt_pool);
 
+    // Tracks every coder WorkerId spawned below that hasn't been joined yet.
+    // Declared right AFTER `guard` so it drops FIRST on unwind (including a
+    // dropped/aborted future when the TUI's `Action::CancelRun` aborts this
+    // whole `run_fanout` task) — Drop calls `pool.stop`/`pool.reap` on every
+    // still-pending id, killing the coder subprocess/LLM call BEFORE `guard`'s
+    // drop force-removes the worktree it was writing into. Without this, a
+    // cancelled fan-out left detached coder tasks (owned by the long-lived
+    // `pool`, not this future) running for up to `coder_timeout_secs` against
+    // directories that no longer existed.
+    let mut pending = PendingWorkers::new(&pool);
+
     // 2. Create one worktree per sub-task, sequentially (git worktree creation
     // isn't safe to parallelize against the same root repo).
     let mut wts: Vec<(worktree::Worktree, SubTask)> = Vec::with_capacity(subtasks.len());
@@ -983,6 +1145,7 @@ pub async fn run_fanout_detailed(
                 scope.clone(),
             ),
         );
+        pending.track(id);
         worker_ids.push((id, wt, st));
     }
 
@@ -1016,12 +1179,17 @@ pub async fn run_fanout_detailed(
         // `/workers` keeps listing finished coders (Bug 4). Workers not yet joined
         // stay tracked, so `/workers` still shows in-flight coders during the run.
         pool.reap(id);
+        pending.joined(id); // already joined + reaped — PendingWorkers::drop must skip it
         runs.push(run);
     }
 
     // 4. Commit + verify each worktree, sequentially (each is a separate git
     // invocation against a distinct worktree, but keeping this sequential keeps
     // output/ordering simple and avoids piling up concurrent `sh -c` verify runs).
+    // Resolved once, outside the loop — `base`/`config` are loop-invariant, and
+    // the pinned base-commit script content (see `VerifyCommand`) is the same
+    // for every coder in this run.
+    let verify_command = resolve_verify_command(config, root, &base).await;
     let mut outcomes: Vec<CoderOutcome> = Vec::with_capacity(runs.len());
     let mut eligible_branches: Vec<String> = Vec::new();
     for run in runs {
@@ -1054,23 +1222,40 @@ pub async fn run_fanout_detailed(
             });
             continue;
         }
-        let committed = worktree::commit_all(
+        // A commit failure (repo pre-commit hook rejecting the edit, gpgsign
+        // with no agent, ...) is NOT "no changes" — the coder's edits are real
+        // and uncommitted, and this worktree is about to be force-removed by
+        // `WorktreeGuard`. Distinguish it (`VerifyStatus::Failed`, excluded from
+        // integration just like a failed verify) instead of collapsing it into
+        // the benign "coder made no edits" case via `.unwrap_or(false)`.
+        let commit_result = worktree::commit_all(
             &run.path,
-            &format!("entheai fan-out [{}]: {}", run.role, run.task),
+            // `run.task` can be `mapped.render()` — the WHOLE resolved prompt incl.
+            // `@{file}` contents — when the model returned no coder and
+            // `ensure_coder` filled in a lone one; an uncapped commit message
+            // then risks E2BIG on `git commit -m`, which (before this cap) would
+            // fail the commit for a reason unrelated to the coder's actual diff.
+            &format!(
+                "entheai fan-out [{}]: {}",
+                run.role,
+                cap_str(&run.task, 2000)
+            ),
         )
-        .await
-        .unwrap_or(false);
-        let verify_cmd = config.fanout.resolve_verify(root);
-        let verify = if committed {
-            verify_worktree(
-                &run.path,
-                &base,
-                verify_cmd.as_deref(),
-                config.fanout.verify_required,
-            )
-            .await
-        } else {
-            VerifyStatus::NoChanges
+        .await;
+        let (committed, verify) = match commit_result {
+            Ok(true) => (
+                true,
+                verify_worktree(
+                    &run.path,
+                    &base,
+                    verify_command.clone(),
+                    config.fanout.verify_required,
+                    coder_timeout,
+                )
+                .await,
+            ),
+            Ok(false) => (false, VerifyStatus::NoChanges),
+            Err(e) => (false, VerifyStatus::Failed(format!("commit failed: {e}"))),
         };
         // Roadmap 3.1/3.2: execution outcomes are soil, not noise. A failure
         // feeds its raw traceback to the trajectory sink; a sealed success
@@ -1094,7 +1279,7 @@ pub async fn run_fanout_detailed(
                         "task": run.task,
                         "branch": run.branch,
                         "base": base,
-                        "verify_cmd": verify_cmd,
+                        "verify_cmd": verify_command.as_ref().map(VerifyCommand::describe),
                     });
                     sink.ingest_failure(meta, trace).await;
                 }
@@ -1113,21 +1298,10 @@ pub async fn run_fanout_detailed(
             }
         }
         if let Some(tx) = &events {
-            let status = if !committed {
-                "no changes"
-            } else {
-                match &verify {
-                    VerifyStatus::Failed(_) => "verify failed",
-                    VerifyStatus::Passed(_) => "verified + sealed",
-                    VerifyStatus::Skipped => "changes committed (unverified)",
-                    VerifyStatus::Unverifiable => "unverifiable — not integrated",
-                    VerifyStatus::NoChanges => "no changes",
-                }
-            };
             let _ = tx.send(FanoutEvent::CoderFinished {
                 index: run.index,
                 committed,
-                status: status.to_string(),
+                status: coder_status_label(committed, &verify).to_string(),
             });
         }
         // ── Oracle G2 (advisory): adjudicate the coder's diff. ONLY gates
@@ -1138,10 +1312,20 @@ pub async fn run_fanout_detailed(
         // (kept alive for recovery, like a conflict).
         let mut oracle_rejected = false;
         if let Some(o) = &oracle {
+            // The coder's actual diff, not its self-reported prose (`run.output`)
+            // — an adjudicator judging on the latter (or, before this fix, on
+            // nothing but `diffs.len()` — see oracle.rs native_adjudicate) could
+            // reject/approve a coder on a verdict grounded in nothing it changed.
+            // Empty when nothing was committed (matches `branch_diff`'s own
+            // "identical to base" contract) — never an error, so this always
+            // has *some* diffs entry.
+            let diff = worktree::branch_diff(root, &base, &run.branch)
+                .await
+                .unwrap_or_default();
             let ctx = OracleContext {
                 task: run.task.clone(),
                 mapped_files: Vec::new(),
-                diffs: vec![(run.branch.clone(), run.output.clone())],
+                diffs: vec![(run.branch.clone(), diff)],
                 // The eBPF sphere's kernel truth, if the sidecar is running
                 // (coders=fleet). Empty on the local path → diff-fallback.
                 attestations: oracle::sphere_attestations(),
@@ -1248,11 +1432,15 @@ pub async fn run_fanout_detailed(
         Some(integration)
     };
 
-    // 6. Worktree/branch cleanup is owned by `guard`: it runs when the guard
-    // drops at the end of this function (and on any early-return/panic above),
-    // removing every worktree DIRECTORY but deleting only merged branches (Bug 1),
-    // and dropping the pool temp dir (Bug 5). The integration branch lives in the
-    // root repo, not a worktree, so it is untouched and kept for review.
+    // 6. Worktree/branch cleanup is owned by `guard`. On this normal-completion
+    // path, `finish()` does it via async git calls, removing every worktree
+    // DIRECTORY but deleting only merged branches (Bug 1) and dropping the pool
+    // temp dir (Bug 5) — without blocking a tokio worker thread on N sequential
+    // synchronous subprocess spawns the way `Drop::drop` would (that stays the
+    // fallback for any early-return/panic above, where async cleanup isn't
+    // available). The integration branch lives in the root repo, not a
+    // worktree, so it is untouched and kept for review.
+    guard.finish().await;
 
     if let Some(tx) = &events {
         let _ = tx.send(FanoutEvent::Done {
@@ -1464,6 +1652,128 @@ pub fn format_v2_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Run a git command and panic with its stderr on failure — test setup
+    /// only. Mirrors `worktree::tests::git_ok`, duplicated locally since that
+    /// one is private to `worktree`'s own test module.
+    async fn git_ok(dir: &Path, args: &[&str]) -> String {
+        let out = tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .await
+            .expect("failed to spawn git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    #[tokio::test]
+    async fn pending_workers_stops_and_reaps_untracked_ids_on_drop() {
+        // Simulates the cancellation path: the async fn owning `pending` is
+        // dropped mid-fan-out (e.g. the caller aborted the task) before every
+        // spawned coder was joined — the still-running one must be stopped,
+        // not left to run to `coder_timeout_secs` against a worktree the
+        // caller's WorktreeGuard is about to remove.
+        fn fake_run(index: usize) -> CoderRun {
+            CoderRun {
+                index,
+                role: "coder".into(),
+                task: "test".into(),
+                branch: format!("entheai/test/coder-{index}"),
+                path: std::path::PathBuf::from(format!("/tmp/entheai-test-pending-{index}")),
+                output: "done".into(),
+            }
+        }
+        let pool = WorkerPool::new(4);
+        let long_running = pool.spawn(
+            "coder",
+            "hangs",
+            std::time::Duration::from_secs(30),
+            async {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                fake_run(0)
+            },
+        );
+        let already_done = pool.spawn(
+            "coder",
+            "quick",
+            std::time::Duration::from_secs(30),
+            async { fake_run(1) },
+        );
+        // Let the quick one actually finish before we "join" it below.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        {
+            let mut pending = PendingWorkers::new(&pool);
+            pending.track(long_running);
+            pending.track(already_done);
+            // Normal-path join for one of them — must not be touched by drop.
+            let _ = pool.join(already_done).await;
+            pool.reap(already_done);
+            pending.joined(already_done);
+            // `pending` drops here WITHOUT `long_running` ever having been
+            // joined — this is the cancellation scenario.
+        }
+
+        // `PendingWorkers::drop` calls `stop` (aborts + marks Killed) THEN `reap`
+        // (removes the tracked entry) — so `None` here is the drop having acted;
+        // the pre-fix bug left it tracked and `Running` forever (never joined,
+        // never reaped) because nothing called `stop`/`reap` on cancellation.
+        assert_eq!(
+            pool.status(long_running),
+            None,
+            "the never-joined worker must be stopped + reaped by PendingWorkers::drop"
+        );
+        // Already joined+reaped by the explicit test code above — drop must be a
+        // no-op for it (double-reap would be a logic error, though harmless here).
+        assert_eq!(pool.status(already_done), None);
+    }
+
+    #[test]
+    fn coder_status_label_distinguishes_commit_failure_from_no_changes() {
+        // Regression: both used to collapse into "no changes" because the
+        // caller matched only on `committed` (`.unwrap_or(false)` on a real
+        // `commit_all` error looks identical to a genuine no-op commit).
+        assert_eq!(
+            coder_status_label(false, &VerifyStatus::Failed("commit failed: boom".into())),
+            "commit failed — not integrated"
+        );
+        assert_eq!(
+            coder_status_label(false, &VerifyStatus::NoChanges),
+            "no changes"
+        );
+        assert_eq!(
+            coder_status_label(true, &VerifyStatus::Failed("check.sh: exit 1".into())),
+            "verify failed"
+        );
+        assert_eq!(
+            coder_status_label(true, &VerifyStatus::Skipped),
+            "changes committed (unverified)"
+        );
+        assert_eq!(
+            coder_status_label(true, &VerifyStatus::Unverifiable),
+            "unverifiable — not integrated"
+        );
+    }
+
+    #[test]
+    fn verify_command_describe_shows_the_literal_shell_command_or_the_pinned_marker() {
+        assert_eq!(
+            VerifyCommand::Shell("./scripts/check.sh --fast".to_string()).describe(),
+            "./scripts/check.sh --fast"
+        );
+        // The auto-detected/pinned path never leaks the pinned byte content —
+        // it always reports the fixed marker, regardless of what was pinned.
+        assert_eq!(
+            VerifyCommand::PinnedScript(b"#!/bin/sh\nexit 0\n".to_vec()).describe(),
+            "./scripts/check.sh (pinned to base)"
+        );
+    }
 
     #[test]
     fn fanout_policy_follows_config() {
@@ -1775,20 +2085,126 @@ mod tests {
     #[tokio::test]
     async fn verify_worktree_without_cmd_is_unverifiable_when_required_else_skipped() {
         let dir = tempfile::tempdir().unwrap();
-        let strict = verify_worktree(dir.path(), "HEAD", None, true).await;
+        let strict = verify_worktree(dir.path(), "HEAD", None, true, Duration::from_secs(5)).await;
         assert!(matches!(strict, VerifyStatus::Unverifiable));
-        let lax = verify_worktree(dir.path(), "HEAD", None, false).await;
+        let lax = verify_worktree(dir.path(), "HEAD", None, false, Duration::from_secs(5)).await;
         assert!(matches!(lax, VerifyStatus::Skipped));
+    }
+
+    fn shell(cmd: &str) -> Option<VerifyCommand> {
+        Some(VerifyCommand::Shell(cmd.to_string()))
     }
 
     #[tokio::test]
     async fn verify_worktree_failure_carries_output_tail() {
         let dir = tempfile::tempdir().unwrap();
-        let status = verify_worktree(dir.path(), "HEAD", Some("echo boom >&2; exit 1"), true).await;
+        let status = verify_worktree(
+            dir.path(),
+            "HEAD",
+            shell("echo boom >&2; exit 1"),
+            true,
+            Duration::from_secs(5),
+        )
+        .await;
         match status {
             VerifyStatus::Failed(msg) => assert!(msg.contains("boom")),
             other => panic!("expected Failed, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn verify_worktree_times_out_instead_of_hanging_forever() {
+        let dir = tempfile::tempdir().unwrap();
+        let status = verify_worktree(
+            dir.path(),
+            "HEAD",
+            shell("sleep 5"),
+            true,
+            Duration::from_millis(100),
+        )
+        .await;
+        match status {
+            VerifyStatus::Failed(msg) => assert!(msg.contains("timed out"), "{msg}"),
+            other => panic!("expected Failed(timed out), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_worktree_runs_a_pinned_script_via_stdin() {
+        // The path a coder can't tamper with: the base-commit content of
+        // ./scripts/check.sh, executed via `sh -s < content` instead of the
+        // worktree's own (possibly coder-edited) copy.
+        let dir = tempfile::tempdir().unwrap();
+        let status = verify_worktree(
+            dir.path(),
+            "HEAD",
+            Some(VerifyCommand::PinnedScript(b"echo pinned-ok\n".to_vec())),
+            true,
+            Duration::from_secs(5),
+        )
+        .await;
+        match status {
+            VerifyStatus::Passed(_) => {}
+            other => panic!("expected Passed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_verify_command_pins_auto_detected_script_to_base() {
+        // A repo with ./scripts/check.sh committed at `base`, then the
+        // WORKTREE's copy tampered with (as a malicious/careless coder would):
+        // resolve_verify_command must still hand back the base content, not
+        // whatever is on disk right now.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git_ok(root, &["init", "-b", "main"]).await;
+        git_ok(root, &["config", "user.email", "t@t"]).await;
+        git_ok(root, &["config", "user.name", "t"]).await;
+        tokio::fs::create_dir_all(root.join("scripts"))
+            .await
+            .unwrap();
+        tokio::fs::write(root.join("scripts/check.sh"), "echo real-gate\n")
+            .await
+            .unwrap();
+        git_ok(root, &["add", "-A"]).await;
+        git_ok(root, &["commit", "-m", "init"]).await;
+        let base = git_ok(root, &["rev-parse", "HEAD"])
+            .await
+            .trim()
+            .to_string();
+
+        // Tamper with the WORKING TREE's copy (what a coder's worktree would have).
+        tokio::fs::write(root.join("scripts/check.sh"), "exit 0 # tampered\n")
+            .await
+            .unwrap();
+
+        let config = entheai_config::Config::from_toml_str("").unwrap();
+        let resolved = resolve_verify_command(&config, root, &base)
+            .await
+            .expect("auto-detected script must resolve");
+        match resolved {
+            VerifyCommand::PinnedScript(content) => {
+                assert_eq!(
+                    String::from_utf8_lossy(&content),
+                    "echo real-gate\n",
+                    "must be the BASE commit's content, not the tampered worktree copy"
+                );
+            }
+            VerifyCommand::Shell(cmd) => {
+                panic!("expected the auto-detected script to be pinned, got Shell({cmd:?})")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_verify_command_trusts_explicit_operator_config() {
+        // [fanout].verify is an operator-chosen command, not the coder-writable
+        // auto-detected script — never pinned/rewritten.
+        let dir = tempfile::tempdir().unwrap();
+        let config =
+            entheai_config::Config::from_toml_str("[fanout]\nverify = \"cargo test\"\n").unwrap();
+        let resolved = resolve_verify_command(&config, dir.path(), "HEAD").await;
+        assert!(matches!(resolved, Some(VerifyCommand::Shell(cmd)) if cmd == "cargo test"));
     }
 
     /// Capture-only sink: records every (meta, trace) it is fed.
@@ -1810,8 +2226,9 @@ mod tests {
         let status = verify_worktree(
             dir.path(),
             "HEAD",
-            Some(&format!("echo '{long_msg}' >&2; exit 1")),
+            shell(&format!("echo '{long_msg}' >&2; exit 1")),
             true,
+            Duration::from_secs(5),
         )
         .await;
         let sink = CaptureSink(std::sync::Mutex::new(Vec::new()));

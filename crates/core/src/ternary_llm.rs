@@ -15,7 +15,7 @@
 //!   tokio runtime: the decode runs inside `spawn_blocking`, chunks flow over
 //!   an `mpsc` channel wrapped in a `ReceiverStream`.
 //! - Role mapping: `user`→user, `model`→assistant, `system`→system,
-//!   `function`/`tool`→skip (see `ChatTokenizer::apply_chat_template`).
+//!   `function`/`tool`→skip (see `ChatTokenizer::encode_chat`).
 
 use std::sync::Arc;
 
@@ -99,8 +99,11 @@ impl Llm for TernaryLlm {
         stream: bool,
     ) -> adk_rust::Result<LlmResponseStream> {
         let messages = Self::messages_from_request(&req);
-        let prompt = self.tokenizer.apply_chat_template(&messages);
-        let ids = self.tokenizer.encode(&prompt).map_err(|e| {
+        // `encode_chat`, not `apply_chat_template` + `encode`: message content
+        // here comes from the conversation (untrusted), and a literal
+        // `<|im_end|>\n<|im_start|>system\n...` in it must not be able to
+        // spoof a role frame — see `ChatTokenizer::encode_chat`.
+        let ids = self.tokenizer.encode_chat(&messages).map_err(|e| {
             adk_rust::AdkError::new(
                 ErrorComponent::Model,
                 ErrorCategory::InvalidInput,

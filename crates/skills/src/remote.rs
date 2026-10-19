@@ -140,8 +140,10 @@ fn synthesize_from_llms_txt(txt: &str, host: &str, source: &str) -> (String, Str
         }
     }
     let mut description = blockquote.or(first_para).unwrap_or_default();
-    if description.len() > 200 {
-        description.truncate(200);
+    // Truncate on a char boundary: `String::truncate` panics mid-codepoint and
+    // this text comes straight from a remote llms.txt (CJK blurbs are common).
+    if let Some((cut, _)) = description.char_indices().nth(200) {
+        description.truncate(cut);
     }
     let body = format!(
         "> Skill added from {source} (an llms.txt docs index). Full text may be at the site's /llms-full.txt.\n\n{txt}"
@@ -311,13 +313,33 @@ pub async fn add_from_url(url: &str, skills_dir: &Path) -> anyhow::Result<Vec<Ad
     let llms_url = parsed.join("/llms.txt")?;
     if let Ok(resp) = client.get(llms_url.clone()).send().await {
         if resp.status().is_success() {
+            // A SPA catch-all host returns index.html with 200 for any path,
+            // including /llms.txt — don't write raw HTML as a SKILL.md body.
+            let content_type_html = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|c| c.contains("html"))
+                .unwrap_or(false);
             if let Ok(text) = read_capped(resp, BODY_CAP).await {
-                if !text.trim().is_empty() {
+                let is_html = content_type_html || text.trim_start().starts_with('<');
+                if !is_html && !text.trim().is_empty() {
                     let (name, desc, body) =
                         synthesize_from_llms_txt(&text, &host, llms_url.as_str());
-                    let mut a = write_skill(skills_dir, &name, &desc, &body, url)?;
-                    a.tier = "llms.txt";
-                    return Ok(vec![a]);
+                    // A non-ASCII/punctuation-only `# ` heading can make `name`
+                    // unsluggable — fall back to `host` rather than aborting
+                    // the whole add (and losing the tier 3 fallback) on `?`.
+                    let result = write_skill(skills_dir, &name, &desc, &body, url).or_else(|e| {
+                        log::warn!(
+                            "skills: llms.txt name {name:?} not sluggable ({e}) — \
+                             falling back to host {host:?}"
+                        );
+                        write_skill(skills_dir, &host, &desc, &body, url)
+                    });
+                    if let Ok(mut a) = result {
+                        a.tier = "llms.txt";
+                        return Ok(vec![a]);
+                    }
                 }
             }
         }
@@ -437,6 +459,18 @@ mod tests {
             synthesize_from_llms_txt(txt, "example.com", "https://example.com/llms.txt");
         assert_eq!(name, "example.com");
         assert_eq!(desc, "No heading here.");
+    }
+
+    #[test]
+    fn synthesize_truncates_multibyte_description_on_char_boundary() {
+        // 300 x "é" = 600 bytes; the old byte-index truncate(200) landed
+        // mid-codepoint and panicked.
+        let long = "é".repeat(300);
+        let txt = format!("# Título\n\n> {long}\n");
+        let (_name, desc, _body) =
+            synthesize_from_llms_txt(&txt, "example.com", "https://example.com/llms.txt");
+        assert_eq!(desc.chars().count(), 200);
+        assert!(desc.chars().all(|c| c == 'é'));
     }
 
     #[test]
@@ -577,6 +611,54 @@ mod tests {
         assert!(std::fs::read_to_string(&added[0].path)
             .unwrap()
             .contains("Great docs."));
+    }
+
+    #[tokio::test]
+    async fn tier2_skips_a_spa_html_catch_all_and_falls_through_to_tier3() {
+        let server = MockServer::start().await;
+        // A SPA catch-all host returns index.html (200, text/html) for any
+        // path including /llms.txt — this must not become a SKILL.md body.
+        Mock::given(method("GET"))
+            .and(path("/llms.txt"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw("<!DOCTYPE html><html>spa shell</html>", "text/html"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("<h1>Real Page</h1>", "text/html"),
+            )
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let added = add_from_url(&server.uri(), dir.path()).await.unwrap();
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].tier, "page", "must fall through past tier 2");
+        let body = std::fs::read_to_string(&added[0].path).unwrap();
+        assert!(body.contains("Real Page"));
+    }
+
+    #[tokio::test]
+    async fn tier2_falls_back_to_host_when_the_heading_is_unsluggable() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/llms.txt"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("# 日本語\n\n> a non-ascii heading"),
+            )
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let added = add_from_url(&server.uri(), dir.path()).await.unwrap();
+        assert_eq!(added.len(), 1, "must not abort the whole add");
+        assert_eq!(added[0].tier, "llms.txt");
+        assert!(
+            !added[0].slug.is_empty(),
+            "must fall back to a sluggable name (host) instead of erroring"
+        );
     }
 
     #[tokio::test]

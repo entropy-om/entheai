@@ -1,6 +1,22 @@
+use std::borrow::Cow;
 use std::time::Duration;
 
 use serde::Deserialize;
+
+/// Embedding servers reject inputs over their context window (400/413).
+/// `record_tool_result` spills exactly because a tool result is large, and
+/// `retrieve_before` embeds a whole user message — both can exceed that
+/// window unbounded, so cap what's sent here. The full text is kept
+/// elsewhere (`entries.content`); this only bounds the embed request.
+const MAX_EMBED_CHARS: usize = 8_000;
+
+fn truncate_for_embed(text: &str) -> Cow<'_, str> {
+    if text.chars().count() <= MAX_EMBED_CHARS {
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(text.chars().take(MAX_EMBED_CHARS).collect())
+    }
+}
 
 /// OpenAI-compatible embeddings client.
 ///
@@ -49,7 +65,7 @@ impl Embedder {
             .post(format!("{}/embeddings", self.base_url))
             .json(&serde_json::json!({
                 "model": self.model,
-                "input": text,
+                "input": truncate_for_embed(text),
             }))
             .send()
             .await?
@@ -65,12 +81,13 @@ impl Embedder {
 
     /// Embed multiple texts in one request (if the provider supports array input).
     pub async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, anyhow::Error> {
+        let truncated: Vec<Cow<'_, str>> = texts.iter().map(|t| truncate_for_embed(t)).collect();
         let resp = self
             .client
             .post(format!("{}/embeddings", self.base_url))
             .json(&serde_json::json!({
                 "model": self.model,
-                "input": texts,
+                "input": truncated,
             }))
             .send()
             .await?
@@ -86,6 +103,27 @@ mod tests {
     use super::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn truncate_for_embed_leaves_short_text_untouched() {
+        assert_eq!(truncate_for_embed("hello"), "hello");
+    }
+
+    #[test]
+    fn truncate_for_embed_caps_long_text_at_the_char_budget() {
+        let long = "x".repeat(MAX_EMBED_CHARS + 5_000);
+        let truncated = truncate_for_embed(&long);
+        assert_eq!(truncated.chars().count(), MAX_EMBED_CHARS);
+    }
+
+    #[test]
+    fn truncate_for_embed_is_char_aware_not_byte_aware() {
+        // Every char is 3 UTF-8 bytes; a byte-based slice at MAX_EMBED_CHARS
+        // would split a codepoint and panic.
+        let long = "€".repeat(MAX_EMBED_CHARS + 5);
+        let truncated = truncate_for_embed(&long);
+        assert_eq!(truncated.chars().count(), MAX_EMBED_CHARS);
+    }
 
     #[tokio::test]
     async fn embed_single_returns_vector() {

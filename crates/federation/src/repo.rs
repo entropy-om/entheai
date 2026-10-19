@@ -8,6 +8,11 @@ async fn git(dir: &Path, args: &[&str]) -> anyhow::Result<(bool, String)> {
         .arg("-C")
         .arg(dir)
         .args(args)
+        // The caller (e.g. `process_one`'s 20s `prepare_worktree` deadline)
+        // can drop this future mid-await; without this the git child is
+        // orphaned and keeps writing into a worktree the caller has already
+        // moved on from (e.g. into a fresh `fallback_full_clone`).
+        .kill_on_drop(true)
         .output()
         .await
         .map_err(|e| anyhow::anyhow!("spawn git -C {} {:?}: {e}", dir.display(), args))?;
@@ -21,6 +26,7 @@ async fn git_ok(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
         .arg("-C")
         .arg(dir)
         .args(args)
+        .kill_on_drop(true)
         .output()
         .await?;
     if !out.status.success() {
@@ -65,6 +71,7 @@ pub async fn materialize_from_bundle(bundle: &Path, dest: &Path) -> anyhow::Resu
     let dest_s = dest.to_string_lossy();
     let out = tokio::process::Command::new("git")
         .args(["clone", "-b", "entheai-fed-base", &bundle_s, &dest_s])
+        .kill_on_drop(true)
         .output()
         .await?;
     if !out.status.success() {
@@ -134,6 +141,7 @@ pub async fn materialize_bare(bundle: &Path, bare: &Path) -> anyhow::Result<()> 
             &bundle_s,
             &bare_s,
         ])
+        .kill_on_drop(true)
         .output()
         .await?;
     if !out.status.success() {

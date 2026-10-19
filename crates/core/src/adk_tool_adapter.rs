@@ -13,6 +13,9 @@ pub struct AdkToolAdapter {
     inner: Arc<dyn Tool>,
     policy: Arc<Policy>,
     prompter: Arc<Mutex<dyn Prompter>>,
+    /// The tool's human description, lifted out of the inner OpenAI-style
+    /// schema once (adk's `Tool::description` returns `&str`).
+    description: String,
 }
 
 impl AdkToolAdapter {
@@ -21,11 +24,37 @@ impl AdkToolAdapter {
         policy: Arc<Policy>,
         prompter: Arc<Mutex<dyn Prompter>>,
     ) -> Self {
+        let description = function_object(&inner.schema())
+            .and_then(|f| f.get("description"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         Self {
             inner,
             policy,
             prompter,
+            description,
         }
+    }
+}
+
+/// The `function` object of an OpenAI-style tool schema
+/// (`{"type":"function","function":{name,description,parameters}}`), which is
+/// how every entheai tool (fs/shell/search/todo/skills/mcp) describes itself.
+/// `None` for flat schemas.
+fn function_object(schema: &Value) -> Option<&Value> {
+    schema.get("function").filter(|f| f.is_object())
+}
+
+/// adk-rust reads a tool declaration FLAT — `description` and `parameters` at
+/// the top level (adk-model `convert_tools`: `decl.get("description")`,
+/// `decl.get("parameters")`, else an empty object schema). Handing it the
+/// OpenAI wrapper verbatim therefore ships every tool to the model with no
+/// description and no parameters. Unwrap the wrapper; pass flat schemas through.
+fn flat_declaration(schema: Value) -> Value {
+    match schema.get("function") {
+        Some(f) if f.is_object() => f.clone(),
+        _ => schema,
     }
 }
 
@@ -36,11 +65,11 @@ impl AdkTool for AdkToolAdapter {
     }
 
     fn description(&self) -> &str {
-        ""
+        &self.description
     }
 
     fn declaration(&self) -> Value {
-        self.inner.schema()
+        flat_declaration(self.inner.schema())
     }
 
     async fn execute(&self, _ctx: Arc<dyn ToolContext>, args: Value) -> AdkResult<Value> {
@@ -166,7 +195,7 @@ mod tests {
             "echo"
         }
         fn schema(&self) -> serde_json::Value {
-            serde_json::json!({"type":"function","function":{"name":"echo","parameters":{"type":"object","properties":{}}}})
+            serde_json::json!({"type":"function","function":{"name":"echo","description":"Echo the text argument.","parameters":{"type":"object","properties":{"text":{"type":"string"}}}}})
         }
         async fn call(&self, args: serde_json::Value) -> Result<String, entheai_tools::ToolError> {
             Ok(format!("echoed: {}", args["text"].as_str().unwrap_or("")))
@@ -189,8 +218,28 @@ mod tests {
     // Tests
     // ------------------------------------------------------------------
 
+    #[test]
+    fn function_object_extracts_the_wrapped_function_and_rejects_non_object() {
+        let wrapped = json!({"type":"function","function":{"name":"x","description":"d"}});
+        assert_eq!(
+            function_object(&wrapped),
+            Some(&json!({"name":"x","description":"d"}))
+        );
+
+        let flat = json!({"name": "x", "description": "d"});
+        assert_eq!(function_object(&flat), None);
+
+        // `function` present but not an object (malformed schema) — still None.
+        let malformed = json!({"function": "not an object"});
+        assert_eq!(function_object(&malformed), None);
+    }
+
     #[tokio::test]
-    async fn declaration_matches_inner_schema_verbatim() {
+    async fn declaration_is_flat_name_description_parameters() {
+        // adk-model reads `description` / `parameters` at the TOP level of the
+        // declaration, so the OpenAI `{"type":"function","function":{..}}`
+        // wrapper must be unwrapped — otherwise every tool reaches the model
+        // with no description and an empty parameter schema.
         let inner: Arc<dyn Tool> = Arc::new(EchoTool);
         let mut p = Policy::new(false, vec![]);
         p.pin("echo", Pin::AlwaysAllow);
@@ -199,11 +248,24 @@ mod tests {
         let adapter = AdkToolAdapter::new(inner.clone(), policy, prompter);
 
         let decl = adapter.declaration();
-        let expected = inner.schema();
+        let inner_fn = inner.schema()["function"].clone();
         assert_eq!(
-            decl, expected,
-            "declaration must match inner tool's schema verbatim"
+            decl, inner_fn,
+            "declaration must be the unwrapped function object"
         );
+        assert_eq!(decl["name"], "echo");
+        assert!(
+            decl.get("parameters").is_some(),
+            "parameters must be top-level"
+        );
+        assert_eq!(
+            adapter.description(),
+            inner_fn["description"].as_str().unwrap()
+        );
+
+        // Flat (non-wrapped) schemas pass through untouched.
+        let flat = json!({"name": "x", "description": "d", "parameters": {"type": "object"}});
+        assert_eq!(flat_declaration(flat.clone()), flat);
     }
 
     #[tokio::test]

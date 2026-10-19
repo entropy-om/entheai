@@ -1,7 +1,7 @@
 //! Backer activation + beta entitlement gate.
 //!
 //! Credentials live at `~/.config/entheai/backer.json` — only the SHA-256 hash
-//! of the license key is stored, never the raw key. `entheai activate <KEY>`
+//! of the license key is stored, never the raw key. `entheai --activate <KEY>`
 //! verifies the key against the license endpoint and persists the credential;
 //! `--beta` gates on the stored entitlements.
 
@@ -22,7 +22,7 @@ pub struct BackerCredential {
     pub activated_at: u64,
 }
 
-/// License verification endpoint used by `entheai activate <KEY>`.
+/// License verification endpoint used by `entheai --activate <KEY>`.
 const VERIFY_URL: &str = "https://entheai.com/api/license/verify";
 /// Backer signup URL printed when activation fails.
 const BACKER_URL: &str = "https://entheai.com/back";
@@ -110,7 +110,7 @@ fn fail_activation(msg: impl std::fmt::Display) -> anyhow::Error {
     anyhow::anyhow!("{msg}")
 }
 
-/// `entheai activate <KEY>`: verify the key against the license endpoint, then
+/// `entheai --activate <KEY>`: verify the key against the license endpoint, then
 /// persist the credential and print a success line. Any failure prints a
 /// one-line error + become-a-backer hint and returns `Err` (exit 1).
 pub async fn activate(key: &str) -> anyhow::Result<()> {
@@ -120,6 +120,9 @@ pub async fn activate(key: &str) -> anyhow::Result<()> {
     }
     let client = reqwest::Client::builder()
         .user_agent(concat!("entheai/", env!("CARGO_PKG_VERSION")))
+        // No timeout previously: a stalled/black-holed license endpoint hung
+        // `--activate` indefinitely.
+        .timeout(std::time::Duration::from_secs(15))
         .build()
         .context("building HTTP client")?;
     let resp = client
@@ -155,7 +158,7 @@ pub async fn activate(key: &str) -> anyhow::Result<()> {
 
 /// `--beta` gate: verify a stored backer credential carries the `beta`
 /// entitlement. Prints a short confirmation on success; otherwise prints
-/// `beta requires a backer key — run 'entheai activate <KEY>'` and returns
+/// `beta requires a backer key — run 'entheai --activate <KEY>'` and returns
 /// `Err` (exit 1). A corrupt credential file is a hard error.
 pub fn ensure_beta(enabled: bool) -> anyhow::Result<()> {
     if !enabled {
@@ -167,8 +170,8 @@ pub fn ensure_beta(enabled: bool) -> anyhow::Result<()> {
             Ok(())
         }
         Ok(_) => {
-            eprintln!("beta requires a backer key — run 'entheai activate <KEY>'");
-            bail!("beta requires a backer key — run 'entheai activate <KEY>'")
+            eprintln!("beta requires a backer key — run 'entheai --activate <KEY>'");
+            bail!("beta requires a backer key — run 'entheai --activate <KEY>'")
         }
         Err(e) => Err(e),
     }

@@ -75,7 +75,13 @@ impl Tool for Search {
                     continue;
                 };
                 let mut bytes = 0usize;
-                for (line_no, line) in std::io::BufReader::new(file).lines().enumerate() {
+                // `.lines()` buffers an entire line into memory before the
+                // `bytes > MAX_FILE_BYTES` check below ever runs, so a single
+                // pathologically long line (minified bundle, generated data)
+                // used to allocate unbounded memory regardless of the cap.
+                // `Read::take` bounds the reader itself at the IO layer.
+                let bounded = std::io::Read::take(file, MAX_FILE_BYTES);
+                for (line_no, line) in std::io::BufReader::new(bounded).lines().enumerate() {
                     let Ok(line) = line else { break };
                     bytes += line.len();
                     if bytes > MAX_FILE_BYTES as usize || line.as_bytes().contains(&0) {
@@ -138,6 +144,27 @@ mod tests {
         assert!(
             capped_out.contains("truncated at 1 matches"),
             "expected truncation notice: {capped_out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_single_pathologically_long_line_does_not_block_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        // One line well past MAX_FILE_BYTES, with no newline at all — the old
+        // `.lines()` (no `Read::take`) would buffer the whole thing into one
+        // `String` before the byte-count check ever ran.
+        let huge_line = "x".repeat(MAX_FILE_BYTES as usize + 1_000_000);
+        std::fs::write(dir.path().join("huge.txt"), &huge_line).unwrap();
+        std::fs::write(dir.path().join("small.txt"), "needle here\n").unwrap();
+
+        let search = Search::new(dir.path().to_path_buf());
+        let out = search
+            .call(serde_json::json!({"query": "needle"}))
+            .await
+            .unwrap();
+        assert!(
+            out.contains("small.txt"),
+            "search must still complete and find the real match: {out}"
         );
     }
 }

@@ -102,8 +102,10 @@ impl RepairLedger {
     ///
     /// - A **pass** always becomes the incumbent and stops the loop.
     /// - Otherwise the incumbent is only *replaced* by a candidate whose score
-    ///   beats it by `>= margin`; below that, the incumbent stands (repair does
-    ///   not get to overwrite a better prior state on noise).
+    ///   beats it by strictly more than `margin`; at or below that, the
+    ///   incumbent stands (repair does not get to overwrite a better prior
+    ///   state on noise, and a tied score never displaces it either — that's
+    ///   exactly the latest-wins churn this module exists to prevent).
     /// - The loop **keeps repairing** only while attempts remain *and* the best
     ///   score is still improving by the margin. Stagnation → `NoMarginalValue`.
     /// - If no attempt ever passed and none carried a score, the verifier is
@@ -140,7 +142,10 @@ impl RepairLedger {
     }
 
     /// A candidate replaces the incumbent iff there is no incumbent yet, or it
-    /// passed, or its score beats the incumbent's by at least `margin`.
+    /// passed, or its score beats the incumbent's by strictly more than
+    /// `margin` — a tie (including margin = 0.0, the documented "any strict
+    /// improvement" default) must NOT displace it, or the module degenerates
+    /// into the latest-wins churn it exists to prevent.
     fn update_incumbent(&mut self, idx: usize) {
         let cand = &self.attempts[idx];
         let replace = match self.incumbent {
@@ -153,7 +158,7 @@ impl RepairLedger {
                     false // a verified pass is never displaced by a non-pass
                 } else {
                     match (cand.score, inc.score) {
-                        (Some(c), Some(i)) => c >= i + self.margin,
+                        (Some(c), Some(i)) => c > i + self.margin,
                         _ => false, // no gradient → keep the earlier incumbent
                     }
                 }
@@ -239,6 +244,25 @@ mod tests {
         assert!(!d.keep_repairing);
         assert_eq!(d.stop_reason, Some(StopReason::NoMarginalValue));
         assert_eq!(d.incumbent.as_deref(), Some("c0"));
+    }
+
+    #[test]
+    fn a_tied_score_does_not_churn_the_incumbent_even_at_zero_margin() {
+        // Regression: `c >= i + margin` at the documented margin = 0.0 ("accept
+        // any strict improvement") accepted a TIE, so a repeated equal-score
+        // repair displaced the incumbent and `keep_repairing` stayed true
+        // forever — exactly the latest-wins churn this module exists to
+        // prevent. Must be strict: a tie keeps the earlier incumbent and stops.
+        let mut l = RepairLedger::new(5, 0.0);
+        l.record(att(false, Some(-2.0), "c0"));
+        let d = l.record(att(false, Some(-2.0), "c1")); // tied, not improved
+        assert!(!d.keep_repairing);
+        assert_eq!(d.stop_reason, Some(StopReason::NoMarginalValue));
+        assert_eq!(
+            d.incumbent.as_deref(),
+            Some("c0"),
+            "a tie must not displace c0"
+        );
     }
 
     #[test]

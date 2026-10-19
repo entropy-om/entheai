@@ -144,6 +144,10 @@ pub trait Memory: Send + Sync {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<Entry>, MemoryError>;
+
+    /// Count entries in a namespace, without loading/JSON-parsing any of them
+    /// (unlike `list(ns, usize::MAX, 0).len()`, which does both, unbounded).
+    async fn count(&self, namespace: Namespace) -> Result<usize, MemoryError>;
 }
 
 /// Convenience: wrap a `dyn Memory` in an `Arc` for sharing across tasks.
