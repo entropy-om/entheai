@@ -116,12 +116,18 @@ export const STORE_CATALOG = {
   "sub-smart-tree-pro": 1900,
   "sub-portail-swarm": 4900,
   "sub-axiomquant-ultra": 14900,
+  "sub-lovetta-postcard": 1000,
+  "sub-lovetta-book": 2000,
+  "sub-lovetta-patron": 5500,
 };
 
 export const SUBSCRIPTION_SKUS = new Set([
   "sub-smart-tree-pro",
   "sub-portail-swarm",
   "sub-axiomquant-ultra",
+  "sub-lovetta-postcard",
+  "sub-lovetta-book",
+  "sub-lovetta-patron",
 ]);
 
 // Backer license keys: ENTH-XXXX-XXXX-XXXX-XXXX — 16 chars drawn from an
