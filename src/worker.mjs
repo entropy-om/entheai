@@ -110,7 +110,19 @@ export const STORE_CATALOG = {
   "nfc-card": 2900,
   "vakedide-supporter": 4900,
   scarf: 6500,
+  "gaia-master": 1900,
+  "wish-master": 1500,
+  "polar-master": 1500,
+  "sub-smart-tree-pro": 1900,
+  "sub-portail-swarm": 4900,
+  "sub-axiomquant-ultra": 14900,
 };
+
+export const SUBSCRIPTION_SKUS = new Set([
+  "sub-smart-tree-pro",
+  "sub-portail-swarm",
+  "sub-axiomquant-ultra",
+]);
 
 // Backer license keys: ENTH-XXXX-XXXX-XXXX-XXXX — 16 chars drawn from an
 // unambiguous alphabet (no 0/O/1/I/L), generated with crypto.getRandomValues.
@@ -649,8 +661,11 @@ export async function handleStripeCheckout(request, env) {
     return json({ error: "items required" }, 400, headers);
   }
   let tier = "backer"; // derived from SKU server-side below, never client-supplied
+  const isSubscription = body.items.some(
+    (item) => typeof item?.sku === "string" && SUBSCRIPTION_SKUS.has(item.sku.trim().toLowerCase())
+  );
   const form = new URLSearchParams();
-  form.set("mode", "payment");
+  form.set("mode", isSubscription ? "subscription" : "payment");
   form.set("success_url", "https://store.vaked.dev/?checkout={CHECKOUT_SESSION_ID}");
   form.set("cancel_url", "https://store.vaked.dev/?canceled=1");
   form.set("metadata[source]", "store.vaked.dev");
@@ -663,7 +678,11 @@ export async function handleStripeCheckout(request, env) {
     const sku = typeof item.sku === "string" ? item.sku.trim() : "";
     if (!sku) return json({ error: "item sku required" }, 400, headers);
     const skuLower = sku.toLowerCase();
-    if (skuLower.includes("vakedide") || skuLower.includes("supporter")) {
+    if (
+      skuLower.includes("vakedide") ||
+      skuLower.includes("supporter") ||
+      SUBSCRIPTION_SKUS.has(skuLower)
+    ) {
       tier = "member";
     }
     // Price is fixed by the server catalog — the client cannot set it.
@@ -677,6 +696,9 @@ export async function handleStripeCheckout(request, env) {
     form.set(`${p}[price_data][currency]`, "eur");
     form.set(`${p}[price_data][product_data][name]`, sku);
     form.set(`${p}[price_data][unit_amount]`, String(price));
+    if (isSubscription) {
+      form.set(`${p}[price_data][recurring][interval]`, "month");
+    }
   }
   form.set("metadata[tier]", tier);
   let res;

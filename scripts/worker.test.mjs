@@ -833,6 +833,35 @@ test("sovereign: checkout defaults to backer, ignores client tier, and defaults 
   assert.equal(seen[3].get("metadata[tier]"), "member", "sku match is case-insensitive");
 });
 
+test("sovereign: subscription SKUs switch checkout session mode to subscription with monthly interval and member tier", async () => {
+  const seen = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    seen.push(new URLSearchParams(init.body));
+    return new Response(JSON.stringify({ url: "https://checkout.stripe.com/c/pay/cs_sub_test" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    for (const sku of ["sub-smart-tree-pro", "sub-portail-swarm", "sub-axiomquant-ultra"]) {
+      const res = await sovereignCheckout(JSON.stringify({ items: [{ sku, qty: 1 }] }));
+      assert.equal(res.status, 200);
+    }
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(seen.length, 3);
+  assert.equal(seen[0].get("mode"), "subscription");
+  assert.equal(seen[0].get("metadata[tier]"), "member");
+  assert.equal(seen[0].get("line_items[0][price_data][unit_amount]"), "1900");
+  assert.equal(seen[0].get("line_items[0][price_data][recurring][interval]"), "month");
+  assert.equal(seen[1].get("line_items[0][price_data][unit_amount]"), "4900");
+  assert.equal(seen[1].get("line_items[0][price_data][recurring][interval]"), "month");
+  assert.equal(seen[2].get("line_items[0][price_data][unit_amount]"), "14900");
+  assert.equal(seen[2].get("line_items[0][price_data][recurring][interval]"), "month");
+});
+
 test("sovereign: checkout validates items and skus locally without calling Stripe", async () => {
   let calls = 0;
   const realFetch = globalThis.fetch;
