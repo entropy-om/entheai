@@ -134,11 +134,23 @@ export const SUBSCRIPTION_SKUS = new Set([
   "sub-smart-tree-pro",
   "sub-portail-swarm",
   "sub-axiomquant-ultra",
+  "sub-axiomquant-vip",
   "sub-lovetta-postcard",
   "sub-lovetta-book",
   "sub-lovetta-patron",
+  "lovetta-postcard-club",
+  "lovetta-book-club",
+  "lovetta-art-patron",
+  "lovetta-steward-patron",
   "sub-omnicooker-family",
   "sub-omnicooker-annual",
+  "zen-family-pass-monthly",
+  "zen-family-pass-annual",
+  "8b-ai-research-services",
+  "private-seed",
+  "private-forge",
+  "private-citadel",
+  "private-fleet",
   "sub-crabcc-pro",
   "sub-zeno-cfo",
   "sub-memnet-patron",
@@ -146,6 +158,36 @@ export const SUBSCRIPTION_SKUS = new Set([
   "sub-spherepop-warrant",
   "sub-cloak-shield",
 ]);
+
+// Live 8bIS, INC (`acct_1UUdJNDSQm9BEFYl`) hosted Stripe Payment Links (integer minor-unit prices, float_count = 0).
+export const LIVE_STRIPE_PAYMENT_LINKS = {
+  "sub-axiomquant-vip": "https://buy.stripe.com/8x2cN52hp0Ea6EVgZHbMQ0i",
+  "sub-axiomquant-ultra": "https://buy.stripe.com/8x2cN52hp0Ea6EVgZHbMQ0i",
+  "sub-portail-swarm": "https://buy.stripe.com/aFafZhf4bdqWe7naBjbMQ0h",
+  "sub-smart-tree-pro": "https://buy.stripe.com/9B614naNVfz4e7naBjbMQ0g",
+  "zen-farmers-market-basket": "https://buy.stripe.com/bJe14n09h3Qm8N39xfbMQ0f",
+  "omnicooker-market-basket": "https://buy.stripe.com/bJe14n09h3Qm8N39xfbMQ0f",
+  "zen-family-pass-annual": "https://buy.stripe.com/28E28rbRZgD83sJdNvbMQ0e",
+  "sub-omnicooker-annual": "https://buy.stripe.com/28E28rbRZgD83sJdNvbMQ0e",
+  "zen-family-pass-monthly": "https://buy.stripe.com/9B64gzcW3fz49R77p7bMQ0d",
+  "sub-omnicooker-family": "https://buy.stripe.com/9B64gzcW3fz49R77p7bMQ0d",
+  "lovetta-steward-patron": "https://buy.stripe.com/dRmeVd2hp1IebZfaBjbMQ0c",
+  "lovetta-sovereign-key": "https://buy.stripe.com/4gM5kD9JR4Uq9R710JbMQ0b",
+  "lovetta-art-patron-usd": "https://buy.stripe.com/28E7sLcW30Ea3sJ38RbMQ0a",
+  "lovetta-art-patron": "https://buy.stripe.com/aFa4gz5tB9aGgfvcJrbMQ09",
+  "sub-lovetta-patron": "https://buy.stripe.com/aFa4gz5tB9aGgfvcJrbMQ09",
+  "lovetta-book-club-usd": "https://buy.stripe.com/9B66oH7BJaeKe7n8tbbMQ08",
+  "lovetta-book-club": "https://buy.stripe.com/9B6eVd09haeK0gxdNvbMQ07",
+  "sub-lovetta-book": "https://buy.stripe.com/9B6eVd09haeK0gxdNvbMQ07",
+  "lovetta-postcard-club-usd": "https://buy.stripe.com/7sY28r8FNgD85ARaBjbMQ06",
+  "lovetta-postcard-club": "https://buy.stripe.com/8x2dR96xF0Ea3sJeRzbMQ05",
+  "sub-lovetta-postcard": "https://buy.stripe.com/8x2dR96xF0Ea3sJeRzbMQ05",
+  "8b-ai-research-services": "https://buy.stripe.com/00w00jaNV2Mi4wNcJrbMQ04",
+  "private-fleet": "https://buy.stripe.com/14A8wP4px0Ea1kB38RbMQ03",
+  "private-citadel": "https://buy.stripe.com/00w9AT7BJaeK8N324NbMQ02",
+  "private-forge": "https://buy.stripe.com/cNi8wP09hdqWd3jgZHbMQ01",
+  "private-seed": "https://buy.stripe.com/5kQ14n3lt0EafbraBjbMQ00",
+};
 
 // Backer license keys: ENTH-XXXX-XXXX-XXXX-XXXX — 16 chars drawn from an
 // unambiguous alphabet (no 0/O/1/I/L), generated with crypto.getRandomValues.
@@ -668,9 +710,6 @@ export async function handleSovereignPub(request, env) {
 // `{ url }` or the Stripe error (status + message).
 export async function handleStripeCheckout(request, env) {
   const headers = jsonHeaders();
-  if (!env.STRIPE_SECRET_KEY) {
-    return json({ error: "stripe not configured" }, 503, headers);
-  }
   if (request.method !== "POST") {
     return json({ error: "method not allowed" }, 405, { ...headers, allow: "POST" });
   }
@@ -679,6 +718,22 @@ export async function handleStripeCheckout(request, env) {
     body = JSON.parse(await request.text());
   } catch {
     return json({ error: "body must be JSON" }, 400, headers);
+  }
+  if (!Array.isArray(body.items) && typeof body?.sku === "string") {
+    const directSku = body.sku.trim().toLowerCase();
+    if (LIVE_STRIPE_PAYMENT_LINKS[directSku]) {
+      return json({ url: LIVE_STRIPE_PAYMENT_LINKS[directSku], float_count: 0 }, 200, headers);
+    }
+    body.items = [{ sku: body.sku, qty: Number.isInteger(body.quantity) ? body.quantity : 1 }];
+  }
+  if (!env.STRIPE_SECRET_KEY) {
+    if (Array.isArray(body?.items) && body.items.length === 1) {
+      const onlySku = String(body.items[0]?.sku || "").trim().toLowerCase();
+      if (LIVE_STRIPE_PAYMENT_LINKS[onlySku]) {
+        return json({ url: LIVE_STRIPE_PAYMENT_LINKS[onlySku], float_count: 0 }, 200, headers);
+      }
+    }
+    return json({ error: "stripe not configured" }, 503, headers);
   }
   if (!Array.isArray(body.items) || body.items.length === 0) {
     return json({ error: "items required" }, 400, headers);
