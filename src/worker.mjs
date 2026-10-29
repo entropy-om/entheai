@@ -119,6 +119,15 @@ export const STORE_CATALOG = {
   "sub-lovetta-postcard": 1000,
   "sub-lovetta-book": 2000,
   "sub-lovetta-patron": 5500,
+  "sub-omnicooker-family": 499,
+  "sub-omnicooker-annual": 4200,
+  "omnicooker-market-basket": 3497,
+  "sub-crabcc-pro": 1900,
+  "sub-zeno-cfo": 1500,
+  "sub-memnet-patron": 900,
+  "sub-exegesis-scholar": 1900,
+  "sub-spherepop-warrant": 2900,
+  "sub-cloak-shield": 1200,
 };
 
 export const SUBSCRIPTION_SKUS = new Set([
@@ -128,6 +137,14 @@ export const SUBSCRIPTION_SKUS = new Set([
   "sub-lovetta-postcard",
   "sub-lovetta-book",
   "sub-lovetta-patron",
+  "sub-omnicooker-family",
+  "sub-omnicooker-annual",
+  "sub-crabcc-pro",
+  "sub-zeno-cfo",
+  "sub-memnet-patron",
+  "sub-exegesis-scholar",
+  "sub-spherepop-warrant",
+  "sub-cloak-shield",
 ]);
 
 // Backer license keys: ENTH-XXXX-XXXX-XXXX-XXXX — 16 chars drawn from an
